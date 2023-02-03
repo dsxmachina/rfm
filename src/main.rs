@@ -31,6 +31,7 @@ enum Movement {
 #[derive(Debug)]
 enum Command {
     Move(Movement),
+    Resize(u16, u16),
     Quit,
     None,
 }
@@ -61,6 +62,10 @@ fn parse_events(event: Event) -> Command {
 
     if event == Event::Key(CTRL_C) || event == Event::Key(Q) {
         return Command::Quit;
+    }
+
+    if let Event::Resize(sx, sy) = event {
+        return Command::Resize(sx, sy);
     }
 
     Command::None
@@ -109,6 +114,10 @@ async fn main() -> Result<()> {
                                     }
                                 }
                             }
+                            Command::Resize(sx, sy) => {
+                                panels.terminal_resize((sx, sy));
+                                    redraw = true;
+                            },
                             Command::Quit => break,
                             Command::None => (),
                         }
