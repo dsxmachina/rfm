@@ -66,19 +66,6 @@ fn parse_events(event: Event) -> Command {
     Command::None
 }
 
-// TODO: Write a function that creates a preview for files
-fn print_preview(stdout: &mut Stdout, x: u16, max_y: u16) -> Result<()> {
-    for y in 1..max_y {
-        queue!(
-            stdout,
-            cursor::MoveTo(x, y),
-            PrintStyledContent("|".dark_green().bold()),
-        )?;
-    }
-    // Draw column
-    Ok(())
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     // let (cols, rows) = terminal::size()?;
@@ -91,11 +78,10 @@ async fn main() -> Result<()> {
         .queue(cursor::MoveTo(0, 0))?
         .flush()?;
 
-    let mut reader = EventStream::new();
-
     let terminal_size = terminal::size()?;
 
-    let panels = MillerPanels::new(terminal_size)?;
+    let mut reader = EventStream::new();
+    let mut panels = MillerPanels::new(terminal_size)?;
     panels.draw(&mut stdout)?;
 
     // Flush buffer in the end
@@ -112,8 +98,10 @@ async fn main() -> Result<()> {
                             Command::Move(direction) => {
                                 match direction {
                                     Movement::Up => {
+                                        redraw = panels.up()?;
                                     }
                                     Movement::Down => {
+                                        redraw = panels.down()?;
                                     }
                                     Movement::Left => {
                                     }
@@ -126,7 +114,8 @@ async fn main() -> Result<()> {
                         }
                         if redraw {
                             // selected_path = content_mid[position_mid].path().into();
-                            // stdout.queue(Clear(ClearType::All))?;
+                            stdout.queue(Clear(ClearType::All))?;
+                            panels.draw(&mut stdout)?;
                             // print_header(&mut stdout, &selected_path)?;
                             // let (sx, sy) = terminal::size()?;
                             // let x0 = 1;
@@ -140,8 +129,8 @@ async fn main() -> Result<()> {
                             // } else {
                             //     print_preview(&mut stdout, x2, sy)?;
                             // }
-                            // // Flush buffer in the end
-                            // stdout.flush()?;
+                            // Flush buffer in the end
+                            stdout.flush()?;
                         }
                     },
                     Some(Err(e)) => {

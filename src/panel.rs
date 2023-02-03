@@ -246,6 +246,26 @@ impl MillerPanels {
         self.ranges = Ranges::from_size(terminal_size);
     }
 
+    pub fn up(&mut self) -> Result<bool> {
+        if self.mid.up() {
+            // Change the other panels aswell
+            self.right = Panel::from_path(self.mid.selected_path())?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub fn down(&mut self) -> Result<bool> {
+        if self.mid.down() {
+            // Change the other panels aswell
+            self.right = Panel::from_path(self.mid.selected_path())?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     pub fn draw(&self, stdout: &mut Stdout) -> Result<()> {
         if let Some(path) = self.mid.selected_path() {
             print_header(stdout, path)?;
@@ -271,7 +291,7 @@ impl MillerPanels {
                 self.ranges.right_x_range.clone(),
                 self.ranges.y_range.clone(),
             )?,
-            Panel::Preview(_) => todo!("drawing preview panels is not yet implemented"),
+            Panel::Preview(_) => (), //todo!("drawing preview panels is not yet implemented"),
             Panel::Empty => (),
         }
         Ok(())
@@ -310,6 +330,26 @@ impl DirPanel {
             Ok(DirPanel { elements, selected })
         } else {
             todo!()
+        }
+    }
+
+    // Return true if the panel has changed
+    pub fn up(&mut self) -> bool {
+        if self.selected > 0 {
+            self.selected -= 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    // Return true if the panel has changed
+    pub fn down(&mut self) -> bool {
+        if self.selected + 1 < self.elements.len() {
+            self.selected += 1;
+            true
+        } else {
+            false
         }
     }
 
