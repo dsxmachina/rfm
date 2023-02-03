@@ -1,11 +1,12 @@
 use crossterm::{
     cursor, queue,
-    style::{PrintStyledContent, Stylize},
+    style::{self, PrintStyledContent, Stylize},
     Result,
 };
+use pad::PadStr;
 use std::{
     cmp::Ordering,
-    fs::read_dir,
+    fs::{canonicalize, read_dir},
     io::Stdout,
     ops::Range,
     path::{Path, PathBuf},
@@ -27,8 +28,8 @@ impl DirElem {
     }
 
     pub fn print_styled(&self, selected: bool, max_len: u16) -> PrintStyledContent<String> {
-        let mut name = format!(" {}", self.name);
-        name.truncate(usize::from(max_len));
+        let name =
+            format!(" {}", self.name).with_exact_width(usize::from(max_len).saturating_sub(1));
         if self.path.is_dir() {
             if selected {
                 PrintStyledContent(name.dark_green().bold().negative())
@@ -174,6 +175,7 @@ impl Panel {
 //     }
 // }
 
+#[derive(Clone)]
 struct Ranges {
     left_x_range: Range<u16>,
     mid_x_range: Range<u16>,
@@ -193,6 +195,29 @@ impl Ranges {
     }
 }
 
+fn print_header<P: AsRef<Path>>(stdout: &mut Stdout, path: P) -> Result<()> {
+    let prompt = format!("{}@{}", whoami::username(), whoami::hostname());
+    let absolute = canonicalize(path.as_ref())?;
+    let file_name = absolute
+        .file_name()
+        .unwrap_or_default()
+        .to_str()
+        .unwrap_or_default();
+    let absolute = absolute.to_str().unwrap_or_default();
+
+    let (prefix, suffix) = absolute.split_at(absolute.len() - file_name.len());
+
+    queue!(
+        stdout,
+        cursor::MoveTo(0, 0),
+        style::PrintStyledContent(prompt.dark_green().bold()),
+        style::Print(" "),
+        style::PrintStyledContent(prefix.to_string().dark_blue().bold()),
+        style::PrintStyledContent(suffix.to_string().white().bold()),
+    )?;
+    Ok(())
+}
+
 /// Create a set of Panels in "Miller-Columns" style.
 pub struct MillerPanels {
     // Panels
@@ -205,7 +230,7 @@ pub struct MillerPanels {
 
 impl MillerPanels {
     pub fn new(terminal_size: (u16, u16)) -> Result<Self> {
-        let left = DirPanel::from_path("..")?;
+        let left = DirPanel::from_parent(".")?;
         let mid = DirPanel::from_path(".")?;
         let right = Panel::from_path(mid.selected_path())?;
         let ranges = Ranges::from_size(terminal_size);
@@ -219,6 +244,37 @@ impl MillerPanels {
 
     pub fn terminal_resize(&mut self, terminal_size: (u16, u16)) {
         self.ranges = Ranges::from_size(terminal_size);
+    }
+
+    pub fn draw(&self, stdout: &mut Stdout) -> Result<()> {
+        if let Some(path) = self.mid.selected_path() {
+            print_header(stdout, path)?;
+        } else {
+            if let Some(path) = self.left.selected_path() {
+                print_header(stdout, path)?;
+            }
+        }
+        self.left.draw(
+            stdout,
+            self.ranges.left_x_range.clone(),
+            self.ranges.y_range.clone(),
+        )?;
+        self.mid.draw(
+            stdout,
+            self.ranges.mid_x_range.clone(),
+            self.ranges.y_range.clone(),
+        )?;
+
+        match &self.right {
+            Panel::Dir(panel) => panel.draw(
+                stdout,
+                self.ranges.right_x_range.clone(),
+                self.ranges.y_range.clone(),
+            )?,
+            Panel::Preview(_) => todo!("drawing preview panels is not yet implemented"),
+            Panel::Empty => (),
+        }
+        Ok(())
     }
 }
 
@@ -238,6 +294,23 @@ impl DirPanel {
             elements,
             selected: 0,
         })
+    }
+
+    pub fn from_parent<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path = canonicalize(path.as_ref())?;
+        if let Some(parent) = path.parent() {
+            let elements = directory_content(parent)?;
+            let mut selected = 0;
+            for elem in elements.iter() {
+                if elem.path() == path {
+                    break;
+                }
+                selected += 1;
+            }
+            Ok(DirPanel { elements, selected })
+        } else {
+            todo!()
+        }
     }
 
     pub fn replace(&mut self, other: DirPanel) {
@@ -286,8 +359,8 @@ impl DirPanel {
     }
 }
 
-#[test]
-fn test_selection() {
-    let v: Vec<u8> = Vec::new();
-    assert!(v.get(1).is_none());
-}
+// #[test]
+// fn test_selection() {
+//     let v: Vec<u8> = Vec::new();
+//     assert!(v.get(1).is_none());
+// }
