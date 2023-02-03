@@ -93,74 +93,132 @@ fn directory_content<P: AsRef<Path>>(path: P) -> Result<Vec<DirElem>> {
     Ok(out)
 }
 
-pub enum PanelType {
+struct PreviewPanel {}
+
+enum Panel {
+    /// Directory preview
     Dir(DirPanel),
+    /// File preview
     Preview(PreviewPanel),
-}
-
-pub enum Column {
-    Left,
-    Mid,
-    Right,
-}
-
-impl Column {
-    // x = dividers():
-    // from = x.0 * width / x.2
-    // to = x.1 * width / x.2
-    pub fn dividers(&self) -> (u16, u16, u16) {
-        match self {
-            Column::Left => (0, 1, 8),
-            Column::Mid => (1, 4, 8),
-            Column::Right => (4, 8, 8),
-        }
-    }
-}
-
-pub struct Panel {
-    // Something like 0.5 - 0.75
-    // (defined as fractions of terminal-width)
-    start_piece: u16,
-    end_piece: u16,
-    pieces: u16,
-    // Start and end x+y defined over the proportions
-    x_range: Range<u16>,
-    y_range: Range<u16>,
-    // Actual panel
-    panel: PanelType,
+    /// No content
+    Empty,
 }
 
 impl Panel {
-    pub fn new(terminal_size: (u16, u16), column: Column, panel_type: PanelType) -> Panel {
-        let (start_piece, end_piece, pieces) = column.dividers();
-
-        let x_start = start_piece * terminal_size.0 / pieces;
-        let x_end = end_piece * terminal_size.0 / pieces;
-        let x_range = x_start..x_end;
-        let y_range = 1..terminal_size.1; // 1st line is for the header
-
-        Panel {
-            start_piece,
-            end_piece,
-            pieces,
-            x_range,
-            y_range,
-            panel: panel_type,
+    pub fn from_path<P: AsRef<Path>>(maybe_path: Option<P>) -> Result<Panel> {
+        if let Some(path) = maybe_path {
+            if path.as_ref().is_dir() {
+                Ok(Panel::Dir(DirPanel::from_path(path)?))
+            } else {
+                Ok(Panel::Preview(PreviewPanel {}))
+            }
+        } else {
+            Ok(Panel::Empty)
         }
     }
+}
 
-    pub fn draw(&self, stdout: &mut Stdout) -> Result<()> {
-        match self.panel {
-            PanelType::Dir(dir_panel) => dir_panel.draw(stdout, self.x_range, self.y_range),
-            PanelType::Preview(_) => todo!("drawing preview panels is not yet implemented"),
+// struct Panel {
+//     // Something like 0.5 - 0.75
+//     // (defined as fractions of terminal-width)
+//     start_piece: u16,
+//     end_piece: u16,
+//     pieces: u16,
+//     // Start and end x+y defined over the proportions
+//     x_range: Range<u16>,
+//     y_range: Range<u16>,
+//     // Actual panel
+//     panel: PanelType,
+// }
+
+// impl Panel {
+//     pub fn new(terminal_size: (u16, u16), column: Column, panel_type: PanelType) -> Panel {
+//         let (start_piece, end_piece, pieces) = column.dividers();
+
+//         let x_start = start_piece * terminal_size.0 / pieces;
+//         let x_end = end_piece * terminal_size.0 / pieces;
+//         let x_range = x_start..x_end;
+//         let y_range = 1..terminal_size.1; // 1st line is for the header
+
+//         Panel {
+//             start_piece,
+//             end_piece,
+//             pieces,
+//             x_range,
+//             y_range,
+//             panel: panel_type,
+//         }
+//     }
+
+//     pub fn dir(terminal_size: (u16, u16), column: Column, panel: DirPanel) -> Panel {
+//         Panel::new(terminal_size, column, PanelType::Dir(panel))
+//     }
+
+//     pub fn empty(terminal_size: (u16, u16), column: Column) -> Panel {
+//         Panel::new(terminal_size, column, PanelType::Empty)
+//     }
+
+//     pub fn draw(&self, stdout: &mut Stdout) -> Result<()> {
+//         match self.panel {
+//             PanelType::Dir(dir_panel) => dir_panel.draw(stdout, self.x_range, self.y_range),
+//             PanelType::Preview(_) => todo!("drawing preview panels is not yet implemented"),
+//             PanelType::Empty => Ok(()),
+//         }
+//     }
+
+//     pub fn terminal_resize(&mut self, terminal_size: (u16, u16)) {
+//         let x_start = self.start_piece * terminal_size.0 / self.pieces;
+//         let x_end = self.end_piece * terminal_size.0 / self.pieces;
+//         self.x_range = x_start..x_end;
+//         self.y_range = 1..terminal_size.1;
+//     }
+// }
+
+struct Ranges {
+    left_x_range: Range<u16>,
+    mid_x_range: Range<u16>,
+    right_x_range: Range<u16>,
+    y_range: Range<u16>,
+}
+
+impl Ranges {
+    pub fn from_size(terminal_size: (u16, u16)) -> Self {
+        let (sx, sy) = terminal_size;
+        Self {
+            left_x_range: 0..(sx / 8),
+            mid_x_range: (sx / 8)..(sx / 2),
+            right_x_range: (sx / 2)..sx,
+            y_range: 1..sy, // 1st line is reserved for the header
         }
+    }
+}
+
+/// Create a set of Panels in "Miller-Columns" style.
+pub struct MillerPanels {
+    // Panels
+    left: DirPanel,
+    mid: DirPanel,
+    right: Panel,
+    // Data
+    ranges: Ranges,
+}
+
+impl MillerPanels {
+    pub fn new(terminal_size: (u16, u16)) -> Result<Self> {
+        let left = DirPanel::from_path("..")?;
+        let mid = DirPanel::from_path(".")?;
+        let right = Panel::from_path(mid.selected_path())?;
+        let ranges = Ranges::from_size(terminal_size);
+        Ok(MillerPanels {
+            left,
+            mid,
+            right,
+            ranges,
+        })
     }
 
     pub fn terminal_resize(&mut self, terminal_size: (u16, u16)) {
-        let x_start = self.start_piece * terminal_size.0 / self.pieces;
-        let x_end = self.end_piece * terminal_size.0 / self.pieces;
-        self.x_range = x_start..x_end;
-        self.y_range = 1..terminal_size.1;
+        self.ranges = Ranges::from_size(terminal_size);
     }
 }
 
@@ -168,7 +226,7 @@ impl Panel {
 // We encode this as the vector being empty,
 // which is what we will query everytime
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DirPanel {
+struct DirPanel {
     elements: Vec<DirElem>,
     selected: usize,
 }
@@ -233,5 +291,3 @@ fn test_selection() {
     let v: Vec<u8> = Vec::new();
     assert!(v.get(1).is_none());
 }
-
-pub struct PreviewPanel {}
