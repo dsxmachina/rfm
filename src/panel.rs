@@ -72,7 +72,10 @@ impl PartialOrd for DirElem {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         if self.path.is_dir() {
             if other.path.is_dir() {
-                return self.name().partial_cmp(other.name());
+                return self
+                    .name()
+                    .to_lowercase()
+                    .partial_cmp(&other.name().to_lowercase());
             } else {
                 return Some(Ordering::Less);
             }
@@ -80,7 +83,10 @@ impl PartialOrd for DirElem {
             if other.path.is_dir() {
                 return Some(Ordering::Greater);
             } else {
-                return self.name().partial_cmp(other.name());
+                return self
+                    .name()
+                    .to_lowercase()
+                    .partial_cmp(&other.name().to_lowercase());
             }
         }
     }
@@ -468,16 +474,38 @@ impl DirPanel {
         let width = x_range.end.saturating_sub(x_range.start);
         let height = y_range.end.saturating_sub(y_range.start);
 
+        // We have to implement scrolling now.
+        // Let's try something:
+        let scroll: usize = if self.elements.len() > height as usize {
+            // if selected should be in the middle all the time:
+            // bot = min(max-items, selected + height / 2)
+            // scroll = min(0, bot - (height + 1))
+            //
+            let bot = self.elements.len().min(self.selected + height as usize / 2) + 1;
+            bot.saturating_sub(height as usize)
+        } else {
+            0
+        };
+
+        // TODO: Filter out hidden files
+        // .filter(|e| {
+        //     e.path
+        //         .file_name()
+        //         .and_then(|s| s.to_str())
+        //         .and_then(|s| Some(!s.starts_with(".")))
+        //         .unwrap_or_else(|| true)
+        // })
+
         // Then print new buffer
-        let mut idx = 0u16;
+        let mut idx = 0 as u16;
         // Write "height" items to the screen
-        for entry in self.elements.iter().take(height as usize) {
+        for entry in self.elements.iter().skip(scroll).take(height as usize) {
             let y = u16::try_from(y_range.start + idx).unwrap_or_else(|_| u16::MAX);
             queue!(
                 stdout,
                 cursor::MoveTo(x_range.start, y),
                 PrintStyledContent("|".dark_green().bold()),
-                entry.print_styled(self.selected == idx as usize, width),
+                entry.print_styled(self.selected == idx as usize + scroll, width),
             )?;
             idx += 1;
         }
