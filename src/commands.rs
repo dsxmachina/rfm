@@ -52,6 +52,7 @@ pub enum Movement {
     HalfPageForward,
     HalfPageBackward,
     JumpTo(ExpandedPath),
+    JumpPrevious,
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +95,9 @@ impl CommandParser {
 
         // Toggle hidden files
         key_commands.insert("zh", Command::ToggleHidden);
+
+        // Jump to previous location
+        key_commands.insert("\'\'", Command::Move(Movement::JumpPrevious));
 
         // Quit
         key_commands.insert("q", Command::Quit);

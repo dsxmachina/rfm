@@ -237,6 +237,7 @@ pub struct MillerPanels {
     // Data
     ranges: Ranges,
     // prev-path (after jump-mark)
+    prev: PathBuf,
     show_hidden: bool,
 }
 
@@ -253,6 +254,7 @@ impl MillerPanels {
             right,
             ranges,
             show_hidden,
+            prev: ".".into(),
         })
     }
 
@@ -289,11 +291,14 @@ impl MillerPanels {
             Movement::PageForward => self.down(self.ranges.height() as usize),
             Movement::PageBackward => self.up(self.ranges.height() as usize),
             Movement::JumpTo(path) => self.jump(path.into()),
+            Movement::JumpPrevious => self.jump(self.prev.clone()),
         }
     }
 
     fn jump(&mut self, path: PathBuf) -> Result<bool> {
         if path.exists() {
+            // Remember path
+            self.prev = self.mid.path.clone();
             self.left = DirPanel::from_parent(path.clone(), self.show_hidden)?;
             self.mid = DirPanel::from_path(path, self.show_hidden)?;
             self.right = Panel::from_path(self.mid.selected_path(), self.show_hidden)?;
@@ -328,6 +333,9 @@ impl MillerPanels {
     fn right(&mut self) -> Result<bool> {
         if let Some(selected) = self.mid.selected_path() {
             if selected.is_dir() {
+                // Remember path
+                self.prev = self.mid.path.clone();
+
                 // If the selected item is a directory,
                 // all panels will shift to the left,
                 // and the right panel needs to be recreated:
@@ -404,6 +412,9 @@ impl MillerPanels {
             // Notification::new().summary("No-Path").show().unwrap();
             return Ok(false);
         }
+        // Remember path
+        self.prev = self.mid.path.clone();
+
         // All panels will shift to the right
         // and the left panel needs to be recreated:
 
@@ -422,6 +433,7 @@ impl MillerPanels {
         } else {
             self.left = DirPanel::empty();
         }
+
         Ok(true)
     }
 
