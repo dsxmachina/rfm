@@ -13,6 +13,7 @@ use std::{
     io::Stdout,
     mem,
     ops::Range,
+    os::unix::prelude::PermissionsExt,
     path::{Path, PathBuf},
     process::Stdio,
 };
@@ -186,6 +187,7 @@ struct Ranges {
     mid_x_range: Range<u16>,
     right_x_range: Range<u16>,
     y_range: Range<u16>,
+    width: u16,
 }
 
 impl Ranges {
@@ -195,7 +197,8 @@ impl Ranges {
             left_x_range: 0..(sx / 8),
             mid_x_range: (sx / 8)..(sx / 2),
             right_x_range: (sx / 2)..sx,
-            y_range: 1..sy, // 1st line is reserved for the header
+            y_range: 1..sy.saturating_sub(1), // 1st line is reserved for the header, last for the footer
+            width: sx,
         }
     }
 
@@ -204,6 +207,7 @@ impl Ranges {
     }
 }
 
+// Prints our header
 fn print_header<P: AsRef<Path>>(stdout: &mut Stdout, path: P) -> Result<()> {
     let prompt = format!("{}@{}", whoami::username(), whoami::hostname());
     let absolute = canonicalize(path.as_ref())?;
@@ -225,6 +229,36 @@ fn print_header<P: AsRef<Path>>(stdout: &mut Stdout, path: P) -> Result<()> {
         style::PrintStyledContent(prefix.to_string().dark_blue().bold()),
         style::PrintStyledContent(suffix.to_string().white().bold()),
     )?;
+    Ok(())
+}
+
+// Prints a footer
+fn print_footer(stdout: &mut Stdout, mid: &DirPanel, width: u16, y: u16) -> Result<()> {
+    if let Some(selection) = mid.selected() {
+        let path = selection.path();
+        let metadata = path.metadata()?;
+        // let permissions = format!("{:o}", metadata.permissions().mode());
+        let permissions = unix_mode::to_string(metadata.permissions().mode());
+
+        // let x2 = permissions.len() as u16 + 1;
+
+        queue!(
+            stdout,
+            cursor::MoveTo(0, y),
+            Clear(ClearType::CurrentLine),
+            style::PrintStyledContent(permissions.dark_cyan()),
+            // cursor::MoveTo(x2, y),
+        )?;
+    }
+    // queue!(
+    //     stdout,
+    //     cursor::MoveTo(0, 0),
+    //     Clear(ClearType::CurrentLine),
+    //     style::PrintStyledContent(prompt.dark_green().bold()),
+    //     style::Print(" "),
+    //     style::PrintStyledContent(prefix.to_string().dark_blue().bold()),
+    //     style::PrintStyledContent(suffix.to_string().white().bold()),
+    // )?;
     Ok(())
 }
 
@@ -445,6 +479,14 @@ impl MillerPanels {
                 print_header(stdout, path)?;
             }
         }
+
+        print_footer(
+            stdout,
+            &self.mid,
+            self.ranges.width,
+            self.ranges.y_range.end.saturating_add(1),
+        )?;
+
         self.left.draw(
             stdout,
             self.ranges.left_x_range.clone(),
