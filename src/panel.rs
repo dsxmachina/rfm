@@ -1,7 +1,7 @@
 use cached::{cached_result, SizedCache};
 use crossterm::{
     cursor, queue,
-    style::{self, PrintStyledContent, Stylize},
+    style::{self, Print, PrintStyledContent, Stylize},
     Result,
 };
 use notify_rust::Notification;
@@ -135,15 +135,20 @@ impl PreviewPanel {
         let preview_string = format!("Preview of {}", path).with_exact_width(width as usize);
         queue!(
             stdout,
+            cursor::MoveTo(x_range.start, y_range.start),
+            PrintStyledContent("|".dark_green().bold()),
             cursor::MoveTo(x_range.start + 1, y_range.start),
             PrintStyledContent(preview_string.magenta()),
         )?;
-        for y in y_range {
+        for y in y_range.start + 1..y_range.end {
             queue!(
                 stdout,
                 cursor::MoveTo(x_range.start, y),
                 PrintStyledContent("|".dark_green().bold()),
             )?;
+            for x in x_range.start + 1..x_range.end {
+                queue!(stdout, cursor::MoveTo(x, y), Print(" "),)?;
+            }
         }
 
         Ok(())
@@ -626,6 +631,9 @@ impl DirPanel {
                 cursor::MoveTo(x_range.start, y),
                 PrintStyledContent("|".dark_green().bold()),
             )?;
+            for x in x_range.start + 1..x_range.end {
+                queue!(stdout, cursor::MoveTo(x, y), Print(" "),)?;
+            }
         }
         Ok(())
     }
