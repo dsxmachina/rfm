@@ -190,6 +190,10 @@ impl Ranges {
             y_range: 1..sy, // 1st line is reserved for the header
         }
     }
+
+    pub fn height(&self) -> u16 {
+        self.y_range.end.saturating_sub(self.y_range.start)
+    }
 }
 
 fn print_header<P: AsRef<Path>>(stdout: &mut Stdout, path: P) -> Result<()> {
@@ -251,6 +255,8 @@ impl MillerPanels {
             Movement::Right => self.right(),
             Movement::Top => self.up(usize::MAX),
             Movement::Bottom => self.down(usize::MAX),
+            Movement::Forward => self.down(self.ranges.height() as usize / 2),
+            Movement::Backward => self.up(self.ranges.height() as usize / 2),
         }
     }
 
