@@ -230,8 +230,6 @@ pub struct MillerPanels {
     ranges: Ranges,
     // prev-path (after jump-mark)
     show_hidden: bool,
-    // current and previous path
-    current_path: PathBuf,
 }
 
 impl MillerPanels {
@@ -247,7 +245,6 @@ impl MillerPanels {
             right,
             ranges,
             show_hidden,
-            current_path: PathBuf::from("."),
         })
     }
 
@@ -257,7 +254,18 @@ impl MillerPanels {
 
     pub fn toggle_hidden(&mut self) -> Result<bool> {
         self.show_hidden = !self.show_hidden;
-        self.jump(self.current_path.clone())
+        self.left = DirPanel::with_selection(
+            self.left.path.clone(),
+            self.show_hidden,
+            self.left.selected_path(),
+        )?;
+        self.mid = DirPanel::with_selection(
+            self.mid.path.clone(),
+            self.show_hidden,
+            self.mid.selected_path(),
+        )?;
+        self.right = Panel::from_path(self.mid.selected_path(), self.show_hidden)?;
+        Ok(true)
     }
 
     pub fn move_cursor(&mut self, movement: Movement) -> Result<bool> {
@@ -411,6 +419,7 @@ impl MillerPanels {
 struct DirPanel {
     elements: Vec<DirElem>,
     selected: usize,
+    path: PathBuf,
 }
 
 impl DirPanel {
@@ -426,7 +435,7 @@ impl DirPanel {
         //     .body(&format!("{}", path.display()))
         //     .show()
         //     .unwrap();
-        let elements = directory_content(path.into())
+        let elements = directory_content(path.clone().into())
             .unwrap_or_default()
             .into_iter()
             .filter(|e| {
@@ -440,6 +449,7 @@ impl DirPanel {
         Ok(DirPanel {
             elements,
             selected: 0,
+            path: path.into(),
         })
     }
 
@@ -461,28 +471,41 @@ impl DirPanel {
             //     ))
             //     .show()
             //     .unwrap();
-            let elements = directory_content(parent.into())
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|e| {
-                    if let Some(filename) = e.path().file_name().and_then(|f| f.to_str()) {
-                        !filename.starts_with(".") || hidden
-                    } else {
-                        true
-                    }
-                })
-                .collect::<Vec<DirElem>>();
-            let mut selected = 0;
-            for elem in elements.iter() {
-                if elem.path() == path {
-                    break;
-                }
-                selected += 1;
-            }
-            Ok(DirPanel { elements, selected })
+            Self::with_selection(parent, hidden, Some(&path))
         } else {
             Ok(Self::empty())
         }
+    }
+
+    /// Creates a new DirPanel and selects the given path
+    pub fn with_selection<P: AsRef<Path>>(
+        path: P,
+        hidden: bool,
+        selection: Option<&Path>,
+    ) -> Result<Self> {
+        let elements = directory_content(path.as_ref().into())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| {
+                if let Some(filename) = e.path().file_name().and_then(|f| f.to_str()) {
+                    !filename.starts_with(".") || hidden
+                } else {
+                    true
+                }
+            })
+            .collect::<Vec<DirElem>>();
+        let mut selected = 0;
+        for elem in elements.iter() {
+            if Some(elem.path()) == selection {
+                break;
+            }
+            selected += 1;
+        }
+        Ok(DirPanel {
+            elements,
+            selected,
+            path: path.as_ref().into(),
+        })
     }
 
     /// Creates an empty dir-panel.
@@ -495,6 +518,7 @@ impl DirPanel {
         DirPanel {
             elements: Vec::new(),
             selected: 0,
+            path: "..".into(),
         }
     }
 
@@ -534,6 +558,11 @@ impl DirPanel {
     /// If the panel is empty `None` is returned.
     pub fn selected_path(&self) -> Option<&Path> {
         self.selected().map(|elem| elem.path())
+    }
+
+    /// Returns a reference to the path of the panel.
+    pub fn path(&self) -> &Path {
+        self.path.as_path()
     }
 
     /// Returns a reference to the selected [`DirElem`].
