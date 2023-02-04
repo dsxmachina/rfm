@@ -106,9 +106,15 @@ cached_result! {
     }
 }
 
-struct PreviewPanel {}
+struct PreviewPanel {
+    path: PathBuf,
+}
 
 impl PreviewPanel {
+    pub fn new(path: PathBuf) -> Self {
+        PreviewPanel { path }
+    }
+
     /// Draws the panel in its current state.
     pub fn draw(
         &self,
@@ -116,19 +122,14 @@ impl PreviewPanel {
         x_range: Range<u16>,
         y_range: Range<u16>,
     ) -> Result<()> {
-        // Then print new buffer
-        // let mut idx = 0u16;
-        // // Write "height" items to the screen
-        // for entry in self.elements.iter().take(height as usize) {
-        //     let y = u16::try_from(y_range.start + idx).unwrap_or_else(|_| u16::MAX);
-        //     queue!(
-        //         stdout,
-        //         cursor::MoveTo(x_range.start, y),
-        //         PrintStyledContent("|".dark_green().bold()),
-        //         entry.print_styled(self.selected == idx as usize, width),
-        //     )?;
-        //     idx += 1;
-        // }
+        let width = x_range.end - x_range.start;
+        let preview_string =
+            format!("Preview of {}", self.path.display()).with_exact_width(width as usize);
+        queue!(
+            stdout,
+            cursor::MoveTo(x_range.start + 1, y_range.start),
+            PrintStyledContent(preview_string.magenta()),
+        )?;
         for y in y_range {
             queue!(
                 stdout,
@@ -136,6 +137,7 @@ impl PreviewPanel {
                 PrintStyledContent("|".dark_green().bold()),
             )?;
         }
+
         Ok(())
     }
 }
@@ -155,7 +157,7 @@ impl Panel {
             if path.as_ref().is_dir() {
                 Ok(Panel::Dir(DirPanel::from_path(path)?))
             } else {
-                Ok(Panel::Preview(PreviewPanel {}))
+                Ok(Panel::Preview(PreviewPanel::new(path.as_ref().into())))
             }
         } else {
             Ok(Panel::Empty)
