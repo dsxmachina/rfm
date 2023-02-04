@@ -102,6 +102,38 @@ cached_result! {
 
 struct PreviewPanel {}
 
+impl PreviewPanel {
+    /// Draws the panel in its current state.
+    pub fn draw(
+        &self,
+        stdout: &mut Stdout,
+        x_range: Range<u16>,
+        y_range: Range<u16>,
+    ) -> Result<()> {
+        // Then print new buffer
+        // let mut idx = 0u16;
+        // // Write "height" items to the screen
+        // for entry in self.elements.iter().take(height as usize) {
+        //     let y = u16::try_from(y_range.start + idx).unwrap_or_else(|_| u16::MAX);
+        //     queue!(
+        //         stdout,
+        //         cursor::MoveTo(x_range.start, y),
+        //         PrintStyledContent("|".dark_green().bold()),
+        //         entry.print_styled(self.selected == idx as usize, width),
+        //     )?;
+        //     idx += 1;
+        // }
+        for y in y_range {
+            queue!(
+                stdout,
+                cursor::MoveTo(x_range.start, y),
+                PrintStyledContent("|".dark_green().bold()),
+            )?;
+        }
+        Ok(())
+    }
+}
+
 enum Panel {
     /// Directory preview
     Dir(DirPanel),
@@ -124,62 +156,6 @@ impl Panel {
         }
     }
 }
-
-// struct Panel {
-//     // Something like 0.5 - 0.75
-//     // (defined as fractions of terminal-width)
-//     start_piece: u16,
-//     end_piece: u16,
-//     pieces: u16,
-//     // Start and end x+y defined over the proportions
-//     x_range: Range<u16>,
-//     y_range: Range<u16>,
-//     // Actual panel
-//     panel: PanelType,
-// }
-
-// impl Panel {
-//     pub fn new(terminal_size: (u16, u16), column: Column, panel_type: PanelType) -> Panel {
-//         let (start_piece, end_piece, pieces) = column.dividers();
-
-//         let x_start = start_piece * terminal_size.0 / pieces;
-//         let x_end = end_piece * terminal_size.0 / pieces;
-//         let x_range = x_start..x_end;
-//         let y_range = 1..terminal_size.1; // 1st line is for the header
-
-//         Panel {
-//             start_piece,
-//             end_piece,
-//             pieces,
-//             x_range,
-//             y_range,
-//             panel: panel_type,
-//         }
-//     }
-
-//     pub fn dir(terminal_size: (u16, u16), column: Column, panel: DirPanel) -> Panel {
-//         Panel::new(terminal_size, column, PanelType::Dir(panel))
-//     }
-
-//     pub fn empty(terminal_size: (u16, u16), column: Column) -> Panel {
-//         Panel::new(terminal_size, column, PanelType::Empty)
-//     }
-
-//     pub fn draw(&self, stdout: &mut Stdout) -> Result<()> {
-//         match self.panel {
-//             PanelType::Dir(dir_panel) => dir_panel.draw(stdout, self.x_range, self.y_range),
-//             PanelType::Preview(_) => todo!("drawing preview panels is not yet implemented"),
-//             PanelType::Empty => Ok(()),
-//         }
-//     }
-
-//     pub fn terminal_resize(&mut self, terminal_size: (u16, u16)) {
-//         let x_start = self.start_piece * terminal_size.0 / self.pieces;
-//         let x_end = self.end_piece * terminal_size.0 / self.pieces;
-//         self.x_range = x_start..x_end;
-//         self.y_range = 1..terminal_size.1;
-//     }
-// }
 
 #[derive(Clone)]
 struct Ranges {
@@ -272,6 +248,8 @@ impl MillerPanels {
         }
     }
 
+    // TODO: We could improve, that we don't jump into directories,
+    // where we do not have access
     pub fn right(&mut self) -> Result<bool> {
         if let Some(selected) = self.mid.selected_path() {
             if selected.is_dir() {
@@ -307,6 +285,7 @@ impl MillerPanels {
     pub fn left(&mut self) -> Result<bool> {
         // If the left panel is empty, we cannot move left:
         if self.left.selected_path().is_none() {
+            // Notification::new().summary("No-Path").show().unwrap();
             return Ok(false);
         }
         // All panels will shift to the right
@@ -355,7 +334,11 @@ impl MillerPanels {
                 self.ranges.right_x_range.clone(),
                 self.ranges.y_range.clone(),
             )?,
-            Panel::Preview(_) => (), //todo!("drawing preview panels is not yet implemented"),
+            Panel::Preview(panel) => panel.draw(
+                stdout,
+                self.ranges.right_x_range.clone(),
+                self.ranges.y_range.clone(),
+            )?,
             Panel::Empty => (),
         }
         Ok(())
@@ -373,13 +356,17 @@ struct DirPanel {
 
 impl DirPanel {
     /// Creates a dir-panel for the given path.
+    ///
+    /// If the content of the directory could not be obtained
+    /// (due to insufficient permissions e.g.),
+    /// and empty panel is created
     pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self> {
         // Notification::new()
         //     .summary("FromPath:")
         //     .body(&format!("{}", path.as_ref().display()))
         //     .show()
         //     .unwrap();
-        let elements = directory_content(path.as_ref().into())?;
+        let elements = directory_content(path.as_ref().into()).unwrap_or_default();
         Ok(DirPanel {
             elements,
             selected: 0,
@@ -389,6 +376,9 @@ impl DirPanel {
     /// Creates a dir-panel for the parent of the given path.
     ///
     /// If the path has no parent, and empty dir-panel is returned.
+    /// If the content of the directory could not be obtained
+    /// (due to insufficient permissions e.g.),
+    /// and empty panel is created
     pub fn from_parent<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = canonicalize(path.as_ref())?;
         if let Some(parent) = path.parent() {
@@ -401,7 +391,7 @@ impl DirPanel {
             //     ))
             //     .show()
             //     .unwrap();
-            let elements = directory_content(parent.into())?;
+            let elements = directory_content(parent.into()).unwrap_or_default();
             let mut selected = 0;
             for elem in elements.iter() {
                 if elem.path() == path {
@@ -415,7 +405,7 @@ impl DirPanel {
         }
     }
 
-    /// Creates a dir-panel for an empty directory.
+    /// Creates an empty dir-panel.
     pub fn empty() -> Self {
         // Notification::new()
         //     .summary("Empty:")
