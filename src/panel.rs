@@ -15,6 +15,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::commands::Movement;
+
 #[derive(Debug, Clone, PartialEq, Eq, Ord)]
 pub struct DirElem {
     name: String,
@@ -241,8 +243,19 @@ impl MillerPanels {
         self.ranges = Ranges::from_size(terminal_size);
     }
 
-    pub fn up(&mut self) -> Result<bool> {
-        if self.mid.up() {
+    pub fn move_cursor(&mut self, movement: Movement) -> Result<bool> {
+        match movement {
+            Movement::Up => self.up(1),
+            Movement::Down => self.down(1),
+            Movement::Left => self.left(),
+            Movement::Right => self.right(),
+            Movement::Top => self.up(usize::MAX),
+            Movement::Bottom => self.down(usize::MAX),
+        }
+    }
+
+    fn up(&mut self, step: usize) -> Result<bool> {
+        if self.mid.up(step) {
             // Change the other panels aswell
             self.right = Panel::from_path(self.mid.selected_path())?;
             Ok(true)
@@ -251,8 +264,8 @@ impl MillerPanels {
         }
     }
 
-    pub fn down(&mut self) -> Result<bool> {
-        if self.mid.down() {
+    fn down(&mut self, step: usize) -> Result<bool> {
+        if self.mid.down(step) {
             // Change the other panels aswell
             self.right = Panel::from_path(self.mid.selected_path())?;
             Ok(true)
@@ -263,7 +276,7 @@ impl MillerPanels {
 
     // TODO: We could improve, that we don't jump into directories,
     // where we do not have access
-    pub fn right(&mut self) -> Result<bool> {
+    fn right(&mut self) -> Result<bool> {
         if let Some(selected) = self.mid.selected_path() {
             if selected.is_dir() {
                 // If the selected item is a directory,
@@ -295,7 +308,7 @@ impl MillerPanels {
         Ok(false)
     }
 
-    pub fn left(&mut self) -> Result<bool> {
+    fn left(&mut self) -> Result<bool> {
         // If the left panel is empty, we cannot move left:
         if self.left.selected_path().is_none() {
             // Notification::new().summary("No-Path").show().unwrap();
@@ -435,9 +448,9 @@ impl DirPanel {
     ///
     /// Returns true if the panel has changed and
     /// requires a redraw.
-    pub fn up(&mut self) -> bool {
+    pub fn up(&mut self, step: usize) -> bool {
         if self.selected > 0 {
-            self.selected -= 1;
+            self.selected = self.selected.saturating_sub(step);
             true
         } else {
             false
@@ -448,12 +461,17 @@ impl DirPanel {
     ///
     /// Returns true if the panel has changed and
     /// requires a redraw.
-    pub fn down(&mut self) -> bool {
-        if self.selected + 1 < self.elements.len() {
-            self.selected += 1;
+    pub fn down(&mut self, step: usize) -> bool {
+        if self.selected.saturating_add(step) < self.elements.len() {
+            self.selected = self.selected.saturating_add(step);
             true
         } else {
-            false
+            if self.selected + 1 == self.elements.len() {
+                false
+            } else {
+                self.selected = self.elements.len().saturating_sub(1);
+                true
+            }
         }
     }
 
@@ -488,7 +506,7 @@ impl DirPanel {
             // bot = min(max-items, selected + height / 2)
             // scroll = min(0, bot - (height + 1))
             //
-            let bot = self.elements.len().min(self.selected + height as usize / 2) + 1;
+            let bot = self.elements.len().min(self.selected + height as usize / 2);
             bot.saturating_sub(height as usize)
         } else {
             0
