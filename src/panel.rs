@@ -501,6 +501,9 @@ impl DirPanel {
             }
             selected += 1;
         }
+        if selected == elements.len() {
+            selected = elements.len().saturating_sub(1);
+        }
         Ok(DirPanel {
             elements,
             selected,
@@ -560,10 +563,10 @@ impl DirPanel {
         self.selected().map(|elem| elem.path())
     }
 
-    /// Returns a reference to the path of the panel.
-    pub fn path(&self) -> &Path {
-        self.path.as_path()
-    }
+    // /// Returns a reference to the path of the panel.
+    // pub fn path(&self) -> &Path {
+    //     self.path.as_path()
+    // }
 
     /// Returns a reference to the selected [`DirElem`].
     ///
