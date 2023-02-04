@@ -165,12 +165,11 @@ impl CommandParser {
                     return command.clone();
                 }
             }
-            _ => {
-                if let Some(command) = self.mod_commands.get(&event) {
-                    self.buffer.clear();
-                    return command.clone();
-                }
-            }
+            _ => {}
+        }
+        if let Some(command) = self.mod_commands.get(&event) {
+            self.buffer.clear();
+            return command.clone();
         }
         Command::None
     }

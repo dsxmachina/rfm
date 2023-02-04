@@ -109,8 +109,8 @@ async fn main() -> Result<()> {
 
                         if redraw {
                             // selected_path = content_mid[position_mid].path().into();
-                            // stdout.queue(Clear(ClearType::All))?;
                             panels.draw(&mut stdout)?;
+                            stdout.queue(cursor::Hide)?;
                             stdout.flush()?;
                         }
                     },

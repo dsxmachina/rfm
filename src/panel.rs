@@ -2,6 +2,7 @@ use cached::{cached_result, SizedCache};
 use crossterm::{
     cursor, queue,
     style::{self, Print, PrintStyledContent, Stylize},
+    terminal::{Clear, ClearType},
     Result,
 };
 use notify_rust::Notification;
@@ -13,6 +14,7 @@ use std::{
     mem,
     ops::Range,
     path::{Path, PathBuf},
+    process::Stdio,
 };
 
 use crate::commands::Movement;
@@ -217,6 +219,7 @@ fn print_header<P: AsRef<Path>>(stdout: &mut Stdout, path: P) -> Result<()> {
     queue!(
         stdout,
         cursor::MoveTo(0, 0),
+        Clear(ClearType::CurrentLine),
         style::PrintStyledContent(prompt.dark_green().bold()),
         style::Print(" "),
         style::PrintStyledContent(prefix.to_string().dark_blue().bold()),
@@ -346,9 +349,50 @@ impl MillerPanels {
                 self.right = Panel::from_path(self.mid.selected_path(), self.show_hidden)?;
                 return Ok(true);
             } else {
+                let absolute = canonicalize(selected)?;
+                // Notification::new()
+                //     .summary(&format!("{}", absoulte.display()))
+                //     .show()
+                //     .unwrap();
+
                 // If the selected item is a file,
                 // we need to open it
                 // TODO: Implement opening
+                //
+                if let Some(ext) = absolute.extension().and_then(|ext| ext.to_str()) {
+                    match ext {
+                        "png" | "bmp" => {
+                            Notification::new()
+                                .summary(&format!("Image: {}", absolute.display()))
+                                .show()
+                                .unwrap();
+                            // Image
+                            std::process::Command::new("sxiv")
+                                .stderr(Stdio::null())
+                                .stdin(Stdio::null())
+                                .stdout(Stdio::null())
+                                .arg(absolute)
+                                .spawn()
+                                .expect("failed to run sxiv");
+                        }
+                        _ => {
+                            Notification::new()
+                                .summary(&format!("Other: {}", absolute.display()))
+                                .show()
+                                .unwrap();
+                            // Everything else with vim
+                            std::process::Command::new("nvim")
+                                .stderr(Stdio::null())
+                                .stdin(Stdio::null())
+                                .stdout(Stdio::null())
+                                .arg(absolute)
+                                .spawn()
+                                .expect("failed to run neovim")
+                                .wait()
+                                .expect("error");
+                        }
+                    }
+                }
             }
         }
         Ok(false)
