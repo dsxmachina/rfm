@@ -100,6 +100,9 @@ async fn main() -> Result<()> {
                             Command::Move(direction) => {
                                 redraw =  panels.move_cursor(direction)?;
                             }
+                            Command::ToggleHidden => {
+                                redraw = panels.toggle_hidden()?;
+                            }
                             Command::Quit => break,
                             Command::None => (),
                         }

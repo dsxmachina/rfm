@@ -101,7 +101,8 @@ cached_result! {
         let dir = read_dir(path)?;
         let mut out = Vec::new();
         for item in dir {
-            out.push(DirElem::from(item?.path()))
+            let item_path = canonicalize(item?.path())?;
+            out.push(DirElem::from(item_path))
         }
         out.sort();
         Ok(out)
@@ -159,10 +160,10 @@ enum Panel {
 }
 
 impl Panel {
-    pub fn from_path<P: AsRef<Path>>(maybe_path: Option<P>) -> Result<Panel> {
+    pub fn from_path<P: AsRef<Path>>(maybe_path: Option<P>, hidden: bool) -> Result<Panel> {
         if let Some(path) = maybe_path {
             if path.as_ref().is_dir() {
-                Ok(Panel::Dir(DirPanel::from_path(path)?))
+                Ok(Panel::Dir(DirPanel::from_path(path, hidden)?))
             } else {
                 Ok(Panel::Preview(PreviewPanel::new(path.as_ref().into())))
             }
@@ -227,24 +228,36 @@ pub struct MillerPanels {
     right: Panel,
     // Data
     ranges: Ranges,
+    // prev-path (after jump-mark)
+    show_hidden: bool,
+    // current and previous path
+    current_path: PathBuf,
 }
 
 impl MillerPanels {
     pub fn new(terminal_size: (u16, u16)) -> Result<Self> {
-        let left = DirPanel::from_parent(".")?;
-        let mid = DirPanel::from_path(".")?;
-        let right = Panel::from_path(mid.selected_path())?;
+        let show_hidden = false;
+        let left = DirPanel::from_parent(".", show_hidden)?;
+        let mid = DirPanel::from_path(".", show_hidden)?;
+        let right = Panel::from_path(mid.selected_path(), show_hidden)?;
         let ranges = Ranges::from_size(terminal_size);
         Ok(MillerPanels {
             left,
             mid,
             right,
             ranges,
+            show_hidden,
+            current_path: PathBuf::from("."),
         })
     }
 
     pub fn terminal_resize(&mut self, terminal_size: (u16, u16)) {
         self.ranges = Ranges::from_size(terminal_size);
+    }
+
+    pub fn toggle_hidden(&mut self) -> Result<bool> {
+        self.show_hidden = !self.show_hidden;
+        self.jump(self.current_path.clone())
     }
 
     pub fn move_cursor(&mut self, movement: Movement) -> Result<bool> {
@@ -265,9 +278,9 @@ impl MillerPanels {
 
     fn jump(&mut self, path: PathBuf) -> Result<bool> {
         if path.exists() {
-            self.left = DirPanel::from_parent(path.clone())?;
-            self.mid = DirPanel::from_path(path)?;
-            self.right = Panel::from_path(self.mid.selected_path())?;
+            self.left = DirPanel::from_parent(path.clone(), self.show_hidden)?;
+            self.mid = DirPanel::from_path(path, self.show_hidden)?;
+            self.right = Panel::from_path(self.mid.selected_path(), self.show_hidden)?;
             Ok(true)
         } else {
             Ok(false)
@@ -277,7 +290,7 @@ impl MillerPanels {
     fn up(&mut self, step: usize) -> Result<bool> {
         if self.mid.up(step) {
             // Change the other panels aswell
-            self.right = Panel::from_path(self.mid.selected_path())?;
+            self.right = Panel::from_path(self.mid.selected_path(), self.show_hidden)?;
             Ok(true)
         } else {
             Ok(false)
@@ -287,7 +300,7 @@ impl MillerPanels {
     fn down(&mut self, step: usize) -> Result<bool> {
         if self.mid.down(step) {
             // Change the other panels aswell
-            self.right = Panel::from_path(self.mid.selected_path())?;
+            self.right = Panel::from_path(self.mid.selected_path(), self.show_hidden)?;
             Ok(true)
         } else {
             Ok(false)
@@ -317,7 +330,7 @@ impl MillerPanels {
                     );
                 }
                 // Recreate right panel
-                self.right = Panel::from_path(self.mid.selected_path())?;
+                self.right = Panel::from_path(self.mid.selected_path(), self.show_hidden)?;
                 return Ok(true);
             } else {
                 // If the selected item is a file,
@@ -348,7 +361,7 @@ impl MillerPanels {
 
         // Create left panel from ancestor of selcted path
         if let Some(path) = self.mid.selected_path().map(|p| p.parent()).flatten() {
-            self.left = DirPanel::from_parent(path)?;
+            self.left = DirPanel::from_parent(path, self.show_hidden)?;
         } else {
             self.left = DirPanel::empty();
         }
@@ -406,13 +419,24 @@ impl DirPanel {
     /// If the content of the directory could not be obtained
     /// (due to insufficient permissions e.g.),
     /// and empty panel is created
-    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self> {
+    pub fn from_path<P: AsRef<Path>>(path: P, hidden: bool) -> Result<Self> {
+        let path = canonicalize(path.as_ref())?;
         // Notification::new()
         //     .summary("FromPath:")
-        //     .body(&format!("{}", path.as_ref().display()))
+        //     .body(&format!("{}", path.display()))
         //     .show()
         //     .unwrap();
-        let elements = directory_content(path.as_ref().into()).unwrap_or_default();
+        let elements = directory_content(path.into())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| {
+                if let Some(filename) = e.path().file_name().and_then(|f| f.to_str()) {
+                    !filename.starts_with(".") || hidden
+                } else {
+                    true
+                }
+            })
+            .collect();
         Ok(DirPanel {
             elements,
             selected: 0,
@@ -425,7 +449,7 @@ impl DirPanel {
     /// If the content of the directory could not be obtained
     /// (due to insufficient permissions e.g.),
     /// and empty panel is created
-    pub fn from_parent<P: AsRef<Path>>(path: P) -> Result<Self> {
+    pub fn from_parent<P: AsRef<Path>>(path: P, hidden: bool) -> Result<Self> {
         let path = canonicalize(path.as_ref())?;
         if let Some(parent) = path.parent() {
             // Notification::new()
@@ -437,7 +461,17 @@ impl DirPanel {
             //     ))
             //     .show()
             //     .unwrap();
-            let elements = directory_content(parent.into()).unwrap_or_default();
+            let elements = directory_content(parent.into())
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|e| {
+                    if let Some(filename) = e.path().file_name().and_then(|f| f.to_str()) {
+                        !filename.starts_with(".") || hidden
+                    } else {
+                        true
+                    }
+                })
+                .collect::<Vec<DirElem>>();
             let mut selected = 0;
             for elem in elements.iter() {
                 if elem.path() == path {

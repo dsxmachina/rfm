@@ -22,7 +22,7 @@ impl From<&str> for ExpandedPath {
             string = string.replace("~", &home);
         }
         // TODO: Extract environment variables
-        //
+
         ExpandedPath(string.into())
     }
 }
@@ -57,6 +57,7 @@ pub enum Movement {
 #[derive(Debug, Clone)]
 pub enum Command {
     Move(Movement),
+    ToggleHidden,
     Quit,
     None,
 }
@@ -91,6 +92,9 @@ impl CommandParser {
         key_commands.insert("gp", Command::Move(Movement::JumpTo("~/Projekte".into())));
         key_commands.insert("gs", Command::Move(Movement::JumpTo("~/.scripts".into())));
 
+        // Toggle hidden files
+        key_commands.insert("zh", Command::ToggleHidden);
+
         // Quit
         key_commands.insert("q", Command::Quit);
 
@@ -116,6 +120,12 @@ impl CommandParser {
         mod_commands.insert(
             KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
             Command::Move(Movement::HalfPageBackward),
+        );
+
+        // Toggle hidden (backspace)
+        mod_commands.insert(
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            Command::ToggleHidden,
         );
 
         CommandParser {
