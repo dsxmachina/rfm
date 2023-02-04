@@ -1,13 +1,16 @@
+use cached::{cached_result, SizedCache};
 use crossterm::{
     cursor, queue,
     style::{self, PrintStyledContent, Stylize},
     Result,
 };
+use notify_rust::Notification;
 use pad::PadStr;
 use std::{
     cmp::Ordering,
     fs::{canonicalize, read_dir},
     io::Stdout,
+    mem,
     ops::Range,
     path::{Path, PathBuf},
 };
@@ -83,15 +86,18 @@ impl PartialOrd for DirElem {
     }
 }
 
-fn directory_content<P: AsRef<Path>>(path: P) -> Result<Vec<DirElem>> {
-    // read directory
-    let dir = read_dir(path)?;
-    let mut out = Vec::new();
-    for item in dir {
-        out.push(DirElem::from(item?.path()))
+cached_result! {
+    DIRECTORY_CONTENT: SizedCache<PathBuf, Vec<DirElem>> = SizedCache::with_size(50);
+    fn directory_content(path: PathBuf) -> Result<Vec<DirElem>> = {
+        // read directory
+        let dir = read_dir(path)?;
+        let mut out = Vec::new();
+        for item in dir {
+            out.push(DirElem::from(item?.path()))
+        }
+        out.sort();
+        Ok(out)
     }
-    out.sort();
-    Ok(out)
 }
 
 struct PreviewPanel {}
@@ -266,6 +272,64 @@ impl MillerPanels {
         }
     }
 
+    pub fn right(&mut self) -> Result<bool> {
+        if let Some(selected) = self.mid.selected_path() {
+            if selected.is_dir() {
+                // If the selected item is a directory,
+                // all panels will shift to the left,
+                // and the right panel needs to be recreated:
+
+                // We do this by swapping:
+                // | l | m | r |  will become | m | r | l |
+                // swap left and mid:
+                // | m | l | r |
+                mem::swap(&mut self.left, &mut self.mid);
+                if let Panel::Dir(panel) = &mut self.right {
+                    mem::swap(&mut self.mid, panel);
+                } else {
+                    // This should not be possible!
+                    panic!(
+                        "selected item cannot be a directory while right panel is not a dir-panel"
+                    );
+                }
+                // Recreate right panel
+                self.right = Panel::from_path(self.mid.selected_path())?;
+                return Ok(true);
+            } else {
+                // If the selected item is a file,
+                // we need to open it
+                // TODO: Implement opening
+            }
+        }
+        Ok(false)
+    }
+
+    pub fn left(&mut self) -> Result<bool> {
+        // If the left panel is empty, we cannot move left:
+        if self.left.selected_path().is_none() {
+            return Ok(false);
+        }
+        // All panels will shift to the right
+        // and the left panel needs to be recreated:
+
+        // Create right dir-panel from previous mid
+        // | l | m | r |
+        self.right = Panel::Dir(self.mid.clone());
+        // | l | m | m |
+
+        // swap left and mid:
+        mem::swap(&mut self.left, &mut self.mid);
+        // | m | l | m |
+
+        // Create left panel from ancestor of selcted path
+        if let Some(path) = self.mid.selected_path().map(|p| p.parent()).flatten() {
+            self.left = DirPanel::from_parent(path)?;
+        } else {
+            self.left = DirPanel::empty();
+        }
+        Ok(true)
+    }
+
     pub fn draw(&self, stdout: &mut Stdout) -> Result<()> {
         if let Some(path) = self.mid.selected_path() {
             print_header(stdout, path)?;
@@ -308,18 +372,36 @@ struct DirPanel {
 }
 
 impl DirPanel {
+    /// Creates a dir-panel for the given path.
     pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let elements = directory_content(path)?;
+        // Notification::new()
+        //     .summary("FromPath:")
+        //     .body(&format!("{}", path.as_ref().display()))
+        //     .show()
+        //     .unwrap();
+        let elements = directory_content(path.as_ref().into())?;
         Ok(DirPanel {
             elements,
             selected: 0,
         })
     }
 
+    /// Creates a dir-panel for the parent of the given path.
+    ///
+    /// If the path has no parent, and empty dir-panel is returned.
     pub fn from_parent<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = canonicalize(path.as_ref())?;
         if let Some(parent) = path.parent() {
-            let elements = directory_content(parent)?;
+            // Notification::new()
+            //     .summary("FromParent:")
+            //     .body(&format!(
+            //         "path: {}, parent: {}",
+            //         path.display(),
+            //         parent.display()
+            //     ))
+            //     .show()
+            //     .unwrap();
+            let elements = directory_content(parent.into())?;
             let mut selected = 0;
             for elem in elements.iter() {
                 if elem.path() == path {
@@ -329,11 +411,27 @@ impl DirPanel {
             }
             Ok(DirPanel { elements, selected })
         } else {
-            todo!()
+            Ok(Self::empty())
         }
     }
 
-    // Return true if the panel has changed
+    /// Creates a dir-panel for an empty directory.
+    pub fn empty() -> Self {
+        // Notification::new()
+        //     .summary("Empty:")
+        //     .body("")
+        //     .show()
+        //     .unwrap();
+        DirPanel {
+            elements: Vec::new(),
+            selected: 0,
+        }
+    }
+
+    /// Move the selection "up" if possible.
+    ///
+    /// Returns true if the panel has changed and
+    /// requires a redraw.
     pub fn up(&mut self) -> bool {
         if self.selected > 0 {
             self.selected -= 1;
@@ -343,7 +441,10 @@ impl DirPanel {
         }
     }
 
-    // Return true if the panel has changed
+    /// Move the selection "down" if possible.
+    ///
+    /// Returns true if the panel has changed and
+    /// requires a redraw.
     pub fn down(&mut self) -> bool {
         if self.selected + 1 < self.elements.len() {
             self.selected += 1;
@@ -353,19 +454,21 @@ impl DirPanel {
         }
     }
 
-    pub fn replace(&mut self, other: DirPanel) {
-        self.elements = other.elements;
-        self.selected = other.selected;
-    }
-
+    /// Returns the selcted path of the panel.
+    ///
+    /// If the panel is empty `None` is returned.
     pub fn selected_path(&self) -> Option<&Path> {
         self.selected().map(|elem| elem.path())
     }
 
+    /// Returns a reference to the selected [`DirElem`].
+    ///
+    /// If the panel is empty `None` is returned.
     pub fn selected(&self) -> Option<&DirElem> {
         self.elements.get(self.selected)
     }
 
+    /// Draws the panel in its current state.
     pub fn draw(
         &self,
         stdout: &mut Stdout,
@@ -398,9 +501,3 @@ impl DirPanel {
         Ok(())
     }
 }
-
-// #[test]
-// fn test_selection() {
-//     let v: Vec<u8> = Vec::new();
-//     assert!(v.get(1).is_none());
-// }

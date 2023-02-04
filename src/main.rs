@@ -109,8 +109,10 @@ async fn main() -> Result<()> {
                                         redraw = panels.down()?;
                                     }
                                     Movement::Left => {
+                                        redraw = panels.left()?;
                                     }
                                     Movement::Right => {
+                                        redraw = panels.right()?;
                                     }
                                 }
                             }
@@ -125,20 +127,6 @@ async fn main() -> Result<()> {
                             // selected_path = content_mid[position_mid].path().into();
                             stdout.queue(Clear(ClearType::All))?;
                             panels.draw(&mut stdout)?;
-                            // print_header(&mut stdout, &selected_path)?;
-                            // let (sx, sy) = terminal::size()?;
-                            // let x0 = 1;
-                            // let x1 = (1 * sx / 8).saturating_sub(1);
-                            // let x2 = (sx / 2).saturating_sub(1);
-                            // print_panel(&mut stdout, content_left.iter(), position_left, x0, x1, sy)?;
-                            // print_panel(&mut stdout, content_mid.iter(), position_mid, x1, x2, sy)?;
-                            // if selected_path.is_dir() {
-                            //     content_right = directory_content(&selected_path).await?;
-                            //     print_panel(&mut stdout, content_right.iter(), 0, x2, sx, sy)?;
-                            // } else {
-                            //     print_preview(&mut stdout, x2, sy)?;
-                            // }
-                            // Flush buffer in the end
                             stdout.flush()?;
                         }
                     },

@@ -6,9 +6,11 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+cached = "0.42.0"
 crossterm = { version = "0.26.0", features = ["event-stream"] }
 futures = "0.3.26"
 futures-timer = "3.0.2"
+notify-rust = "4.7.0"
 pad = "0.1.6"
 thiserror = "1.0.38"
 tokio = { version = "1.25.0", features = ["full"] }
