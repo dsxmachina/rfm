@@ -1,11 +1,45 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use patricia_tree::PatriciaMap;
 
 const CTRL_C: KeyEvent = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
+pub struct ExpandedPath(PathBuf);
+
+impl From<&str> for ExpandedPath {
+    fn from(path: &str) -> Self {
+        let mut string = path.to_string();
+
+        // Expand "~"
+        if string.starts_with("~") {
+            // Replace with users home directory
+            let home = std::env::var("HOME").unwrap_or_default();
+            string = string.replace("~", &home);
+        }
+        // TODO: Extract environment variables
+        //
+        ExpandedPath(string.into())
+    }
+}
+
+impl AsRef<Path> for ExpandedPath {
+    fn as_ref(&self) -> &Path {
+        self.0.as_path()
+    }
+}
+
+impl From<ExpandedPath> for PathBuf {
+    fn from(path: ExpandedPath) -> Self {
+        path.0
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum Movement {
     Up,
     Down,
@@ -13,11 +47,14 @@ pub enum Movement {
     Right,
     Top,
     Bottom,
-    Forward,
-    Backward,
+    PageForward,
+    PageBackward,
+    HalfPageForward,
+    HalfPageBackward,
+    JumpTo(ExpandedPath),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum Command {
     Move(Movement),
     Quit,
@@ -44,11 +81,18 @@ impl CommandParser {
         key_commands.insert("gg", Command::Move(Movement::Top));
         key_commands.insert("G", Command::Move(Movement::Bottom));
 
+        // Jump to something
+        // TODO: We need a mechanism to automatically expand "~" to home directory of user at runtime.
+        key_commands.insert("gh", Command::Move(Movement::JumpTo("~".into())));
+        key_commands.insert("gr", Command::Move(Movement::JumpTo("/".into())));
+        key_commands.insert("gc", Command::Move(Movement::JumpTo("~/.config".into())));
+
+        // custom jumps
+        key_commands.insert("gp", Command::Move(Movement::JumpTo("~/Projekte".into())));
+        key_commands.insert("gs", Command::Move(Movement::JumpTo("~/.scripts".into())));
+
         // Quit
         key_commands.insert("q", Command::Quit);
-
-        // Add something complex just to test
-        key_commands.insert("asdf", Command::Quit);
 
         // --- Commands for modifier + key:
         let mut mod_commands = HashMap::new();
@@ -59,11 +103,19 @@ impl CommandParser {
         // Advanced movement
         mod_commands.insert(
             KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
-            Command::Move(Movement::Forward),
+            Command::Move(Movement::PageForward),
         );
         mod_commands.insert(
             KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
-            Command::Move(Movement::Backward),
+            Command::Move(Movement::PageBackward),
+        );
+        mod_commands.insert(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            Command::Move(Movement::HalfPageForward),
+        );
+        mod_commands.insert(
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            Command::Move(Movement::HalfPageBackward),
         );
 
         CommandParser {

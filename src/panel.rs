@@ -255,8 +255,22 @@ impl MillerPanels {
             Movement::Right => self.right(),
             Movement::Top => self.up(usize::MAX),
             Movement::Bottom => self.down(usize::MAX),
-            Movement::Forward => self.down(self.ranges.height() as usize / 2),
-            Movement::Backward => self.up(self.ranges.height() as usize / 2),
+            Movement::HalfPageForward => self.down(self.ranges.height() as usize / 2),
+            Movement::HalfPageBackward => self.up(self.ranges.height() as usize / 2),
+            Movement::PageForward => self.down(self.ranges.height() as usize),
+            Movement::PageBackward => self.up(self.ranges.height() as usize),
+            Movement::JumpTo(path) => self.jump(path.into()),
+        }
+    }
+
+    fn jump(&mut self, path: PathBuf) -> Result<bool> {
+        if path.exists() {
+            self.left = DirPanel::from_parent(path.clone())?;
+            self.mid = DirPanel::from_path(path)?;
+            self.right = Panel::from_path(self.mid.selected_path())?;
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
 
