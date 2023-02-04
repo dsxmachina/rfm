@@ -122,9 +122,14 @@ impl PreviewPanel {
         x_range: Range<u16>,
         y_range: Range<u16>,
     ) -> Result<()> {
-        let width = x_range.end - x_range.start;
-        let preview_string =
-            format!("Preview of {}", self.path.display()).with_exact_width(width as usize);
+        let width = x_range.end.saturating_sub(x_range.start + 1);
+        let path = self
+            .path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .and_then(|s| Some(s.to_string()))
+            .unwrap_or_default();
+        let preview_string = format!("Preview of {}", path).with_exact_width(width as usize);
         queue!(
             stdout,
             cursor::MoveTo(x_range.start + 1, y_range.start),
@@ -511,7 +516,7 @@ impl DirPanel {
             )?;
             idx += 1;
         }
-        for y in idx..y_range.end {
+        for y in y_range.start + idx..y_range.end {
             queue!(
                 stdout,
                 cursor::MoveTo(x_range.start, y),
