@@ -1,6 +1,8 @@
 use cached::{cached_result, SizedCache};
 use crossterm::{
-    cursor, queue,
+    cursor,
+    event::EventStream,
+    queue,
     style::{self, Print, PrintStyledContent, Stylize},
     terminal::{Clear, ClearType},
     Result,
@@ -20,6 +22,11 @@ use std::{
 
 use crate::commands::Movement;
 
+/// An element of a directory.
+///
+/// Shorthand for saving a path together whith what we want to display.
+/// E.g. a file with path `/home/user/something.txt` should only be
+/// displayed as `something.txt`.
 #[derive(Debug, Clone, PartialEq, Eq, Ord)]
 pub struct DirElem {
     name: String,
@@ -277,6 +284,8 @@ pub struct MillerPanels {
 
 impl MillerPanels {
     pub fn new(terminal_size: (u16, u16)) -> Result<Self> {
+        // TODO: Move the terminal initialization here
+
         let show_hidden = false;
         let left = DirPanel::from_parent(".", show_hidden)?;
         let mid = DirPanel::from_path(".", show_hidden)?;
