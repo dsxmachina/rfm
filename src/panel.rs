@@ -361,6 +361,10 @@ impl MillerPanels {
         })
     }
 
+    pub fn selected_path(&self) -> Option<&Path> {
+        self.mid.selected_path()
+    }
+
     pub fn terminal_resize(&mut self, terminal_size: (u16, u16)) -> Result<()> {
         self.ranges = Ranges::from_size(terminal_size);
         self.draw()
@@ -500,28 +504,30 @@ impl MillerPanels {
     fn right(&mut self) -> PanelAction {
         if let Some(selected) = self.mid.selected_path() {
             if selected.is_dir() {
-                // Remember path
-                self.prev = self.mid.path.clone();
+                // TODO: Make this dumb again to get rid of some pitfalls
+                PanelAction::UpdateAll(selected.to_path_buf())
+                // // Remember path
+                // self.prev = self.mid.path.clone();
 
-                // If the selected item is a directory,
-                // all panels will shift to the left,
-                // and the right panel needs to be recreated:
+                // // If the selected item is a directory,
+                // // all panels will shift to the left,
+                // // and the right panel needs to be recreated:
 
-                // We do this by swapping:
-                // | l | m | r |  will become | m | r | l |
-                // swap left and mid:
-                // | m | l | r |
-                mem::swap(&mut self.left, &mut self.mid);
-                if let Panel::Dir(panel) = &mut self.right {
-                    mem::swap(&mut self.mid, panel);
-                } else {
-                    // This should not be possible!
-                    panic!(
-                        "selected item cannot be a directory while right panel is not a dir-panel"
-                    );
-                }
-                // Recreate right panel
-                PanelAction::UpdatePreview(self.mid.selected_path_owned())
+                // // We do this by swapping:
+                // // | l | m | r |  will become | m | r | l |
+                // // swap left and mid:
+                // // | m | l | r |
+                // mem::swap(&mut self.left, &mut self.mid);
+                // if let Panel::Dir(panel) = &mut self.right {
+                //     mem::swap(&mut self.mid, panel);
+                // } else {
+                //     // This should not be possible!
+                //     panic!(
+                //         "selected item cannot be a directory while right panel is not a dir-panel"
+                //     );
+                // }
+                // // Recreate right panel
+                // PanelAction::UpdatePreview(self.mid.selected_path_owned())
             } else {
                 PanelAction::Open(selected.to_path_buf())
             }

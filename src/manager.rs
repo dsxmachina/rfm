@@ -297,6 +297,13 @@ impl PanelManager {
         // Initialize panels
         self.panels.draw()?;
 
+        if let Some(path) = self.panels.selected_path() {
+            self.content_tx
+                .send((path.to_path_buf(), self.panels.state_right()))
+                .await
+                .expect("Receiver dropped or closed");
+        }
+
         loop {
             let event_reader = self.event_reader.next().fuse();
             tokio::select! {
@@ -312,6 +319,14 @@ impl PanelManager {
                     //     .body(&format!("{}", panel.path().display()))
                     //     .show()
                     //     .unwrap();
+                    if let Select::Mid = &state.panel {
+                        if let Some(path) = panel.selected_path() {
+                            self.content_tx
+                                .send((path.to_path_buf(), self.panels.state_right()))
+                                .await
+                                .expect("Receiver dropped or closed");
+                        }
+                    }
                     self.panels.update_panel(panel, state);
                     self.panels.draw()?;
                 }
