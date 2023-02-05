@@ -4,6 +4,7 @@ use crate::{
     panel::MillerPanels,
 };
 use commands::CommandParser;
+use content::SharedCache;
 use crossterm::{
     cursor::{self, position},
     event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers},
@@ -22,8 +23,10 @@ use std::{
     path::{Path, PathBuf},
 };
 use thiserror::Error;
+use tokio::sync::mpsc;
 
 mod commands;
+mod content;
 mod manager;
 mod panel;
 
@@ -31,18 +34,32 @@ mod panel;
 async fn main() -> Result<()> {
     enable_raw_mode()?;
 
-    let manager = PanelManager::new()?;
-    if let Err(e) = manager.run().await {
-        // Clear everything
-        let mut stdout = stdout();
-        stdout
-            .queue(Clear(ClearType::All))?
-            .queue(cursor::MoveTo(0, 0))?
-            .queue(cursor::Show)?
-            .flush()?;
-        // Print error
-        eprintln!("Error: {e}");
-    }
+    let cache = SharedCache::with_size(50);
+
+    let (dir_tx, dir_rx) = mpsc::channel(32);
+    let (preview_tx, preview_rx) = mpsc::channel(32);
+    let (content_tx, content_rx) = mpsc::channel(32);
+
+    let content_manager = content::Manager::new(cache.clone(), content_rx, dir_tx, preview_tx);
+    let content_handle = tokio::spawn(content_manager.run());
+
+    let panel_manager = PanelManager::new(cache, dir_rx, preview_rx, content_tx)?;
+    let panel_handle = tokio::spawn(panel_manager.run());
+
+    // if let Err(e) = manager.run().await {
+    //     // Clear everything
+    //     let mut stdout = stdout();
+    //     stdout
+    //         .queue(Clear(ClearType::All))?
+    //         .queue(cursor::MoveTo(0, 0))?
+    //         .queue(cursor::Show)?
+    //         .flush()?;
+    //     // Print error
+    //     eprintln!("Error: {e}");
+    // }
+
+    panel_handle.await??;
+    content_handle.await?;
 
     // Be a good citizen, cleanup
     disable_raw_mode()

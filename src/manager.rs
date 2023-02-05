@@ -4,6 +4,7 @@ use std::{
     io::{stdout, Stdout, Write},
     path::{Path, PathBuf},
     process::Stdio,
+    time::Duration,
 };
 
 use cached::{Cached, SizedCache};
@@ -14,12 +15,16 @@ use crossterm::{
     QueueableCommand, Result,
 };
 use futures::{FutureExt, StreamExt};
-use tokio::fs::read_dir;
+use notify_rust::Notification;
 use tokio::task::JoinHandle;
+use tokio::{fs::read_dir, sync::mpsc};
 
 use crate::{
     commands::{Command, CommandParser},
-    panel::{DirElem, DirPanel, MillerPanels, Panel, PanelChange, PreviewPanel},
+    content::SharedCache,
+    panel::{
+        DirElem, DirPanel, MillerPanels, Panel, PanelAction, PanelState, PreviewPanel, Select,
+    },
 };
 
 /// Reads the content of a directory asynchronously
@@ -36,46 +41,49 @@ async fn panel_content(path: PathBuf, panel: Select) -> Result<(Vec<DirElem>, Se
     Ok((out, panel))
 }
 
-pub enum Select {
-    Left,
-    Mid,
-    Right,
-}
-
 // Unifies the management of key-events,
 // redrawing and querying content.
 //
 pub struct PanelManager {
-    // Managed panels
+    /// Managed panels
     panels: MillerPanels,
 
-    // Event-stream from the terminal
+    /// Event-stream from the terminal
     event_reader: EventStream,
 
-    // command-parser
+    /// command-parser
     parser: CommandParser,
 
-    // Handle to the standard-output
+    /// Handle to the standard-output
     stdout: Stdout,
 
-    // Cache with directory content
-    cache: SizedCache<PathBuf, Vec<DirElem>>,
+    /// Cache with directory content
+    cache: SharedCache,
+
+    /// Receiver for incoming dir-panels
+    dir_rx: mpsc::Receiver<(DirPanel, PanelState)>,
+
+    /// Receiver for incoming preview-panels
+    prev_rx: mpsc::Receiver<(PreviewPanel, PanelState)>,
+
+    /// Sends request for new content
+    content_tx: mpsc::Sender<(PathBuf, PanelState)>,
 
     /// Weather or not to show hidden files
     show_hidden: bool,
-
-    /// Saves handles for tasks that require completion.
-    tasks: VecDeque<JoinHandle<Result<(Vec<DirElem>, Select)>>>,
 }
 
 impl PanelManager {
-    pub fn new() -> Result<Self> {
+    pub fn new(
+        cache: SharedCache,
+        dir_rx: mpsc::Receiver<(DirPanel, PanelState)>,
+        prev_rx: mpsc::Receiver<(PreviewPanel, PanelState)>,
+        content_tx: mpsc::Sender<(PathBuf, PanelState)>,
+    ) -> Result<Self> {
         let stdout = stdout();
         let event_reader = EventStream::new();
         let parser = CommandParser::new();
-        let mut panels = MillerPanels::new()?;
-        let cache = SizedCache::with_size(100);
-        panels.draw()?;
+        let panels = MillerPanels::new()?;
 
         Ok(PanelManager {
             panels,
@@ -83,37 +91,23 @@ impl PanelManager {
             parser,
             stdout,
             cache,
+            dir_rx,
+            prev_rx,
+            content_tx,
             show_hidden: false,
-            tasks: VecDeque::new(),
         })
     }
 
     fn parse(&mut self, path: PathBuf, panel: Select) {
         let result = tokio::spawn(panel_content(path.clone(), panel));
-        self.tasks.push_back(result);
-
-        // match result.await {
-        //     Ok(Ok(elements)) => {
-        //         self.cache.cache_set(path, elements.clone());
-        //         elements
-        //     }
-        //     Ok(Err(_)) => {
-        //         // TODO: Save error somewhere
-        //         Vec::new()
-        //     }
-        //     Err(_) => {
-        //         // TODO: Save error somewhere
-        //         Vec::new()
-        //     }
-        // }
     }
 
-    fn panel_from_parent(&mut self, path: PathBuf) -> DirPanel {
+    fn tmp_panel_from_parent(&self, path: PathBuf) -> DirPanel {
         // Always use absolute paths
         if let Some(parent) = path.parent().and_then(|p| canonicalize(p).ok()) {
             // Lookup cache and reply with some panel
-            if let Some(elements) = self.cache.cache_get(&path) {
-                DirPanel::with_selection(elements.clone(), parent, Some(path.as_path()))
+            if let Some(elements) = self.cache.get(&path) {
+                DirPanel::with_selection(elements, parent, path.as_path())
             } else {
                 DirPanel::loading(path)
             }
@@ -122,12 +116,12 @@ impl PanelManager {
         }
     }
 
-    fn panel_from_path(&mut self, path: PathBuf) -> DirPanel {
+    fn tmp_panel_from_path(&self, path: PathBuf) -> DirPanel {
         // Always use absolute paths
         if let Some(path) = canonicalize(path).ok() {
             // Lookup cache and reply with some panel
-            if let Some(elements) = self.cache.cache_get(&path) {
-                DirPanel::new(elements.clone(), path)
+            if let Some(elements) = self.cache.get(&path) {
+                DirPanel::new(elements, path)
             } else {
                 DirPanel::loading(path)
             }
@@ -136,11 +130,11 @@ impl PanelManager {
         }
     }
 
-    fn preview_panel<P: AsRef<Path>>(&mut self, selection: Option<P>) -> Panel {
+    fn tmp_preview_panel<P: AsRef<Path>>(&self, selection: Option<P>) -> Panel {
         if let Some(path) = selection {
             let path = path.as_ref();
             if path.is_dir() {
-                Panel::Dir(self.panel_from_path(path.into()))
+                Panel::Dir(self.tmp_panel_from_path(path.into()))
             } else {
                 Panel::Preview(PreviewPanel::new(path.into()))
             }
@@ -149,102 +143,118 @@ impl PanelManager {
         }
     }
 
-    async fn update_left(&mut self, path: PathBuf) -> Result<()> {
-        // Prepare the temporary panel
-        let left = self.panel_from_parent(path.clone());
-        self.panels.update_left(left)?;
-        // Schedule parsing the directory
-        if let Some(parent) = path.parent() {
-            self.parse(parent.to_path_buf(), Select::Left);
-        }
+    // async fn update_left(&mut self, path: PathBuf) -> Result<()> {
+    //     // Prepare the temporary panel
+    //     let left = self.panel_from_parent(path.clone());
+    //     self.panels.update_left(left)?;
+    //     // Schedule parsing the directory
+    //     if let Some(parent) = path.parent() {
+    //         self.parse(parent.to_path_buf(), Select::Left);
+    //     }
+    //     Ok(())
+    // }
 
-        // // Then the one that will replace it
-        // if let Some(parent) = path.parent() {
-        //     let left_elements =
-        //     self.panels.update_left(DirPanel::with_selection(
-        //         left_elements,
-        //         parent.to_path_buf(),
-        //         Some(path.as_path()),
-        //     ))?;
-        // } else {
-        //     // Otherwise use an empty panel
-        //     self.panels.update_left(DirPanel::empty())?;
-        // }
-        Ok(())
-    }
+    // // Update mid automatically updates the right side
+    // async fn update_mid(&mut self, path: PathBuf) -> Result<()> {
+    //     // Prepare the temporary panels
+    //     let mid = self.panel_from_path(path.clone());
+    //     let right = self.preview_panel(mid.selected_path());
+    //     self.panels.update_mid(mid)?;
+    //     self.panels.update_right(right)?;
 
-    // Update mid automatically updates the right side
-    async fn update_mid(&mut self, path: PathBuf) -> Result<()> {
-        // Prepare the temporary panels
-        let mid = self.panel_from_path(path.clone());
-        let right = self.preview_panel(mid.selected_path());
-        self.panels.update_mid(mid)?;
-        self.panels.update_right(right)?;
+    //     self.parse(path.clone(), Select::Mid);
+    //     Ok(())
+    // }
 
-        self.parse(path.clone(), Select::Mid);
-
-        // Then the updated ones that will replace them
-        // let mid_elements =
-        // let mid = DirPanel::new(mid_elements, path);
-
-        // let right = if let Some(path) = mid.selected_path() {
-        //     if path.is_dir() {
-        //         let right_elements = self.parse(path.to_path_buf()).await;
-        //         Panel::Dir(DirPanel::new(right_elements, path.to_path_buf()))
-        //     } else {
-        //         Panel::Preview(PreviewPanel::new(path.to_path_buf()))
-        //     }
-        // } else {
-        //     Panel::Empty
-        // };
-
-        // self.panels.update_mid(mid)?;
-        // self.panels.update_right(right)?;
-
-        Ok(())
-    }
-
-    async fn update_right<P: AsRef<Path>>(&mut self, maybe_path: Option<P>) -> Result<()> {
-        // Prepare the temporary panels
-        let right = self.preview_panel(maybe_path.as_ref().clone());
-        self.panels.update_right(right)?;
-        if let Some(path) = maybe_path {
-            self.parse(path.as_ref().to_path_buf(), Select::Right);
-        }
-        // // Then the updated ones that will replace them
-        // let right = if let Some(path) = maybe_path {
-        //     let path = path.as_ref();
-        //     if path.is_dir() {
-        //         let right_elements = self.parse(path.to_path_buf()).await;
-        //         Panel::Dir(DirPanel::new(right_elements, path.to_path_buf()))
-        //     } else {
-        //         Panel::Preview(PreviewPanel::new(path.to_path_buf()))
-        //     }
-        // } else {
-        //     Panel::Empty
-        // };
-        // self.panels.update_right(right)?;
-        Ok(())
-    }
+    // async fn update_right<P: AsRef<Path>>(&mut self, maybe_path: Option<P>) -> Result<()> {
+    //     // Prepare the temporary panels
+    //     let right = self.preview_panel(maybe_path.as_ref().clone());
+    //     self.panels.update_right(right)?;
+    //     if let Some(path) = maybe_path {
+    //         self.parse(path.as_ref().to_path_buf(), Select::Right);
+    //     }
+    //     Ok(())
+    // }
 
     /// Immediately response with some panel (e.g. from the cache, or an empty one),
     /// and then trigger a new parse of the filesystem under the hood.
-    async fn update_panels(&mut self, change: PanelChange) -> Result<()> {
+    async fn update_panels(&mut self, change: PanelAction) -> Result<()> {
         match change {
-            PanelChange::Preview(maybe_path) => {
-                self.update_right(maybe_path).await?;
+            PanelAction::UpdatePreview(maybe_path) => {
+                let right = self.tmp_preview_panel(maybe_path);
+                let path = right.path();
+                self.panels.update_preview(
+                    right,
+                    PanelState {
+                        state_cnt: self.panels.state_right().state_cnt + 1,
+                        panel: Select::Right,
+                    },
+                );
+                if let Some(path) = path {
+                    self.content_tx
+                        .send((path, self.panels.state_right()))
+                        .await
+                        .expect("Receiver dropped or closed");
+                }
             }
-            PanelChange::All(path) => {
-                self.update_left(path.clone()).await?;
-                self.update_mid(path).await?;
+            PanelAction::UpdateAll(path) => {
+                // Update left
+                let left = self.tmp_panel_from_parent(path.clone());
+                let mid = self.tmp_panel_from_path(path.clone());
+                let right = self.tmp_preview_panel(mid.selected_path());
+
+                let left_path = left.path().to_path_buf();
+                self.panels.update_panel(
+                    left,
+                    PanelState {
+                        state_cnt: self.panels.state_left().state_cnt + 1,
+                        panel: Select::Left,
+                    },
+                );
+                self.content_tx
+                    .send((left_path, self.panels.state_left()))
+                    .await
+                    .expect("Receiver dropped or closed");
+
+                self.panels.update_panel(
+                    mid,
+                    PanelState {
+                        state_cnt: self.panels.state_mid().state_cnt + 1,
+                        panel: Select::Mid,
+                    },
+                );
+                self.content_tx
+                    .send((path, self.panels.state_mid()))
+                    .await
+                    .expect("Receiver dropped or closed");
+
+                self.panels.update_preview(
+                    right,
+                    PanelState {
+                        state_cnt: self.panels.state_right().state_cnt + 1,
+                        panel: Select::Right,
+                    },
+                );
             }
-            PanelChange::Left(path) => {
-                self.update_left(path).await?;
+            PanelAction::UpdateLeft(path) => {
+                let left = self.tmp_panel_from_parent(path.clone());
+                let left_path = left.path().to_path_buf();
+                self.panels.update_panel(
+                    left,
+                    PanelState {
+                        state_cnt: self.panels.state_left().state_cnt + 1,
+                        panel: Select::Left,
+                    },
+                );
+                self.content_tx
+                    .send((left_path, self.panels.state_left()))
+                    .await
+                    .expect("Receiver dropped or closed");
             }
-            PanelChange::Open(path) => {
+            PanelAction::Open(path) => {
                 self.open(path)?;
             }
-            PanelChange::None => (),
+            PanelAction::None => (),
         }
         Ok(())
     }
@@ -289,39 +299,63 @@ impl PanelManager {
 
     pub async fn run(mut self) -> Result<()> {
         // Initialize panels
-        self.update_panels(PanelChange::All(".".into())).await?;
+        self.panels.draw()?;
+
         loop {
             let event_reader = self.event_reader.next().fuse();
-            let task_result = self.tasks.pop_front();
             tokio::select! {
-                result = task_result.unwrap() => {
-                    todo!()
+                // Check incoming new dir-panels
+                result = self.dir_rx.recv() => {
+                    // Shutdown if sender has been dropped
+                    if result.is_none() {
+                        break;
+                    }
+                    let (panel, state) = result.unwrap();
+                    Notification::new()
+                        .summary("incoming-dir-content")
+                        .body(&format!("{}", panel.path().display()))
+                        .show()
+                        .unwrap();
+                    self.panels.update_panel(panel, state);
+                    self.panels.draw()?;
                 }
-                maybe_event = event_reader => {
-                    match maybe_event {
-                        Some(Ok(event)) => {
-                            if let Event::Key(key_event) = event {
-                                match self.parser.add_event(key_event) {
-                                    Command::Move(direction) => {
-                                        let change = self.panels.move_cursor(direction);
-                                        self.update_panels(change).await?;
-                                    }
-                                    Command::ToggleHidden => {
-                                        self.panels.toggle_hidden()?;
-                                    }
-                                    Command::Quit => break,
-                                    Command::None => (),
-                                }
+                // Check incoming new preview-panels
+                result = self.prev_rx.recv() => {
+                    // Shutdown if sender has been dropped
+                    if result.is_none() {
+                        break;
+                    }
+                    let (preview, panel_state) = result.unwrap();
+                    Notification::new()
+                        .summary("incoming-preview")
+                        .show()
+                        .unwrap();
+                    self.panels.update_preview(Panel::Preview(preview), panel_state);
+                    self.panels.draw()?;
+                }
+                // Check incoming new events
+                result = event_reader => {
+                    // Shutdown if reader has been dropped
+                    if result.is_none() {
+                        break;
+                    }
+                    let event = result.unwrap()?;
+                    if let Event::Key(key_event) = event {
+                        match self.parser.add_event(key_event) {
+                            Command::Move(direction) => {
+                                let change = self.panels.move_cursor(direction);
+                                self.update_panels(change).await?;
                             }
-
-                            if let Event::Resize(sx, sy) = event {
-                                self.panels.terminal_resize((sx, sy))?;
+                            Command::ToggleHidden => {
+                                // TODO!
+                                // self.panels.toggle_hidden()?;
                             }
-                        },
-                        Some(Err(e)) => {
-                            println!("Error: {e}\r");
+                            Command::Quit => break,
+                            Command::None => (),
                         }
-                        None => break,
+                    }
+                    if let Event::Resize(sx, sy) = event {
+                        self.panels.terminal_resize((sx, sy))?;
                     }
                 }
             }

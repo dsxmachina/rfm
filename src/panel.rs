@@ -7,7 +7,6 @@ use crossterm::{
     terminal::{self, Clear, ClearType},
     QueueableCommand, Result,
 };
-use notify_rust::Notification;
 use pad::PadStr;
 use std::{
     cmp::Ordering,
@@ -21,6 +20,21 @@ use std::{
 };
 
 use crate::commands::Movement;
+
+/// Enum to indicate which panel is selected for the given operation
+#[derive(Debug, Clone)]
+pub enum Select {
+    Left,
+    Mid,
+    Right,
+}
+
+/// State of a panel. Is used to avoid updating the panel with "old" data.
+#[derive(Debug, Clone)]
+pub struct PanelState {
+    pub state_cnt: u64,
+    pub panel: Select,
+}
 
 /// An element of a directory.
 ///
@@ -104,21 +118,6 @@ impl PartialOrd for DirElem {
     }
 }
 
-cached_result! {
-    DIRECTORY_CONTENT: SizedCache<PathBuf, Vec<DirElem>> = SizedCache::with_size(50);
-    fn directory_content(path: PathBuf) -> Result<Vec<DirElem>> = {
-        // read directory
-        let dir = read_dir(path)?;
-        let mut out = Vec::new();
-        for item in dir {
-            let item_path = canonicalize(item?.path())?;
-            out.push(DirElem::from(item_path))
-        }
-        out.sort();
-        Ok(out)
-    }
-}
-
 pub struct PreviewPanel {
     path: PathBuf,
 }
@@ -175,7 +174,7 @@ pub enum Panel {
 }
 
 impl Panel {
-    pub fn from_path<P: AsRef<Path>>(maybe_path: Option<P>, hidden: bool) -> Result<Panel> {
+    pub fn from_path<P: AsRef<Path>>(maybe_path: Option<P>) -> Result<Panel> {
         if let Some(path) = maybe_path {
             if path.as_ref().is_dir() {
                 Ok(Panel::Dir(DirPanel::empty()))
@@ -189,6 +188,14 @@ impl Panel {
 
     pub fn empty() -> Panel {
         Panel::Empty
+    }
+
+    pub fn path(&self) -> Option<PathBuf> {
+        match self {
+            Panel::Dir(panel) => Some(panel.path.clone()),
+            Panel::Preview(panel) => Some(panel.path.clone()),
+            Panel::Empty => None,
+        }
     }
 }
 
@@ -274,21 +281,21 @@ fn print_footer(stdout: &mut Stdout, mid: &DirPanel, width: u16, y: u16) -> Resu
 }
 
 /// Type that indicates that one or more panels have changed.
-pub enum PanelChange {
+pub enum PanelAction {
     /// The selection of the middle panel has changed,
     /// or we have moved to the right.
     /// Anyway, we need a new preview buffer.
-    Preview(Option<PathBuf>),
+    UpdatePreview(Option<PathBuf>),
 
     /// All buffers have changed. This happens when we jump around
     /// the directories.
-    All(PathBuf),
+    UpdateAll(PathBuf),
 
     /// We have moved to the left. The middle and right panels
     /// do not need an update, but the left one does.
     /// The given path is the path of the middle panel,
     /// so we can create the left-panel with the "from-parent" method.
-    Left(PathBuf),
+    UpdateLeft(PathBuf),
 
     /// Indicate that we want to open something
     Open(PathBuf),
@@ -303,14 +310,30 @@ pub struct MillerPanels {
     left: DirPanel,
     mid: DirPanel,
     right: Panel,
+
+    // Panel state counters
+    state_cnt: (u64, u64, u64),
+
     // Data
     ranges: Ranges,
     // prev-path (after jump-mark)
     prev: PathBuf,
-    show_hidden: bool,
 
     // handle to standard-output
     stdout: Stdout,
+}
+
+/// Reads the content of a directory asynchronously
+fn dir_content(path: PathBuf) -> Result<Vec<DirElem>> {
+    // read directory
+    let mut dir = read_dir(path)?;
+    let mut out = Vec::new();
+    for item in dir {
+        let item_path = canonicalize(item?.path())?;
+        out.push(DirElem::from(item_path))
+    }
+    out.sort();
+    Ok(out)
 }
 
 impl MillerPanels {
@@ -322,17 +345,16 @@ impl MillerPanels {
             .queue(Clear(ClearType::All))?
             .queue(cursor::MoveTo(0, 0))?;
         let terminal_size = terminal::size()?;
-        let show_hidden = false;
-        let left = DirPanel::loading("..".into());
-        let mid = DirPanel::loading(".".into());
+        let left = DirPanel::new(dir_content("..".into())?, "..".into());
+        let mid = DirPanel::new(dir_content(".".into())?, ".".into());
         let right = Panel::empty();
         let ranges = Ranges::from_size(terminal_size);
         Ok(MillerPanels {
             left,
             mid,
             right,
+            state_cnt: (0, 0, 0),
             ranges,
-            show_hidden,
             prev: ".".into(),
             stdout,
         })
@@ -343,40 +365,87 @@ impl MillerPanels {
         self.draw()
     }
 
-    // TODO: Change logic here
-    pub fn toggle_hidden(&mut self) -> Result<()> {
-        self.show_hidden = !self.show_hidden;
-        // TODO: Remove
-        // self.left = DirPanel::with_selection(
-        //     self.left.path.clone(),
-        //     self.show_hidden,
-        //     self.left.selected_path(),
-        // )?;
-        // self.mid = DirPanel::with_selection(
-        //     self.mid.path.clone(),
-        //     self.show_hidden,
-        //     self.mid.selected_path(),
-        // )?;
-        // self.right = Panel::from_path(self.mid.selected_path(), self.show_hidden)?;
-        self.draw()
+    pub fn update_panel(&mut self, panel: DirPanel, panel_state: PanelState) -> PanelState {
+        let state = match panel_state.panel {
+            Select::Left => {
+                if panel_state.state_cnt > self.state_cnt.0 {
+                    self.update_left(panel)
+                } else {
+                    self.state_left()
+                }
+            }
+            Select::Mid => {
+                if panel_state.state_cnt > self.state_cnt.1 {
+                    self.update_mid(panel)
+                } else {
+                    self.state_mid()
+                }
+            }
+            Select::Right => {
+                if panel_state.state_cnt > self.state_cnt.2 {
+                    self.update_right(Panel::Dir(panel))
+                } else {
+                    self.state_right()
+                }
+            }
+        };
+        self.draw().unwrap();
+        state
     }
 
-    pub fn update_left(&mut self, panel: DirPanel) -> Result<()> {
+    /// Exclusively updates the right (preview) panel
+    pub fn update_preview(&mut self, preview: Panel, panel_state: PanelState) -> PanelState {
+        if let Select::Right = &panel_state.panel {
+            if panel_state.state_cnt > self.state_cnt.2 {
+                return self.update_right(preview);
+            }
+        }
+        self.state_right()
+    }
+
+    /// Updates the left panel and returns the updates panel-state
+    fn update_left(&mut self, panel: DirPanel) -> PanelState {
         self.left = panel;
-        self.draw()
+        self.state_cnt.0 += 1;
+        self.state_left()
     }
 
-    pub fn update_mid(&mut self, panel: DirPanel) -> Result<()> {
+    /// Updates the middle panel and returns the updates panel-state
+    fn update_mid(&mut self, panel: DirPanel) -> PanelState {
         self.mid = panel;
-        self.draw()
+        self.state_cnt.1 += 1;
+        self.state_mid()
     }
 
-    pub fn update_right(&mut self, panel: Panel) -> Result<()> {
+    /// Updates the right panel and returns the updates panel-state
+    fn update_right(&mut self, panel: Panel) -> PanelState {
         self.right = panel;
-        self.draw()
+        self.state_cnt.2 += 1;
+        self.state_right()
     }
 
-    pub fn move_cursor(&mut self, movement: Movement) -> PanelChange {
+    pub fn state_left(&self) -> PanelState {
+        PanelState {
+            state_cnt: self.state_cnt.0,
+            panel: Select::Left,
+        }
+    }
+
+    pub fn state_mid(&self) -> PanelState {
+        PanelState {
+            state_cnt: self.state_cnt.1,
+            panel: Select::Mid,
+        }
+    }
+
+    pub fn state_right(&self) -> PanelState {
+        PanelState {
+            state_cnt: self.state_cnt.2,
+            panel: Select::Right,
+        }
+    }
+
+    pub fn move_cursor(&mut self, movement: Movement) -> PanelAction {
         match movement {
             Movement::Up => self.up(1),
             Movement::Down => self.down(1),
@@ -393,17 +462,13 @@ impl MillerPanels {
         }
     }
 
-    fn jump(&mut self, path: PathBuf) -> PanelChange {
+    fn jump(&mut self, path: PathBuf) -> PanelAction {
         if path.exists() {
             // Remember path
             self.prev = self.mid.path.clone();
-            // TODO
-            // self.left = DirPanel::from_parent(path.clone(), self.show_hidden)?;
-            // self.mid = DirPanel::from_path(path, self.show_hidden)?;
-            // self.right = Panel::from_path(self.mid.selected_path(), self.show_hidden)?;
-            PanelChange::All(path)
+            PanelAction::UpdateAll(path)
         } else {
-            PanelChange::None
+            PanelAction::None
         }
     }
 
@@ -414,29 +479,24 @@ impl MillerPanels {
     //
     // We will create a "update panel" function,
     // that the manager can call, whenever a new panel is ready to be drawn.
-    fn up(&mut self, step: usize) -> PanelChange {
+    fn up(&mut self, step: usize) -> PanelAction {
         if self.mid.up(step) {
-            // Change the other panels aswell
-            // self.right = Panel::from_path(self.mid.selected_path(), self.show_hidden)?;
-            PanelChange::Preview(self.mid.selected_path_owned())
+            PanelAction::UpdatePreview(self.mid.selected_path_owned())
         } else {
-            PanelChange::None
+            PanelAction::None
         }
     }
 
-    fn down(&mut self, step: usize) -> PanelChange {
+    fn down(&mut self, step: usize) -> PanelAction {
         if self.mid.down(step) {
-            // Change the other panels aswell
-            // self.right = Panel::from_path(self.mid.selected_path(), self.show_hidden)?;
-            PanelChange::Preview(self.mid.selected_path_owned())
+            PanelAction::UpdatePreview(self.mid.selected_path_owned())
         } else {
-            PanelChange::None
+            PanelAction::None
         }
     }
 
-    // TODO: We could improve, that we don't jump into directories,
-    // where we do not have access
-    fn right(&mut self) -> PanelChange {
+    // TODO: We could improve, that we don't jump into directories where we do not have access
+    fn right(&mut self) -> PanelAction {
         if let Some(selected) = self.mid.selected_path() {
             if selected.is_dir() {
                 // Remember path
@@ -460,20 +520,19 @@ impl MillerPanels {
                     );
                 }
                 // Recreate right panel
-                // self.right = Panel::from_path(self.mid.selected_path(), self.show_hidden)?;
-                PanelChange::Preview(self.mid.selected_path_owned())
+                PanelAction::UpdatePreview(self.mid.selected_path_owned())
             } else {
-                PanelChange::Open(selected.to_path_buf())
+                PanelAction::Open(selected.to_path_buf())
             }
         } else {
-            PanelChange::None
+            PanelAction::None
         }
     }
 
-    fn left(&mut self) -> PanelChange {
+    fn left(&mut self) -> PanelAction {
         // If the left panel is empty, we cannot move left:
         if self.left.selected_path().is_none() {
-            return PanelChange::None;
+            return PanelAction::None;
         }
         // Remember path
         self.prev = self.mid.path.clone();
@@ -490,7 +549,7 @@ impl MillerPanels {
         mem::swap(&mut self.left, &mut self.mid);
         // | m | l | m |
 
-        PanelChange::Left(self.mid.path.clone())
+        PanelAction::UpdateLeft(self.mid.path.clone())
     }
 
     pub fn draw(&mut self) -> Result<()> {
@@ -562,14 +621,29 @@ impl DirPanel {
         }
     }
 
-    pub fn with_selection(
-        elements: Vec<DirElem>,
-        path: PathBuf,
-        selection: Option<&Path>,
-    ) -> DirPanel {
+    pub fn select(&mut self, selection: &Path) {
+        let mut selected = 0;
+        for elem in self.elements.iter() {
+            if elem.path() == selection {
+                break;
+            }
+            selected += 1;
+        }
+        if selected == self.elements.len() {
+            selected = self.elements.len().saturating_sub(1);
+        }
+        self.selected = selected;
+    }
+
+    pub fn path(&self) -> &Path {
+        self.path.as_path()
+    }
+
+    // TODO: Remove
+    pub fn with_selection(elements: Vec<DirElem>, path: PathBuf, selection: &Path) -> DirPanel {
         let mut selected = 0;
         for elem in elements.iter() {
-            if Some(elem.path()) == selection {
+            if elem.path() == selection {
                 break;
             }
             selected += 1;
@@ -605,82 +679,6 @@ impl DirPanel {
             loading: false,
         }
     }
-
-    // /// Creates a dir-panel for the given path.
-    // ///
-    // /// If the content of the directory could not be obtained
-    // /// (due to insufficient permissions e.g.),
-    // /// and empty panel is created
-    // pub fn from_path<P: AsRef<Path>>(path: P, hidden: bool) -> Result<Self> {
-    //     let path = canonicalize(path.as_ref())?;
-    //     let elements = directory_content(path.clone().into())
-    //         .unwrap_or_default()
-    //         .into_iter()
-    //         .filter(|e| {
-    //             if let Some(filename) = e.path().file_name().and_then(|f| f.to_str()) {
-    //                 !filename.starts_with(".") || hidden
-    //             } else {
-    //                 true
-    //             }
-    //         })
-    //         .collect();
-    //     Ok(DirPanel {
-    //         elements,
-    //         selected: 0,
-    //         path: path.into(),
-    //         loading: false,
-    //     })
-    // }
-
-    // /// Creates a dir-panel for the parent of the given path.
-    // ///
-    // /// If the path has no parent, and empty dir-panel is returned.
-    // /// If the content of the directory could not be obtained
-    // /// (due to insufficient permissions e.g.),
-    // /// and empty panel is created
-    // pub fn from_parent<P: AsRef<Path>>(path: P, hidden: bool) -> Result<Self> {
-    //     let path = canonicalize(path.as_ref())?;
-    //     if let Some(parent) = path.parent() {
-    //         Self::with_selection(parent, hidden, Some(&path))
-    //     } else {
-    //         Ok(Self::empty())
-    //     }
-    // }
-
-    // /// Creates a new DirPanel and selects the given path
-    // pub fn with_selection<P: AsRef<Path>>(
-    //     path: P,
-    //     hidden: bool,
-    //     selection: Option<&Path>,
-    // ) -> Result<Self> {
-    //     let elements = directory_content(path.as_ref().into())
-    //         .unwrap_or_default()
-    //         .into_iter()
-    //         .filter(|e| {
-    //             if let Some(filename) = e.path().file_name().and_then(|f| f.to_str()) {
-    //                 !filename.starts_with(".") || hidden
-    //             } else {
-    //                 true
-    //             }
-    //         })
-    //         .collect::<Vec<DirElem>>();
-    //     let mut selected = 0;
-    //     for elem in elements.iter() {
-    //         if Some(elem.path()) == selection {
-    //             break;
-    //         }
-    //         selected += 1;
-    //     }
-    //     if selected == elements.len() {
-    //         selected = elements.len().saturating_sub(1);
-    //     }
-    //     Ok(DirPanel {
-    //         elements,
-    //         selected,
-    //         path: path.as_ref().into(),
-    //         loading: false,
-    //     })
-    // }
 
     /// Move the selection "up" if possible.
     ///
