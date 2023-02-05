@@ -514,7 +514,8 @@ impl MillerPanels {
 
 // A DirPanel can also be empty.
 // We encode this as the vector being empty,
-// which is what we will query everytime
+// because this will return `None` as selected_path when
+// we query it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DirPanel {
     elements: Vec<DirElem>,
@@ -530,11 +531,6 @@ impl DirPanel {
     /// and empty panel is created
     pub fn from_path<P: AsRef<Path>>(path: P, hidden: bool) -> Result<Self> {
         let path = canonicalize(path.as_ref())?;
-        // Notification::new()
-        //     .summary("FromPath:")
-        //     .body(&format!("{}", path.display()))
-        //     .show()
-        //     .unwrap();
         let elements = directory_content(path.clone().into())
             .unwrap_or_default()
             .into_iter()
@@ -562,15 +558,6 @@ impl DirPanel {
     pub fn from_parent<P: AsRef<Path>>(path: P, hidden: bool) -> Result<Self> {
         let path = canonicalize(path.as_ref())?;
         if let Some(parent) = path.parent() {
-            // Notification::new()
-            //     .summary("FromParent:")
-            //     .body(&format!(
-            //         "path: {}, parent: {}",
-            //         path.display(),
-            //         parent.display()
-            //     ))
-            //     .show()
-            //     .unwrap();
             Self::with_selection(parent, hidden, Some(&path))
         } else {
             Ok(Self::empty())
@@ -613,11 +600,6 @@ impl DirPanel {
 
     /// Creates an empty dir-panel.
     pub fn empty() -> Self {
-        // Notification::new()
-        //     .summary("Empty:")
-        //     .body("")
-        //     .show()
-        //     .unwrap();
         DirPanel {
             elements: Vec::new(),
             selected: 0,
@@ -697,15 +679,6 @@ impl DirPanel {
         } else {
             0
         };
-
-        // TODO: Filter out hidden files
-        // .filter(|e| {
-        //     e.path
-        //         .file_name()
-        //         .and_then(|s| s.to_str())
-        //         .and_then(|s| Some(!s.starts_with(".")))
-        //         .unwrap_or_else(|| true)
-        // })
 
         // Then print new buffer
         let mut idx = 0 as u16;

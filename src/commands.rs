@@ -64,12 +64,17 @@ pub enum Command {
 }
 
 /// Takes the incoming key-events, and returns the corresponding command.
+///
+/// Uses a `PatriciaMap` to match patterns of keystrokes,
+/// and a normal `HashMap` to match "oneshot"-commands,
+/// that don't require any key combinations but may require a modifier.
 pub struct CommandParser {
     key_commands: PatriciaMap<Command>,
     mod_commands: HashMap<KeyEvent, Command>,
     buffer: String,
 }
 
+// TODO: Make this configurable from a config-file
 impl CommandParser {
     pub fn new() -> Self {
         // --- Commands for "normal" keys:
@@ -84,7 +89,6 @@ impl CommandParser {
         key_commands.insert("G", Command::Move(Movement::Bottom));
 
         // Jump to something
-        // TODO: We need a mechanism to automatically expand "~" to home directory of user at runtime.
         key_commands.insert("gh", Command::Move(Movement::JumpTo("~".into())));
         key_commands.insert("gr", Command::Move(Movement::JumpTo("/".into())));
         key_commands.insert("gc", Command::Move(Movement::JumpTo("~/.config".into())));
@@ -161,8 +165,10 @@ impl CommandParser {
         }
     }
 
+    /// Parse an event and return the command that is assigned to it
     pub fn add_event(&mut self, event: KeyEvent) -> Command {
         match event.modifiers {
+            // First parse for "normal" characters:
             KeyModifiers::NONE | KeyModifiers::SHIFT => {
                 // Put character into buffer
                 if let KeyCode::Char(c) = event.code {
@@ -193,6 +199,9 @@ impl CommandParser {
             }
             _ => {}
         }
+        // If we have not returned yet,
+        // always check if there is a oneshot command assigned to the
+        // incoming event.
         if let Some(command) = self.mod_commands.get(&event) {
             self.buffer.clear();
             return command.clone();
