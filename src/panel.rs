@@ -315,7 +315,12 @@ pub struct MillerPanels {
 
 impl MillerPanels {
     pub fn new() -> Result<Self> {
-        let stdout = stdout();
+        let mut stdout = stdout();
+        // Start with a clear screen
+        stdout
+            .queue(cursor::Hide)?
+            .queue(Clear(ClearType::All))?
+            .queue(cursor::MoveTo(0, 0))?;
         let terminal_size = terminal::size()?;
         let show_hidden = false;
         let left = DirPanel::loading("..".into());

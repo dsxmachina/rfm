@@ -1,7 +1,7 @@
 use std::{
     fs::canonicalize,
     io::{stdout, Stdout, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Stdio,
 };
 
@@ -13,10 +13,11 @@ use crossterm::{
     QueueableCommand, Result,
 };
 use futures::{FutureExt, StreamExt};
+use tokio::fs::read_dir;
 
 use crate::{
     commands::{Command, CommandParser},
-    panel::{DirElem, DirPanel, MillerPanels, Panel, PanelChange},
+    panel::{DirElem, DirPanel, MillerPanels, Panel, PanelChange, PreviewPanel},
 };
 
 // Unifies the management of key-events,
@@ -42,24 +43,28 @@ pub struct PanelManager {
     show_hidden: bool,
 }
 
+/// Reads the content of a directory asynchronously
+async fn directory_content(path: PathBuf) -> Result<Vec<DirElem>> {
+    // read directory
+    let mut dir = read_dir(path).await?;
+    let mut out = Vec::new();
+
+    while let Some(item) = dir.next_entry().await? {
+        let item_path = canonicalize(item.path())?;
+        out.push(DirElem::from(item_path))
+    }
+    out.sort();
+    Ok(out)
+}
+
 impl PanelManager {
     pub fn new() -> Result<Self> {
-        let mut stdout = stdout();
-        // Start with a clear screen
-        stdout
-            .queue(cursor::Hide)?
-            .queue(Clear(ClearType::All))?
-            .queue(cursor::MoveTo(0, 0))?;
-
-        let terminal_size = terminal::size()?;
+        let stdout = stdout();
         let event_reader = EventStream::new();
         let parser = CommandParser::new();
         let mut panels = MillerPanels::new()?;
         let cache = SizedCache::with_size(100);
         panels.draw()?;
-
-        // Flush buffer in the end
-        // stdout.flush()?;
 
         Ok(PanelManager {
             panels,
@@ -69,6 +74,24 @@ impl PanelManager {
             cache,
             show_hidden: false,
         })
+    }
+
+    async fn parse(&mut self, path: PathBuf) -> Vec<DirElem> {
+        let result = tokio::spawn(directory_content(path.clone()));
+        match result.await {
+            Ok(Ok(elements)) => {
+                self.cache.cache_set(path, elements.clone());
+                elements
+            }
+            Ok(Err(_)) => {
+                // TODO: Save error somewhere
+                Vec::new()
+            }
+            Err(_) => {
+                // TODO: Save error somewhere
+                Vec::new()
+            }
+        }
     }
 
     fn panel_from_parent(&mut self, path: PathBuf) -> DirPanel {
@@ -99,26 +122,103 @@ impl PanelManager {
         }
     }
 
+    fn preview_panel<P: AsRef<Path>>(&mut self, selection: Option<P>) -> Panel {
+        if let Some(path) = selection {
+            let path = path.as_ref();
+            if path.is_dir() {
+                Panel::Dir(self.panel_from_path(path.into()))
+            } else {
+                Panel::Preview(PreviewPanel::new(path.into()))
+            }
+        } else {
+            Panel::Empty
+        }
+    }
+
+    async fn update_left(&mut self, path: PathBuf) -> Result<()> {
+        // Prepare the temporary panel
+        let left = self.panel_from_parent(path.clone());
+        self.panels.update_left(left)?;
+
+        // Then the one that will replace it
+        if let Some(parent) = path.parent() {
+            let left_elements = self.parse(parent.to_path_buf()).await;
+            self.panels.update_left(DirPanel::with_selection(
+                left_elements,
+                parent.to_path_buf(),
+                Some(path.as_path()),
+            ))?;
+        } else {
+            // Otherwise use an empty panel
+            self.panels.update_left(DirPanel::empty())?;
+        }
+        Ok(())
+    }
+
+    // Update mid automatically updates the right side
+    async fn update_mid(&mut self, path: PathBuf) -> Result<()> {
+        // Prepare the temporary panels
+        let mid = self.panel_from_path(path.clone());
+        let right = self.preview_panel(mid.selected_path());
+        self.panels.update_mid(mid)?;
+        self.panels.update_right(right)?;
+
+        // Then the updated ones that will replace them
+        let mid_elements = self.parse(path.clone()).await;
+        let mid = DirPanel::new(mid_elements, path);
+
+        let right = if let Some(path) = mid.selected_path() {
+            if path.is_dir() {
+                let right_elements = self.parse(path.to_path_buf()).await;
+                Panel::Dir(DirPanel::new(right_elements, path.to_path_buf()))
+            } else {
+                Panel::Preview(PreviewPanel::new(path.to_path_buf()))
+            }
+        } else {
+            Panel::Empty
+        };
+
+        self.panels.update_mid(mid)?;
+        self.panels.update_right(right)?;
+
+        Ok(())
+    }
+
+    async fn update_right<P: AsRef<Path>>(&mut self, maybe_path: Option<P>) -> Result<()> {
+        // Prepare the temporary panels
+        let right = self.preview_panel(maybe_path.as_ref().clone());
+        self.panels.update_right(right)?;
+
+        // Then the updated ones that will replace them
+        let right = if let Some(path) = maybe_path {
+            let path = path.as_ref();
+            if path.is_dir() {
+                let right_elements = self.parse(path.to_path_buf()).await;
+                Panel::Dir(DirPanel::new(right_elements, path.to_path_buf()))
+            } else {
+                Panel::Preview(PreviewPanel::new(path.to_path_buf()))
+            }
+        } else {
+            Panel::Empty
+        };
+        self.panels.update_right(right)?;
+
+        Ok(())
+    }
+
     /// Immediately response with some panel (e.g. from the cache, or an empty one),
     /// and then trigger a new parse of the filesystem under the hood.
-    fn update_panels(&mut self, change: PanelChange) -> Result<()> {
+    async fn update_panels(&mut self, change: PanelChange) -> Result<()> {
         match change {
             PanelChange::Preview(maybe_path) => {
-                let right = Panel::from_path(maybe_path, self.show_hidden)?;
-                self.panels.update_right(right)?;
+                self.update_right(maybe_path).await?;
             }
             PanelChange::All(path) => {
-                let left = self.panel_from_parent(path.clone());
-                let mid = self.panel_from_path(path);
-                // TODO
-                let right = Panel::from_path(mid.selected_path(), self.show_hidden)?;
-                self.panels.update_left(left)?;
-                self.panels.update_mid(mid)?;
-                self.panels.update_right(right)?;
+                self.update_left(path.clone()).await?;
+                self.update_mid(path).await?;
             }
             PanelChange::Left(path) => {
-                let left = self.panel_from_parent(path.clone());
-                self.panels.update_left(left)?;
+                self.update_left(path).await?;
             }
             PanelChange::Open(path) => {
                 self.open(path)?;
@@ -167,6 +267,8 @@ impl PanelManager {
     }
 
     pub async fn run(mut self) -> Result<()> {
+        // Initialize panels
+        self.update_panels(PanelChange::All(".".into())).await?;
         loop {
             let event_reader = self.event_reader.next().fuse();
             tokio::select! {
@@ -177,7 +279,7 @@ impl PanelManager {
                                 match self.parser.add_event(key_event) {
                                     Command::Move(direction) => {
                                         let change = self.panels.move_cursor(direction);
-                                        self.update_panels(change)?;
+                                        self.update_panels(change).await?;
                                     }
                                     Command::ToggleHidden => {
                                         self.panels.toggle_hidden()?;
