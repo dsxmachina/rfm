@@ -4,7 +4,7 @@ use crossterm::{
     event::EventStream,
     queue,
     style::{self, Print, PrintStyledContent, Stylize},
-    terminal::{Clear, ClearType},
+    terminal::{self, Clear, ClearType},
     QueueableCommand, Result,
 };
 use notify_rust::Notification;
@@ -178,13 +178,17 @@ impl Panel {
     pub fn from_path<P: AsRef<Path>>(maybe_path: Option<P>, hidden: bool) -> Result<Panel> {
         if let Some(path) = maybe_path {
             if path.as_ref().is_dir() {
-                Ok(Panel::Dir(DirPanel::from_path(path, hidden)?))
+                Ok(Panel::Dir(DirPanel::empty()))
             } else {
                 Ok(Panel::Preview(PreviewPanel::new(path.as_ref().into())))
             }
         } else {
             Ok(Panel::Empty)
         }
+    }
+
+    pub fn empty() -> Panel {
+        Panel::Empty
     }
 }
 
@@ -310,13 +314,13 @@ pub struct MillerPanels {
 }
 
 impl MillerPanels {
-    pub fn new(terminal_size: (u16, u16)) -> Result<Self> {
+    pub fn new() -> Result<Self> {
         let stdout = stdout();
-
+        let terminal_size = terminal::size()?;
         let show_hidden = false;
-        let left = DirPanel::from_parent(".", show_hidden)?;
-        let mid = DirPanel::from_path(".", show_hidden)?;
-        let right = Panel::from_path(mid.selected_path(), show_hidden)?;
+        let left = DirPanel::loading("..".into());
+        let mid = DirPanel::loading(".".into());
+        let right = Panel::empty();
         let ranges = Ranges::from_size(terminal_size);
         Ok(MillerPanels {
             left,
@@ -334,19 +338,21 @@ impl MillerPanels {
         self.draw()
     }
 
+    // TODO: Change logic here
     pub fn toggle_hidden(&mut self) -> Result<()> {
         self.show_hidden = !self.show_hidden;
-        self.left = DirPanel::with_selection(
-            self.left.path.clone(),
-            self.show_hidden,
-            self.left.selected_path(),
-        )?;
-        self.mid = DirPanel::with_selection(
-            self.mid.path.clone(),
-            self.show_hidden,
-            self.mid.selected_path(),
-        )?;
-        self.right = Panel::from_path(self.mid.selected_path(), self.show_hidden)?;
+        // TODO: Remove
+        // self.left = DirPanel::with_selection(
+        //     self.left.path.clone(),
+        //     self.show_hidden,
+        //     self.left.selected_path(),
+        // )?;
+        // self.mid = DirPanel::with_selection(
+        //     self.mid.path.clone(),
+        //     self.show_hidden,
+        //     self.mid.selected_path(),
+        // )?;
+        // self.right = Panel::from_path(self.mid.selected_path(), self.show_hidden)?;
         self.draw()
     }
 
@@ -538,66 +544,24 @@ pub struct DirPanel {
     elements: Vec<DirElem>,
     selected: usize,
     path: PathBuf,
+    loading: bool,
 }
 
 impl DirPanel {
-    /// Creates a dir-panel for the given path.
-    ///
-    /// If the content of the directory could not be obtained
-    /// (due to insufficient permissions e.g.),
-    /// and empty panel is created
-    pub fn from_path<P: AsRef<Path>>(path: P, hidden: bool) -> Result<Self> {
-        let path = canonicalize(path.as_ref())?;
-        let elements = directory_content(path.clone().into())
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|e| {
-                if let Some(filename) = e.path().file_name().and_then(|f| f.to_str()) {
-                    !filename.starts_with(".") || hidden
-                } else {
-                    true
-                }
-            })
-            .collect();
-        Ok(DirPanel {
+    pub fn new(elements: Vec<DirElem>, path: PathBuf) -> Self {
+        DirPanel {
             elements,
             selected: 0,
-            path: path.into(),
-        })
-    }
-
-    /// Creates a dir-panel for the parent of the given path.
-    ///
-    /// If the path has no parent, and empty dir-panel is returned.
-    /// If the content of the directory could not be obtained
-    /// (due to insufficient permissions e.g.),
-    /// and empty panel is created
-    pub fn from_parent<P: AsRef<Path>>(path: P, hidden: bool) -> Result<Self> {
-        let path = canonicalize(path.as_ref())?;
-        if let Some(parent) = path.parent() {
-            Self::with_selection(parent, hidden, Some(&path))
-        } else {
-            Ok(Self::empty())
+            path,
+            loading: false,
         }
     }
 
-    /// Creates a new DirPanel and selects the given path
-    pub fn with_selection<P: AsRef<Path>>(
-        path: P,
-        hidden: bool,
+    pub fn with_selection(
+        elements: Vec<DirElem>,
+        path: PathBuf,
         selection: Option<&Path>,
-    ) -> Result<Self> {
-        let elements = directory_content(path.as_ref().into())
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|e| {
-                if let Some(filename) = e.path().file_name().and_then(|f| f.to_str()) {
-                    !filename.starts_with(".") || hidden
-                } else {
-                    true
-                }
-            })
-            .collect::<Vec<DirElem>>();
+    ) -> DirPanel {
         let mut selected = 0;
         for elem in elements.iter() {
             if Some(elem.path()) == selection {
@@ -608,21 +572,110 @@ impl DirPanel {
         if selected == elements.len() {
             selected = elements.len().saturating_sub(1);
         }
-        Ok(DirPanel {
+        DirPanel {
             elements,
             selected,
-            path: path.as_ref().into(),
-        })
+            path,
+            loading: false,
+        }
+    }
+
+    pub fn loading(path: PathBuf) -> Self {
+        DirPanel {
+            elements: Vec::new(),
+            selected: 0,
+            path,
+            loading: true,
+        }
     }
 
     /// Creates an empty dir-panel.
+    ///
+    /// Note: The path of this panel is not a valid path!
     pub fn empty() -> Self {
         DirPanel {
             elements: Vec::new(),
             selected: 0,
-            path: "..".into(),
+            path: "path-of-empty-panel".into(),
+            loading: false,
         }
     }
+
+    // /// Creates a dir-panel for the given path.
+    // ///
+    // /// If the content of the directory could not be obtained
+    // /// (due to insufficient permissions e.g.),
+    // /// and empty panel is created
+    // pub fn from_path<P: AsRef<Path>>(path: P, hidden: bool) -> Result<Self> {
+    //     let path = canonicalize(path.as_ref())?;
+    //     let elements = directory_content(path.clone().into())
+    //         .unwrap_or_default()
+    //         .into_iter()
+    //         .filter(|e| {
+    //             if let Some(filename) = e.path().file_name().and_then(|f| f.to_str()) {
+    //                 !filename.starts_with(".") || hidden
+    //             } else {
+    //                 true
+    //             }
+    //         })
+    //         .collect();
+    //     Ok(DirPanel {
+    //         elements,
+    //         selected: 0,
+    //         path: path.into(),
+    //         loading: false,
+    //     })
+    // }
+
+    // /// Creates a dir-panel for the parent of the given path.
+    // ///
+    // /// If the path has no parent, and empty dir-panel is returned.
+    // /// If the content of the directory could not be obtained
+    // /// (due to insufficient permissions e.g.),
+    // /// and empty panel is created
+    // pub fn from_parent<P: AsRef<Path>>(path: P, hidden: bool) -> Result<Self> {
+    //     let path = canonicalize(path.as_ref())?;
+    //     if let Some(parent) = path.parent() {
+    //         Self::with_selection(parent, hidden, Some(&path))
+    //     } else {
+    //         Ok(Self::empty())
+    //     }
+    // }
+
+    // /// Creates a new DirPanel and selects the given path
+    // pub fn with_selection<P: AsRef<Path>>(
+    //     path: P,
+    //     hidden: bool,
+    //     selection: Option<&Path>,
+    // ) -> Result<Self> {
+    //     let elements = directory_content(path.as_ref().into())
+    //         .unwrap_or_default()
+    //         .into_iter()
+    //         .filter(|e| {
+    //             if let Some(filename) = e.path().file_name().and_then(|f| f.to_str()) {
+    //                 !filename.starts_with(".") || hidden
+    //             } else {
+    //                 true
+    //             }
+    //         })
+    //         .collect::<Vec<DirElem>>();
+    //     let mut selected = 0;
+    //     for elem in elements.iter() {
+    //         if Some(elem.path()) == selection {
+    //             break;
+    //         }
+    //         selected += 1;
+    //     }
+    //     if selected == elements.len() {
+    //         selected = elements.len().saturating_sub(1);
+    //     }
+    //     Ok(DirPanel {
+    //         elements,
+    //         selected,
+    //         path: path.as_ref().into(),
+    //         loading: false,
+    //     })
+    // }
 
     /// Move the selection "up" if possible.
     ///
@@ -691,8 +744,7 @@ impl DirPanel {
         let width = x_range.end.saturating_sub(x_range.start);
         let height = y_range.end.saturating_sub(y_range.start);
 
-        // We have to implement scrolling now.
-        // Let's try something:
+        // Calculate page-scroll
         let scroll: usize = if self.elements.len() > height as usize {
             // if selected should be in the middle all the time:
             // bot = min(max-items, selected + height / 2)
@@ -717,6 +769,7 @@ impl DirPanel {
             )?;
             idx += 1;
         }
+
         for y in y_range.start + idx..y_range.end {
             queue!(
                 stdout,
@@ -727,6 +780,18 @@ impl DirPanel {
                 queue!(stdout, cursor::MoveTo(x, y), Print(" "),)?;
             }
         }
+
+        // Check if we are loading or not
+        if self.loading {
+            queue!(
+                stdout,
+                cursor::MoveTo(x_range.start + 2, y_range.start + height / 2),
+                PrintStyledContent("Loading...".dark_green().bold().italic()),
+                cursor::MoveTo(x_range.start + 2, y_range.start + height / 2 + 1),
+                PrintStyledContent(format!("{}", self.path.display()).dark_green().italic()),
+            )?;
+        }
+
         Ok(())
     }
 }

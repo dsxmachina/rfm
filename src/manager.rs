@@ -5,7 +5,7 @@ use std::{
     process::Stdio,
 };
 
-use cached::SizedCache;
+use cached::{Cached, SizedCache};
 use crossterm::{
     cursor,
     event::{Event, EventStream},
@@ -54,7 +54,7 @@ impl PanelManager {
         let terminal_size = terminal::size()?;
         let event_reader = EventStream::new();
         let parser = CommandParser::new();
-        let mut panels = MillerPanels::new(terminal_size)?;
+        let mut panels = MillerPanels::new()?;
         let cache = SizedCache::with_size(100);
         panels.draw()?;
 
@@ -71,6 +71,34 @@ impl PanelManager {
         })
     }
 
+    fn panel_from_parent(&mut self, path: PathBuf) -> DirPanel {
+        // Always use absolute paths
+        if let Some(parent) = path.parent().and_then(|p| canonicalize(p).ok()) {
+            // Lookup cache and reply with some panel
+            if let Some(elements) = self.cache.cache_get(&path) {
+                DirPanel::with_selection(elements.clone(), parent, Some(path.as_path()))
+            } else {
+                DirPanel::loading(path)
+            }
+        } else {
+            DirPanel::empty()
+        }
+    }
+
+    fn panel_from_path(&mut self, path: PathBuf) -> DirPanel {
+        // Always use absolute paths
+        if let Some(path) = canonicalize(path).ok() {
+            // Lookup cache and reply with some panel
+            if let Some(elements) = self.cache.cache_get(&path) {
+                DirPanel::new(elements.clone(), path)
+            } else {
+                DirPanel::loading(path)
+            }
+        } else {
+            DirPanel::empty()
+        }
+    }
+
     /// Immediately response with some panel (e.g. from the cache, or an empty one),
     /// and then trigger a new parse of the filesystem under the hood.
     fn update_panels(&mut self, change: PanelChange) -> Result<()> {
@@ -80,15 +108,16 @@ impl PanelManager {
                 self.panels.update_right(right)?;
             }
             PanelChange::All(path) => {
-                let left = DirPanel::from_parent(path.clone(), self.show_hidden)?;
-                let mid = DirPanel::from_path(path, self.show_hidden)?;
+                let left = self.panel_from_parent(path.clone());
+                let mid = self.panel_from_path(path);
+                // TODO
                 let right = Panel::from_path(mid.selected_path(), self.show_hidden)?;
                 self.panels.update_left(left)?;
                 self.panels.update_mid(mid)?;
                 self.panels.update_right(right)?;
             }
             PanelChange::Left(path) => {
-                let left = DirPanel::from_parent(path, self.show_hidden)?;
+                let left = self.panel_from_parent(path.clone());
                 self.panels.update_left(left)?;
             }
             PanelChange::Open(path) => {
