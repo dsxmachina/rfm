@@ -35,7 +35,11 @@ async fn main() -> Result<()> {
     if let Err(e) = manager.run().await {
         // Clear everything
         let mut stdout = stdout();
-        stdout.execute(Clear(ClearType::All))?;
+        stdout
+            .queue(Clear(ClearType::All))?
+            .queue(cursor::MoveTo(0, 0))?
+            .queue(cursor::Show)?
+            .flush()?;
         // Print error
         eprintln!("Error: {e}");
     }
