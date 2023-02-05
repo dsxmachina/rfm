@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     fs::canonicalize,
     io::{stdout, Stdout, Write},
     path::{Path, PathBuf},
@@ -14,11 +15,32 @@ use crossterm::{
 };
 use futures::{FutureExt, StreamExt};
 use tokio::fs::read_dir;
+use tokio::task::JoinHandle;
 
 use crate::{
     commands::{Command, CommandParser},
     panel::{DirElem, DirPanel, MillerPanels, Panel, PanelChange, PreviewPanel},
 };
+
+/// Reads the content of a directory asynchronously
+async fn panel_content(path: PathBuf, panel: Select) -> Result<(Vec<DirElem>, Select)> {
+    // read directory
+    let mut dir = read_dir(path).await?;
+    let mut out = Vec::new();
+
+    while let Some(item) = dir.next_entry().await? {
+        let item_path = canonicalize(item.path())?;
+        out.push(DirElem::from(item_path))
+    }
+    out.sort();
+    Ok((out, panel))
+}
+
+pub enum Select {
+    Left,
+    Mid,
+    Right,
+}
 
 // Unifies the management of key-events,
 // redrawing and querying content.
@@ -41,20 +63,9 @@ pub struct PanelManager {
 
     /// Weather or not to show hidden files
     show_hidden: bool,
-}
 
-/// Reads the content of a directory asynchronously
-async fn directory_content(path: PathBuf) -> Result<Vec<DirElem>> {
-    // read directory
-    let mut dir = read_dir(path).await?;
-    let mut out = Vec::new();
-
-    while let Some(item) = dir.next_entry().await? {
-        let item_path = canonicalize(item.path())?;
-        out.push(DirElem::from(item_path))
-    }
-    out.sort();
-    Ok(out)
+    /// Saves handles for tasks that require completion.
+    tasks: VecDeque<JoinHandle<Result<(Vec<DirElem>, Select)>>>,
 }
 
 impl PanelManager {
@@ -73,25 +84,28 @@ impl PanelManager {
             stdout,
             cache,
             show_hidden: false,
+            tasks: VecDeque::new(),
         })
     }
 
-    async fn parse(&mut self, path: PathBuf) -> Vec<DirElem> {
-        let result = tokio::spawn(directory_content(path.clone()));
-        match result.await {
-            Ok(Ok(elements)) => {
-                self.cache.cache_set(path, elements.clone());
-                elements
-            }
-            Ok(Err(_)) => {
-                // TODO: Save error somewhere
-                Vec::new()
-            }
-            Err(_) => {
-                // TODO: Save error somewhere
-                Vec::new()
-            }
-        }
+    fn parse(&mut self, path: PathBuf, panel: Select) {
+        let result = tokio::spawn(panel_content(path.clone(), panel));
+        self.tasks.push_back(result);
+
+        // match result.await {
+        //     Ok(Ok(elements)) => {
+        //         self.cache.cache_set(path, elements.clone());
+        //         elements
+        //     }
+        //     Ok(Err(_)) => {
+        //         // TODO: Save error somewhere
+        //         Vec::new()
+        //     }
+        //     Err(_) => {
+        //         // TODO: Save error somewhere
+        //         Vec::new()
+        //     }
+        // }
     }
 
     fn panel_from_parent(&mut self, path: PathBuf) -> DirPanel {
@@ -139,19 +153,23 @@ impl PanelManager {
         // Prepare the temporary panel
         let left = self.panel_from_parent(path.clone());
         self.panels.update_left(left)?;
-
-        // Then the one that will replace it
+        // Schedule parsing the directory
         if let Some(parent) = path.parent() {
-            let left_elements = self.parse(parent.to_path_buf()).await;
-            self.panels.update_left(DirPanel::with_selection(
-                left_elements,
-                parent.to_path_buf(),
-                Some(path.as_path()),
-            ))?;
-        } else {
-            // Otherwise use an empty panel
-            self.panels.update_left(DirPanel::empty())?;
+            self.parse(parent.to_path_buf(), Select::Left);
         }
+
+        // // Then the one that will replace it
+        // if let Some(parent) = path.parent() {
+        //     let left_elements =
+        //     self.panels.update_left(DirPanel::with_selection(
+        //         left_elements,
+        //         parent.to_path_buf(),
+        //         Some(path.as_path()),
+        //     ))?;
+        // } else {
+        //     // Otherwise use an empty panel
+        //     self.panels.update_left(DirPanel::empty())?;
+        // }
         Ok(())
     }
 
@@ -163,23 +181,25 @@ impl PanelManager {
         self.panels.update_mid(mid)?;
         self.panels.update_right(right)?;
 
+        self.parse(path.clone(), Select::Mid);
+
         // Then the updated ones that will replace them
-        let mid_elements = self.parse(path.clone()).await;
-        let mid = DirPanel::new(mid_elements, path);
+        // let mid_elements =
+        // let mid = DirPanel::new(mid_elements, path);
 
-        let right = if let Some(path) = mid.selected_path() {
-            if path.is_dir() {
-                let right_elements = self.parse(path.to_path_buf()).await;
-                Panel::Dir(DirPanel::new(right_elements, path.to_path_buf()))
-            } else {
-                Panel::Preview(PreviewPanel::new(path.to_path_buf()))
-            }
-        } else {
-            Panel::Empty
-        };
+        // let right = if let Some(path) = mid.selected_path() {
+        //     if path.is_dir() {
+        //         let right_elements = self.parse(path.to_path_buf()).await;
+        //         Panel::Dir(DirPanel::new(right_elements, path.to_path_buf()))
+        //     } else {
+        //         Panel::Preview(PreviewPanel::new(path.to_path_buf()))
+        //     }
+        // } else {
+        //     Panel::Empty
+        // };
 
-        self.panels.update_mid(mid)?;
-        self.panels.update_right(right)?;
+        // self.panels.update_mid(mid)?;
+        // self.panels.update_right(right)?;
 
         Ok(())
     }
@@ -188,21 +208,22 @@ impl PanelManager {
         // Prepare the temporary panels
         let right = self.preview_panel(maybe_path.as_ref().clone());
         self.panels.update_right(right)?;
-
-        // Then the updated ones that will replace them
-        let right = if let Some(path) = maybe_path {
-            let path = path.as_ref();
-            if path.is_dir() {
-                let right_elements = self.parse(path.to_path_buf()).await;
-                Panel::Dir(DirPanel::new(right_elements, path.to_path_buf()))
-            } else {
-                Panel::Preview(PreviewPanel::new(path.to_path_buf()))
-            }
-        } else {
-            Panel::Empty
-        };
-        self.panels.update_right(right)?;
-
+        if let Some(path) = maybe_path {
+            self.parse(path.as_ref().to_path_buf(), Select::Right);
+        }
+        // // Then the updated ones that will replace them
+        // let right = if let Some(path) = maybe_path {
+        //     let path = path.as_ref();
+        //     if path.is_dir() {
+        //         let right_elements = self.parse(path.to_path_buf()).await;
+        //         Panel::Dir(DirPanel::new(right_elements, path.to_path_buf()))
+        //     } else {
+        //         Panel::Preview(PreviewPanel::new(path.to_path_buf()))
+        //     }
+        // } else {
+        //     Panel::Empty
+        // };
+        // self.panels.update_right(right)?;
         Ok(())
     }
 
@@ -271,7 +292,11 @@ impl PanelManager {
         self.update_panels(PanelChange::All(".".into())).await?;
         loop {
             let event_reader = self.event_reader.next().fuse();
+            let task_result = self.tasks.pop_front();
             tokio::select! {
+                result = task_result.unwrap() => {
+                    todo!()
+                }
                 maybe_event = event_reader => {
                     match maybe_event {
                         Some(Ok(event)) => {

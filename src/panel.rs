@@ -790,9 +790,9 @@ impl DirPanel {
         if self.loading {
             queue!(
                 stdout,
-                cursor::MoveTo(x_range.start + 2, y_range.start + height / 2),
+                cursor::MoveTo(x_range.start + 2, y_range.start + 1),
                 PrintStyledContent("Loading...".dark_green().bold().italic()),
-                cursor::MoveTo(x_range.start + 2, y_range.start + height / 2 + 1),
+                cursor::MoveTo(x_range.start + 2, y_range.start + 2),
                 PrintStyledContent(format!("{}", self.path.display()).dark_green().italic()),
             )?;
         }
