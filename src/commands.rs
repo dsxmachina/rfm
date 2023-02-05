@@ -89,9 +89,31 @@ impl CommandParser {
         key_commands.insert("gr", Command::Move(Movement::JumpTo("/".into())));
         key_commands.insert("gc", Command::Move(Movement::JumpTo("~/.config".into())));
 
+        key_commands.insert("ge", Command::Move(Movement::JumpTo("/etc".into())));
+        key_commands.insert("gu", Command::Move(Movement::JumpTo("/usr".into())));
+        key_commands.insert("gN", Command::Move(Movement::JumpTo("/nix/store".into())));
+
         // custom jumps
         key_commands.insert("gp", Command::Move(Movement::JumpTo("~/Projekte".into())));
         key_commands.insert("gs", Command::Move(Movement::JumpTo("~/.scripts".into())));
+        key_commands.insert("gb", Command::Move(Movement::JumpTo("~/Bilder".into())));
+        key_commands.insert(
+            "gw",
+            Command::Move(Movement::JumpTo("~/Bilder/wallpapers".into())),
+        );
+        key_commands.insert("gd", Command::Move(Movement::JumpTo("~/Dokumente".into())));
+        key_commands.insert("gD", Command::Move(Movement::JumpTo("~/Downloads".into())));
+        key_commands.insert(
+            "gl",
+            Command::Move(Movement::JumpTo("~/Projekte/loadrunner-2021".into())),
+        );
+        key_commands.insert(
+            "gL",
+            Command::Move(Movement::JumpTo(
+                "~/Projekte/loadrunner-2021/lr-localization".into(),
+            )),
+        );
+        key_commands.insert("gm", Command::Move(Movement::JumpTo("~/Musik".into())));
 
         // Toggle hidden files
         key_commands.insert("zh", Command::ToggleHidden);

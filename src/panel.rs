@@ -403,11 +403,11 @@ impl MillerPanels {
                 //
                 if let Some(ext) = absolute.extension().and_then(|ext| ext.to_str()) {
                     match ext {
-                        "png" | "bmp" => {
-                            Notification::new()
-                                .summary(&format!("Image: {}", absolute.display()))
-                                .show()
-                                .unwrap();
+                        "png" | "bmp" | "jpg" | "jpeg" => {
+                            // Notification::new()
+                            // .summary(&format!("Image: {}", absolute.display()))
+                            // .show()
+                            // .unwrap();
                             // Image
                             std::process::Command::new("sxiv")
                                 .stderr(Stdio::null())
@@ -418,15 +418,12 @@ impl MillerPanels {
                                 .expect("failed to run sxiv");
                         }
                         _ => {
-                            Notification::new()
-                                .summary(&format!("Other: {}", absolute.display()))
-                                .show()
-                                .unwrap();
+                            // Notification::new()
+                            //     .summary(&format!("Other: {}", absolute.display()))
+                            //     .show()
+                            //     .unwrap();
                             // Everything else with vim
                             std::process::Command::new("nvim")
-                                .stderr(Stdio::null())
-                                .stdin(Stdio::null())
-                                .stdout(Stdio::null())
                                 .arg(absolute)
                                 .spawn()
                                 .expect("failed to run neovim")
