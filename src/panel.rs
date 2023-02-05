@@ -5,14 +5,14 @@ use crossterm::{
     queue,
     style::{self, Print, PrintStyledContent, Stylize},
     terminal::{Clear, ClearType},
-    Result,
+    QueueableCommand, Result,
 };
 use notify_rust::Notification;
 use pad::PadStr;
 use std::{
     cmp::Ordering,
     fs::{canonicalize, read_dir},
-    io::Stdout,
+    io::{stdout, Stdout, Write},
     mem,
     ops::Range,
     os::unix::prelude::PermissionsExt,
@@ -119,7 +119,7 @@ cached_result! {
     }
 }
 
-struct PreviewPanel {
+pub struct PreviewPanel {
     path: PathBuf,
 }
 
@@ -165,7 +165,7 @@ impl PreviewPanel {
     }
 }
 
-enum Panel {
+pub enum Panel {
     /// Directory preview
     Dir(DirPanel),
     /// File preview
@@ -269,6 +269,30 @@ fn print_footer(stdout: &mut Stdout, mid: &DirPanel, width: u16, y: u16) -> Resu
     Ok(())
 }
 
+/// Type that indicates that one or more panels have changed.
+pub enum PanelChange {
+    /// The selection of the middle panel has changed,
+    /// or we have moved to the right.
+    /// Anyway, we need a new preview buffer.
+    Preview(Option<PathBuf>),
+
+    /// All buffers have changed. This happens when we jump around
+    /// the directories.
+    All(PathBuf),
+
+    /// We have moved to the left. The middle and right panels
+    /// do not need an update, but the left one does.
+    /// The given path is the path of the middle panel,
+    /// so we can create the left-panel with the "from-parent" method.
+    Left(PathBuf),
+
+    /// Indicate that we want to open something
+    Open(PathBuf),
+
+    /// Nothing has changed at all
+    None,
+}
+
 /// Create a set of Panels in "Miller-Columns" style.
 pub struct MillerPanels {
     // Panels
@@ -280,11 +304,14 @@ pub struct MillerPanels {
     // prev-path (after jump-mark)
     prev: PathBuf,
     show_hidden: bool,
+
+    // handle to standard-output
+    stdout: Stdout,
 }
 
 impl MillerPanels {
     pub fn new(terminal_size: (u16, u16)) -> Result<Self> {
-        // TODO: Move the terminal initialization here
+        let stdout = stdout();
 
         let show_hidden = false;
         let left = DirPanel::from_parent(".", show_hidden)?;
@@ -298,14 +325,16 @@ impl MillerPanels {
             ranges,
             show_hidden,
             prev: ".".into(),
+            stdout,
         })
     }
 
-    pub fn terminal_resize(&mut self, terminal_size: (u16, u16)) {
+    pub fn terminal_resize(&mut self, terminal_size: (u16, u16)) -> Result<()> {
         self.ranges = Ranges::from_size(terminal_size);
+        self.draw()
     }
 
-    pub fn toggle_hidden(&mut self) -> Result<bool> {
+    pub fn toggle_hidden(&mut self) -> Result<()> {
         self.show_hidden = !self.show_hidden;
         self.left = DirPanel::with_selection(
             self.left.path.clone(),
@@ -318,10 +347,25 @@ impl MillerPanels {
             self.mid.selected_path(),
         )?;
         self.right = Panel::from_path(self.mid.selected_path(), self.show_hidden)?;
-        Ok(true)
+        self.draw()
     }
 
-    pub fn move_cursor(&mut self, movement: Movement) -> Result<bool> {
+    pub fn update_left(&mut self, panel: DirPanel) -> Result<()> {
+        self.left = panel;
+        self.draw()
+    }
+
+    pub fn update_mid(&mut self, panel: DirPanel) -> Result<()> {
+        self.mid = panel;
+        self.draw()
+    }
+
+    pub fn update_right(&mut self, panel: Panel) -> Result<()> {
+        self.right = panel;
+        self.draw()
+    }
+
+    pub fn move_cursor(&mut self, movement: Movement) -> PanelChange {
         match movement {
             Movement::Up => self.up(1),
             Movement::Down => self.down(1),
@@ -338,42 +382,50 @@ impl MillerPanels {
         }
     }
 
-    fn jump(&mut self, path: PathBuf) -> Result<bool> {
+    fn jump(&mut self, path: PathBuf) -> PanelChange {
         if path.exists() {
             // Remember path
             self.prev = self.mid.path.clone();
-            self.left = DirPanel::from_parent(path.clone(), self.show_hidden)?;
-            self.mid = DirPanel::from_path(path, self.show_hidden)?;
-            self.right = Panel::from_path(self.mid.selected_path(), self.show_hidden)?;
-            Ok(true)
+            // TODO
+            // self.left = DirPanel::from_parent(path.clone(), self.show_hidden)?;
+            // self.mid = DirPanel::from_path(path, self.show_hidden)?;
+            // self.right = Panel::from_path(self.mid.selected_path(), self.show_hidden)?;
+            PanelChange::All(path)
         } else {
-            Ok(false)
+            PanelChange::None
         }
     }
 
-    fn up(&mut self, step: usize) -> Result<bool> {
+    // NOTE: The movement functions need to change here
+    //
+    // -> They just indicate which panel needs to change,
+    // without actually changing it.
+    //
+    // We will create a "update panel" function,
+    // that the manager can call, whenever a new panel is ready to be drawn.
+    fn up(&mut self, step: usize) -> PanelChange {
         if self.mid.up(step) {
             // Change the other panels aswell
-            self.right = Panel::from_path(self.mid.selected_path(), self.show_hidden)?;
-            Ok(true)
+            // self.right = Panel::from_path(self.mid.selected_path(), self.show_hidden)?;
+            PanelChange::Preview(self.mid.selected_path_owned())
         } else {
-            Ok(false)
+            PanelChange::None
         }
     }
 
-    fn down(&mut self, step: usize) -> Result<bool> {
+    fn down(&mut self, step: usize) -> PanelChange {
         if self.mid.down(step) {
             // Change the other panels aswell
-            self.right = Panel::from_path(self.mid.selected_path(), self.show_hidden)?;
-            Ok(true)
+            // self.right = Panel::from_path(self.mid.selected_path(), self.show_hidden)?;
+            PanelChange::Preview(self.mid.selected_path_owned())
         } else {
-            Ok(false)
+            PanelChange::None
         }
     }
 
     // TODO: We could improve, that we don't jump into directories,
     // where we do not have access
-    fn right(&mut self) -> Result<bool> {
+    fn right(&mut self) -> PanelChange {
         if let Some(selected) = self.mid.selected_path() {
             if selected.is_dir() {
                 // Remember path
@@ -397,60 +449,20 @@ impl MillerPanels {
                     );
                 }
                 // Recreate right panel
-                self.right = Panel::from_path(self.mid.selected_path(), self.show_hidden)?;
-                return Ok(true);
+                // self.right = Panel::from_path(self.mid.selected_path(), self.show_hidden)?;
+                PanelChange::Preview(self.mid.selected_path_owned())
             } else {
-                let absolute = canonicalize(selected)?;
-                // Notification::new()
-                //     .summary(&format!("{}", absoulte.display()))
-                //     .show()
-                //     .unwrap();
-
-                // If the selected item is a file,
-                // we need to open it
-                // TODO: Implement opening
-                //
-                if let Some(ext) = absolute.extension().and_then(|ext| ext.to_str()) {
-                    match ext {
-                        "png" | "bmp" | "jpg" | "jpeg" => {
-                            // Notification::new()
-                            // .summary(&format!("Image: {}", absolute.display()))
-                            // .show()
-                            // .unwrap();
-                            // Image
-                            std::process::Command::new("sxiv")
-                                .stderr(Stdio::null())
-                                .stdin(Stdio::null())
-                                .stdout(Stdio::null())
-                                .arg(absolute)
-                                .spawn()
-                                .expect("failed to run sxiv");
-                        }
-                        _ => {
-                            // Notification::new()
-                            //     .summary(&format!("Other: {}", absolute.display()))
-                            //     .show()
-                            //     .unwrap();
-                            // Everything else with vim
-                            std::process::Command::new("nvim")
-                                .arg(absolute)
-                                .spawn()
-                                .expect("failed to run neovim")
-                                .wait()
-                                .expect("error");
-                        }
-                    }
-                }
+                PanelChange::Open(selected.to_path_buf())
             }
+        } else {
+            PanelChange::None
         }
-        Ok(false)
     }
 
-    fn left(&mut self) -> Result<bool> {
+    fn left(&mut self) -> PanelChange {
         // If the left panel is empty, we cannot move left:
         if self.left.selected_path().is_none() {
-            // Notification::new().summary("No-Path").show().unwrap();
-            return Ok(false);
+            return PanelChange::None;
         }
         // Remember path
         self.prev = self.mid.path.clone();
@@ -467,17 +479,11 @@ impl MillerPanels {
         mem::swap(&mut self.left, &mut self.mid);
         // | m | l | m |
 
-        // Create left panel from ancestor of selcted path
-        if let Some(path) = self.mid.selected_path().map(|p| p.parent()).flatten() {
-            self.left = DirPanel::from_parent(path, self.show_hidden)?;
-        } else {
-            self.left = DirPanel::empty();
-        }
-
-        Ok(true)
+        PanelChange::Left(self.mid.path.clone())
     }
 
-    pub fn draw(&self, stdout: &mut Stdout) -> Result<()> {
+    pub fn draw(&mut self) -> Result<()> {
+        let stdout = &mut self.stdout;
         if let Some(path) = self.mid.selected_path() {
             print_header(stdout, path)?;
         } else {
@@ -517,6 +523,8 @@ impl MillerPanels {
             )?,
             Panel::Empty => (),
         }
+        self.stdout.queue(cursor::Hide)?;
+        self.stdout.flush()?;
         Ok(())
     }
 }
@@ -526,7 +534,7 @@ impl MillerPanels {
 // because this will return `None` as selected_path when
 // we query it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct DirPanel {
+pub struct DirPanel {
     elements: Vec<DirElem>,
     selected: usize,
     path: PathBuf,
@@ -652,6 +660,13 @@ impl DirPanel {
     /// If the panel is empty `None` is returned.
     pub fn selected_path(&self) -> Option<&Path> {
         self.selected().map(|elem| elem.path())
+    }
+
+    /// Returns the selcted path of the panel as an owned `PathBuf`.
+    ///
+    /// If the panel is empty `None` is returned.
+    pub fn selected_path_owned(&self) -> Option<PathBuf> {
+        self.selected_path().map(|p| p.to_path_buf())
     }
 
     // /// Returns a reference to the path of the panel.

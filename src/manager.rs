@@ -1,5 +1,11 @@
-use std::io::{stdout, Stdout, Write};
+use std::{
+    fs::canonicalize,
+    io::{stdout, Stdout, Write},
+    path::PathBuf,
+    process::Stdio,
+};
 
+use cached::SizedCache;
 use crossterm::{
     cursor,
     event::{Event, EventStream},
@@ -10,7 +16,7 @@ use futures::{FutureExt, StreamExt};
 
 use crate::{
     commands::{Command, CommandParser},
-    panel::MillerPanels,
+    panel::{DirElem, DirPanel, MillerPanels, Panel, PanelChange},
 };
 
 // Unifies the management of key-events,
@@ -28,6 +34,12 @@ pub struct PanelManager {
 
     // Handle to the standard-output
     stdout: Stdout,
+
+    // Cache with directory content
+    cache: SizedCache<PathBuf, Vec<DirElem>>,
+
+    /// Weather or not to show hidden files
+    show_hidden: bool,
 }
 
 impl PanelManager {
@@ -42,18 +54,87 @@ impl PanelManager {
         let terminal_size = terminal::size()?;
         let event_reader = EventStream::new();
         let parser = CommandParser::new();
-        let panels = MillerPanels::new(terminal_size)?;
-        panels.draw(&mut stdout)?;
+        let mut panels = MillerPanels::new(terminal_size)?;
+        let cache = SizedCache::with_size(100);
+        panels.draw()?;
 
         // Flush buffer in the end
-        stdout.flush()?;
+        // stdout.flush()?;
 
         Ok(PanelManager {
             panels,
             event_reader,
             parser,
             stdout,
+            cache,
+            show_hidden: false,
         })
+    }
+
+    /// Immediately response with some panel (e.g. from the cache, or an empty one),
+    /// and then trigger a new parse of the filesystem under the hood.
+    fn update_panels(&mut self, change: PanelChange) -> Result<()> {
+        match change {
+            PanelChange::Preview(maybe_path) => {
+                let right = Panel::from_path(maybe_path, self.show_hidden)?;
+                self.panels.update_right(right)?;
+            }
+            PanelChange::All(path) => {
+                let left = DirPanel::from_parent(path.clone(), self.show_hidden)?;
+                let mid = DirPanel::from_path(path, self.show_hidden)?;
+                let right = Panel::from_path(mid.selected_path(), self.show_hidden)?;
+                self.panels.update_left(left)?;
+                self.panels.update_mid(mid)?;
+                self.panels.update_right(right)?;
+            }
+            PanelChange::Left(path) => {
+                let left = DirPanel::from_parent(path, self.show_hidden)?;
+                self.panels.update_left(left)?;
+            }
+            PanelChange::Open(path) => {
+                self.open(path)?;
+            }
+            PanelChange::None => (),
+        }
+        Ok(())
+    }
+
+    fn open(&self, path: PathBuf) -> Result<()> {
+        let absolute = canonicalize(path)?;
+        // If the selected item is a file,
+        // we need to open it
+        if let Some(ext) = absolute.extension().and_then(|ext| ext.to_str()) {
+            match ext {
+                "png" | "bmp" | "jpg" | "jpeg" => {
+                    // Notification::new()
+                    // .summary(&format!("Image: {}", absolute.display()))
+                    // .show()
+                    // .unwrap();
+                    // Image
+                    std::process::Command::new("sxiv")
+                        .stderr(Stdio::null())
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .arg(absolute)
+                        .spawn()
+                        .expect("failed to run sxiv");
+                }
+                _ => {
+                    // Notification::new()
+                    //     .summary(&format!("Other: {}", absolute.display()))
+                    //     .show()
+                    //     .unwrap();
+                    // Everything else with vim
+                    std::process::Command::new("nvim")
+                        .arg(absolute)
+                        .spawn()
+                        .expect("failed to run neovim")
+                        .wait()
+                        .expect("error");
+                }
+            }
+        }
+        Ok(())
     }
 
     pub async fn run(mut self) -> Result<()> {
@@ -61,33 +142,24 @@ impl PanelManager {
             let event_reader = self.event_reader.next().fuse();
             tokio::select! {
                 maybe_event = event_reader => {
-                    let mut redraw = false;
                     match maybe_event {
                         Some(Ok(event)) => {
-                            let command = match event {
-                                Event::Key(key_event) => {
-                                    self.parser.add_event(key_event)
-                                },
-                                Event::Resize(sx, sy) => {self.panels.terminal_resize((sx, sy)); redraw = true; Command::None }
-                                _ => Command::None,
-                            };
-
-                            match command {
-                                Command::Move(direction) => {
-                                    redraw =  self.panels.move_cursor(direction)?;
+                            if let Event::Key(key_event) = event {
+                                match self.parser.add_event(key_event) {
+                                    Command::Move(direction) => {
+                                        let change = self.panels.move_cursor(direction);
+                                        self.update_panels(change)?;
+                                    }
+                                    Command::ToggleHidden => {
+                                        self.panels.toggle_hidden()?;
+                                    }
+                                    Command::Quit => break,
+                                    Command::None => (),
                                 }
-                                Command::ToggleHidden => {
-                                    redraw = self.panels.toggle_hidden()?;
-                                }
-                                Command::Quit => break,
-                                Command::None => (),
                             }
 
-                            if redraw {
-                                // selected_path = content_mid[position_mid].path().into();
-                                self.panels.draw(&mut self.stdout)?;
-                                self.stdout.queue(cursor::Hide)?;
-                                self.stdout.flush()?;
+                            if let Event::Resize(sx, sy) = event {
+                                self.panels.terminal_resize((sx, sy))?;
                             }
                         },
                         Some(Err(e)) => {
