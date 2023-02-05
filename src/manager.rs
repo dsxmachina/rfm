@@ -98,10 +98,6 @@ impl PanelManager {
         })
     }
 
-    fn parse(&mut self, path: PathBuf, panel: Select) {
-        let result = tokio::spawn(panel_content(path.clone(), panel));
-    }
-
     fn tmp_panel_from_parent(&self, path: PathBuf) -> DirPanel {
         // Always use absolute paths
         if let Some(parent) = path.parent().and_then(|p| canonicalize(p).ok()) {
@@ -109,7 +105,7 @@ impl PanelManager {
             if let Some(elements) = self.cache.get(&path) {
                 DirPanel::with_selection(elements, parent, path.as_path())
             } else {
-                DirPanel::loading(path)
+                DirPanel::loading(parent)
             }
         } else {
             DirPanel::empty()
@@ -311,11 +307,11 @@ impl PanelManager {
                         break;
                     }
                     let (panel, state) = result.unwrap();
-                    Notification::new()
-                        .summary("incoming-dir-content")
-                        .body(&format!("{}", panel.path().display()))
-                        .show()
-                        .unwrap();
+                    // Notification::new()
+                    //     .summary("incoming-dir-content")
+                    //     .body(&format!("{}", panel.path().display()))
+                    //     .show()
+                    //     .unwrap();
                     self.panels.update_panel(panel, state);
                     self.panels.draw()?;
                 }
@@ -326,10 +322,10 @@ impl PanelManager {
                         break;
                     }
                     let (preview, panel_state) = result.unwrap();
-                    Notification::new()
-                        .summary("incoming-preview")
-                        .show()
-                        .unwrap();
+                    // Notification::new()
+                    //     .summary("incoming-preview")
+                    //     .show()
+                    //     .unwrap();
                     self.panels.update_preview(Panel::Preview(preview), panel_state);
                     self.panels.draw()?;
                 }

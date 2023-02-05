@@ -118,6 +118,7 @@ impl PartialOrd for DirElem {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct PreviewPanel {
     path: PathBuf,
 }
@@ -323,10 +324,10 @@ pub struct MillerPanels {
     stdout: Stdout,
 }
 
-/// Reads the content of a directory asynchronously
+/// Reads the content of a directory
 fn dir_content(path: PathBuf) -> Result<Vec<DirElem>> {
     // read directory
-    let mut dir = read_dir(path)?;
+    let dir = read_dir(path)?;
     let mut out = Vec::new();
     for item in dir {
         let item_path = canonicalize(item?.path())?;

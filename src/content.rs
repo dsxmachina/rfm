@@ -1,6 +1,6 @@
 use std::{fs::canonicalize, io, path::PathBuf, sync::Arc};
 
-use cached::{Cached, SizedCache};
+use cached::{cached_result, Cached, SizedCache, TimedSizedCache};
 use parking_lot::Mutex;
 use tokio::{fs::read_dir, sync::mpsc};
 
@@ -41,9 +41,9 @@ pub struct Manager {
 }
 
 /// Reads the content of a directory asynchronously
-async fn dir_content(path: PathBuf) -> Result<Vec<DirElem>, io::Error> {
+async fn async_dir_content(path: PathBuf) -> Result<Vec<DirElem>, io::Error> {
     // read directory
-    let mut dir = read_dir(path).await?;
+    let mut dir = tokio::fs::read_dir(path).await?;
     let mut out = Vec::new();
 
     while let Some(item) = dir.next_entry().await? {
@@ -52,6 +52,21 @@ async fn dir_content(path: PathBuf) -> Result<Vec<DirElem>, io::Error> {
     }
     out.sort();
     Ok(out)
+}
+
+cached_result! {
+    DIR_CONTENT: TimedSizedCache<PathBuf, Vec<DirElem>> = TimedSizedCache::with_size_and_lifespan(10, 5);
+    fn dir_content(path: PathBuf) -> Result<Vec<DirElem>, io::Error> = {
+        // read directory
+        let dir = std::fs::read_dir(path)?;
+        let mut out = Vec::new();
+        for item in dir {
+            let item_path = canonicalize(item?.path())?;
+            out.push(DirElem::from(item_path))
+        }
+        out.sort();
+        Ok(out)
+    }
 }
 
 impl Manager {
@@ -71,23 +86,28 @@ impl Manager {
 
     pub async fn run(mut self) {
         while let Some((path, state)) = self.rx.recv().await {
+            let new_state = PanelState {
+                state_cnt: state.state_cnt + 1,
+                panel: state.panel,
+            };
             if path.is_dir() {
                 // Parse directory
-                let result = tokio::spawn(dir_content(path.clone())).await;
+                let dir_path = path.clone();
+                let result = tokio::task::spawn_blocking(move || dir_content(dir_path)).await;
                 if let Ok(Ok(content)) = result {
                     // Create dir-panel from content
                     let panel = DirPanel::new(content.clone(), path.clone());
                     // Send content back
-                    self.dir_tx
-                        .send((panel, state))
-                        .await
-                        .expect("Receiver dropped or closed");
+                    let _ = self.dir_tx.send((panel, new_state)).await;
                     // Cache result
                     self.cache.insert(path, content);
                 }
             } else {
                 // Create preview
-                // TODO
+                let _ = self
+                    .prev_tx
+                    .send((PreviewPanel::new(path), new_state))
+                    .await;
             }
         }
     }
