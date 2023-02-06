@@ -360,6 +360,7 @@ impl PanelManager {
                             Command::ToggleHidden => {
                                 // TODO!
                                 // self.panels.toggle_hidden()?;
+                                self.show_hidden = !self.show_hidden;
                             }
                             Command::Quit => break,
                             Command::None => (),

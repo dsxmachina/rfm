@@ -67,7 +67,9 @@ cached_result! {
             let item_path = canonicalize(item?.path())?;
             out.push(DirElem::from(item_path))
         }
-        out.sort();
+        // out.sort();
+        out.sort_by_cached_key(|a| a.name().to_lowercase());
+        out.sort_by_cached_key(|a| !a.path().is_dir());
         Ok(out)
     }
 }
@@ -85,7 +87,8 @@ cached_result! {
             let item_path = canonicalize(item?.path())?;
             out.push(DirElem::from(item_path))
         }
-        out.sort();
+        out.sort_by_cached_key(|a| a.name().to_lowercase());
+        out.sort_by_cached_key(|a| !a.path().is_dir());
         Ok(out)
     }
 }
@@ -147,5 +150,40 @@ impl Manager {
                     .await;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn test_dir_parsing_speed() {
+        let path: PathBuf = "/home/someone/Bilder/ground_images/-3000_-2000_3000_2000_0".into();
+        // read directory
+        let now = Instant::now();
+        let dir = std::fs::read_dir(path).unwrap();
+        println!("read-dir: {}", now.elapsed().as_millis());
+        let now = Instant::now();
+        let mut out = Vec::new();
+        for item in dir.skip(1) {
+            let item_path = canonicalize(item.unwrap().path()).unwrap();
+            out.push(DirElem::from(item_path))
+        }
+        println!("load-dir: {}", now.elapsed().as_millis());
+        let now = Instant::now();
+
+        out.sort_by_cached_key(|a| a.name().to_lowercase());
+        out.sort_by_cached_key(|a| a.path().is_dir());
+        // out.sort_by_key(|elem| {
+
+        // })
+        // out.sort();
+
+        println!("sort: {}", now.elapsed().as_millis());
+
+        println!("elements: {}", out.len());
+        assert!(false);
     }
 }
