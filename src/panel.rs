@@ -773,7 +773,7 @@ impl DirPanel {
             if self.non_hidden_idx == 0 {
                 return false;
             }
-            self.non_hidden_idx = self.selected.saturating_sub(step);
+            self.non_hidden_idx = self.non_hidden_idx.saturating_sub(step);
             self.selected = *self.non_hidden.get(self.non_hidden_idx).unwrap_or(&0);
         }
         true
@@ -802,7 +802,7 @@ impl DirPanel {
             if self.non_hidden_idx.saturating_add(1) == self.non_hidden.len() {
                 return false;
             }
-            if self.selected.saturating_add(step) >= self.non_hidden.len() {
+            if self.non_hidden_idx.saturating_add(step) >= self.non_hidden.len() {
                 // idx = len(non_hidden) - 1
                 self.non_hidden_idx = self.non_hidden.len().saturating_sub(1);
             } else {
