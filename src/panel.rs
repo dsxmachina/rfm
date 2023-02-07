@@ -7,6 +7,7 @@ use crossterm::{
     terminal::{self, Clear, ClearType},
     QueueableCommand, Result,
 };
+use notify_rust::Notification;
 use pad::PadStr;
 use std::{
     cmp::Ordering,
@@ -386,6 +387,11 @@ impl MillerPanels {
 
     pub fn toggle_hidden(&mut self) -> Result<()> {
         self.show_hidden = !self.show_hidden;
+        self.left.toggle_hidden();
+        self.mid.toggle_hidden();
+        if let Panel::Dir(panel) = &mut self.right {
+            panel.toggle_hidden();
+        };
         self.draw()
     }
 
@@ -634,66 +640,107 @@ impl MillerPanels {
 // we query it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirPanel {
+    /// Elements of the directory
     elements: Vec<DirElem>,
+    /// Number of non-hidden files
+    non_hidden: Vec<usize>,
+    /// Selected element
     selected: usize,
+    /// Index in the `non_hidden` vector that is our current selection
+    non_hidden_idx: usize,
+    /// Path of the directory that the panel is based on
     path: PathBuf,
+    /// Weather or not the panel is still loading some data
     loading: bool,
+    /// Weather or not to show hidden files
+    show_hidden: bool,
 }
 
 impl DirPanel {
     pub fn new(elements: Vec<DirElem>, path: PathBuf) -> Self {
+        let non_hidden = elements
+            .iter()
+            .enumerate()
+            .filter(|(_, elem)| !elem.is_hidden)
+            .map(|(idx, _)| idx)
+            .collect::<Vec<usize>>();
+
+        let selected = *non_hidden.first().unwrap_or(&0);
         DirPanel {
             elements,
-            selected: 0,
+            non_hidden,
+            selected,
+            non_hidden_idx: 0,
             path,
             loading: false,
+            show_hidden: false,
         }
     }
 
+    pub fn toggle_hidden(&mut self) {
+        self.show_hidden = !self.show_hidden;
+    }
+
     pub fn select(&mut self, selection: &Path) {
-        let mut selected = 0;
-        for elem in self.elements.iter() {
-            if elem.path() == selection {
-                break;
-            }
-            selected += 1;
-        }
-        if selected == self.elements.len() {
-            selected = self.elements.len().saturating_sub(1);
-        }
-        self.selected = selected;
+        self.selected = self
+            .elements
+            .iter()
+            .enumerate()
+            .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
+            .find(|(_, elem)| elem.path() == selection)
+            .map(|(idx, _)| idx)
+            .unwrap_or(self.selected);
+
+        // let mut selected = 0;
+        // for elem in self
+        //     .elements
+        //     .iter()
+        //     .filter(|elem| self.show_hidden || !elem.is_hidden)
+        // {
+        //     if elem.path() == selection {
+        //         break;
+        //     }
+        //     selected += 1;
+        // }
+        // if selected == self.elements.len() {
+        //     selected = self.elements.len().saturating_sub(1);
+        // }
+        // self.selected = selected;
     }
 
     pub fn path(&self) -> &Path {
         self.path.as_path()
     }
 
-    // TODO: Remove
-    pub fn with_selection(elements: Vec<DirElem>, path: PathBuf, selection: &Path) -> DirPanel {
-        let mut selected = 0;
-        for elem in elements.iter() {
-            if elem.path() == selection {
-                break;
-            }
-            selected += 1;
-        }
-        if selected == elements.len() {
-            selected = elements.len().saturating_sub(1);
-        }
-        DirPanel {
-            elements,
-            selected,
-            path,
-            loading: false,
-        }
-    }
+    // // TODO: Remove
+    // pub fn with_selection(elements: Vec<DirElem>, path: PathBuf, selection: &Path) -> DirPanel {
+    //     let mut selected = 0;
+    //     for elem in elements.iter() {
+    //         if elem.path() == selection {
+    //             break;
+    //         }
+    //         selected += 1;
+    //     }
+    //     if selected == elements.len() {
+    //         selected = elements.len().saturating_sub(1);
+    //     }
+    //     DirPanel {
+    //         elements,
+    //         selected,
+    //         path,
+    //         loading: false,
+    //     }
+    // }
 
     pub fn loading(path: PathBuf) -> Self {
         DirPanel {
             elements: Vec::new(),
+            non_hidden: Vec::new(),
             selected: 0,
+            non_hidden_idx: 0,
             path,
             loading: true,
+            show_hidden: false,
         }
     }
 
@@ -703,9 +750,12 @@ impl DirPanel {
     pub fn empty() -> Self {
         DirPanel {
             elements: Vec::new(),
+            non_hidden: Vec::new(),
             selected: 0,
+            non_hidden_idx: 0,
             path: "path-of-empty-panel".into(),
             loading: false,
+            show_hidden: false,
         }
     }
 
@@ -714,12 +764,19 @@ impl DirPanel {
     /// Returns true if the panel has changed and
     /// requires a redraw.
     pub fn up(&mut self, step: usize) -> bool {
-        if self.selected > 0 {
+        if self.show_hidden {
+            if self.selected == 0 {
+                return false;
+            }
             self.selected = self.selected.saturating_sub(step);
-            true
         } else {
-            false
+            if self.non_hidden_idx == 0 {
+                return false;
+            }
+            self.non_hidden_idx = self.selected.saturating_sub(step);
+            self.selected = *self.non_hidden.get(self.non_hidden_idx).unwrap_or(&0);
         }
+        true
     }
 
     /// Move the selection "down" if possible.
@@ -727,17 +784,33 @@ impl DirPanel {
     /// Returns true if the panel has changed and
     /// requires a redraw.
     pub fn down(&mut self, step: usize) -> bool {
-        if self.selected.saturating_add(step) < self.elements.len() {
-            self.selected = self.selected.saturating_add(step);
-            true
-        } else {
-            if self.selected + 1 == self.elements.len() {
-                false
-            } else {
-                self.selected = self.elements.len().saturating_sub(1);
-                true
+        if self.show_hidden {
+            // If we are already at the end, do nothing and return
+            if self.selected.saturating_add(1) == self.elements.len() {
+                return false;
             }
+            // If step is too big, just jump to the end
+            if self.selected.saturating_add(step) >= self.elements.len() {
+                // selected = len(elements) - 1
+                self.selected = self.elements.len().saturating_sub(1);
+            } else {
+                // Otherwise just increase by step
+                self.selected = self.selected.saturating_add(step);
+            }
+        } else {
+            // If we are already at the end, do nothing and return
+            if self.non_hidden_idx.saturating_add(1) == self.non_hidden.len() {
+                return false;
+            }
+            if self.selected.saturating_add(step) >= self.non_hidden.len() {
+                // idx = len(non_hidden) - 1
+                self.non_hidden_idx = self.non_hidden.len().saturating_sub(1);
+            } else {
+                self.non_hidden_idx = self.non_hidden_idx.saturating_add(step);
+            }
+            self.selected = *self.non_hidden.get(self.non_hidden_idx).unwrap_or(&0);
         }
+        true
     }
 
     /// Returns the selcted path of the panel.
@@ -790,26 +863,27 @@ impl DirPanel {
         };
 
         // Then print new buffer
-        let mut idx = 0 as u16;
+        let mut y_offset = 0 as u16;
         // Write "height" items to the screen
-        for entry in self
+        for (idx, entry) in self
             .elements
             .iter()
+            .enumerate()
             .skip(scroll)
-            .filter(|elem| show_hidden || !elem.is_hidden)
+            .filter(|(_, elem)| show_hidden || !elem.is_hidden)
             .take(height as usize)
         {
-            let y = u16::try_from(y_range.start + idx).unwrap_or_else(|_| u16::MAX);
+            let y = u16::try_from(y_range.start + y_offset).unwrap_or_else(|_| u16::MAX);
             queue!(
                 stdout,
                 cursor::MoveTo(x_range.start, y),
                 PrintStyledContent("|".dark_green().bold()),
-                entry.print_styled(self.selected == idx as usize + scroll, width),
+                entry.print_styled(self.selected == (idx + scroll), width),
             )?;
-            idx += 1;
+            y_offset += 1;
         }
 
-        for y in y_range.start + idx..y_range.end {
+        for y in (y_range.start + y_offset)..y_range.end {
             queue!(
                 stdout,
                 cursor::MoveTo(x_range.start, y),

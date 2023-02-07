@@ -99,7 +99,9 @@ impl PanelManager {
         if let Some(parent) = path.parent().and_then(|p| canonicalize(p).ok()) {
             // Lookup cache and reply with some panel
             if let Some(elements) = self.cache.get(&path) {
-                DirPanel::with_selection(elements, parent, path.as_path())
+                let mut tmp = DirPanel::new(elements, parent);
+                tmp.select(path.as_path());
+                tmp
             } else {
                 DirPanel::loading(parent)
             }
