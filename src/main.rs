@@ -46,18 +46,6 @@ async fn main() -> Result<()> {
     let panel_manager = PanelManager::new(cache, dir_rx, preview_rx, content_tx)?;
     let panel_handle = tokio::spawn(panel_manager.run());
 
-    // if let Err(e) = manager.run().await {
-    //     // Clear everything
-    //     let mut stdout = stdout();
-    //     stdout
-    //         .queue(Clear(ClearType::All))?
-    //         .queue(cursor::MoveTo(0, 0))?
-    //         .queue(cursor::Show)?
-    //         .flush()?;
-    //     // Print error
-    //     eprintln!("Error: {e}");
-    // }
-
     panel_handle.await??;
     content_handle.await?;
 
