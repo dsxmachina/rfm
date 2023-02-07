@@ -679,6 +679,10 @@ impl DirPanel {
 
     pub fn toggle_hidden(&mut self) {
         self.show_hidden = !self.show_hidden;
+        // // TODO: Do we need this ?  save selected path
+        // if let Some(path) = self.selected_path().map(|p| p.to_path_buf()) {
+        //     self.select(path.as_path());
+        // }
     }
 
     pub fn select(&mut self, selection: &Path) {
