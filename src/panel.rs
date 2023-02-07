@@ -10,7 +10,7 @@ use crossterm::{
 use pad::PadStr;
 use std::{
     cmp::Ordering,
-    fs::{canonicalize, read_dir},
+    fs::{canonicalize, read_dir, DirEntry},
     io::{stdout, Stdout, Write},
     mem,
     ops::Range,
@@ -45,6 +45,7 @@ pub struct PanelState {
 pub struct DirElem {
     name: String,
     path: PathBuf,
+    is_hidden: bool,
 }
 
 impl DirElem {
@@ -77,14 +78,24 @@ impl DirElem {
 
 impl<P: AsRef<Path>> From<P> for DirElem {
     fn from(path: P) -> Self {
-        let path: PathBuf = path.as_ref().into();
-        let name: String = path
+        let name = path
+            .as_ref()
             .file_name()
             .map(|p| p.to_str())
             .flatten()
-            .map(|s| s.into())
+            .map(|s| s.to_string())
             .unwrap_or_default();
-        DirElem { path, name }
+
+        let is_hidden = name.starts_with(".");
+
+        // Always use an absolute path here
+        let path: PathBuf = canonicalize(path.as_ref()).unwrap_or_else(|_| path.as_ref().into());
+
+        DirElem {
+            path,
+            name,
+            is_hidden,
+        }
     }
 }
 
@@ -320,6 +331,8 @@ pub struct MillerPanels {
     // prev-path (after jump-mark)
     prev: PathBuf,
 
+    show_hidden: bool,
+
     // handle to standard-output
     stdout: Stdout,
 }
@@ -357,6 +370,7 @@ impl MillerPanels {
             state_cnt: (0, 0, 0),
             ranges,
             prev: ".".into(),
+            show_hidden: false,
             stdout,
         })
     }
@@ -367,6 +381,11 @@ impl MillerPanels {
 
     pub fn terminal_resize(&mut self, terminal_size: (u16, u16)) -> Result<()> {
         self.ranges = Ranges::from_size(terminal_size);
+        self.draw()
+    }
+
+    pub fn toggle_hidden(&mut self) -> Result<()> {
+        self.show_hidden = !self.show_hidden;
         self.draw()
     }
 
@@ -578,11 +597,13 @@ impl MillerPanels {
 
         self.left.draw(
             stdout,
+            self.show_hidden,
             self.ranges.left_x_range.clone(),
             self.ranges.y_range.clone(),
         )?;
         self.mid.draw(
             stdout,
+            self.show_hidden,
             self.ranges.mid_x_range.clone(),
             self.ranges.y_range.clone(),
         )?;
@@ -590,6 +611,7 @@ impl MillerPanels {
         match &self.right {
             Panel::Dir(panel) => panel.draw(
                 stdout,
+                self.show_hidden,
                 self.ranges.right_x_range.clone(),
                 self.ranges.y_range.clone(),
             )?,
@@ -748,6 +770,7 @@ impl DirPanel {
     pub fn draw(
         &self,
         stdout: &mut Stdout,
+        show_hidden: bool,
         x_range: Range<u16>,
         y_range: Range<u16>,
     ) -> Result<()> {
@@ -769,7 +792,13 @@ impl DirPanel {
         // Then print new buffer
         let mut idx = 0 as u16;
         // Write "height" items to the screen
-        for entry in self.elements.iter().skip(scroll).take(height as usize) {
+        for entry in self
+            .elements
+            .iter()
+            .skip(scroll)
+            .filter(|elem| show_hidden || !elem.is_hidden)
+            .take(height as usize)
+        {
             let y = u16::try_from(y_range.start + idx).unwrap_or_else(|_| u16::MAX);
             queue!(
                 stdout,

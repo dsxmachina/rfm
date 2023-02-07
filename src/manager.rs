@@ -68,9 +68,6 @@ pub struct PanelManager {
 
     /// Sends request for new content
     content_tx: mpsc::Sender<(PathBuf, PanelState)>,
-
-    /// Weather or not to show hidden files
-    show_hidden: bool,
 }
 
 impl PanelManager {
@@ -94,7 +91,6 @@ impl PanelManager {
             dir_rx,
             prev_rx,
             content_tx,
-            show_hidden: false,
         })
     }
 
@@ -358,9 +354,7 @@ impl PanelManager {
                                 self.update_panels(change).await?;
                             }
                             Command::ToggleHidden => {
-                                // TODO!
-                                // self.panels.toggle_hidden()?;
-                                self.show_hidden = !self.show_hidden;
+                                self.panels.toggle_hidden()?;
                             }
                             Command::Quit => break,
                             Command::None => (),

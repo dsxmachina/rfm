@@ -64,8 +64,7 @@ cached_result! {
         let dir = std::fs::read_dir(path)?;
         let mut out = Vec::new();
         for item in dir {
-            let item_path = canonicalize(item?.path())?;
-            out.push(DirElem::from(item_path))
+            out.push(DirElem::from(item?.path()))
         }
         // out.sort();
         out.sort_by_cached_key(|a| a.name().to_lowercase());
@@ -84,8 +83,7 @@ cached_result! {
             if idx >= max_elem {
                 break;
             }
-            let item_path = canonicalize(item?.path())?;
-            out.push(DirElem::from(item_path))
+            out.push(DirElem::from(item?.path()))
         }
         out.sort_by_cached_key(|a| a.name().to_lowercase());
         out.sort_by_cached_key(|a| !a.path().is_dir());
@@ -184,6 +182,30 @@ mod tests {
         println!("sort: {}", now.elapsed().as_millis());
 
         println!("elements: {}", out.len());
-        assert!(false);
+        assert!(true);
+    }
+    #[test]
+    fn test_symlink_parent() {
+        let path: PathBuf = "/home/someone/".into();
+        // read directory
+        let dir = std::fs::read_dir(path).unwrap();
+        for item in dir {
+            let entry = item.unwrap();
+            let path_1 = entry.path();
+            let path_2 = canonicalize(path_1.as_path()).unwrap();
+
+            println!(
+                "{}: {}",
+                path_1.display(),
+                path_1.parent().unwrap().display()
+            );
+            println!(
+                "{}: {}",
+                path_2.display(),
+                path_2.parent().unwrap().display()
+            );
+            assert_eq!(path_1.parent(), path_2.parent());
+        }
+        assert!(false)
     }
 }
