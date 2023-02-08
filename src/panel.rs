@@ -479,16 +479,16 @@ impl MillerPanels {
 
     pub fn move_cursor(&mut self, movement: Movement) -> PanelAction {
         match movement {
-            Movement::Up => self.up(1),
-            Movement::Down => self.down(1),
-            Movement::Left => self.left(),
-            Movement::Right => self.right(),
-            Movement::Top => self.up(usize::MAX),
-            Movement::Bottom => self.down(usize::MAX),
-            Movement::HalfPageForward => self.down(self.ranges.height() as usize / 2),
-            Movement::HalfPageBackward => self.up(self.ranges.height() as usize / 2),
-            Movement::PageForward => self.down(self.ranges.height() as usize),
-            Movement::PageBackward => self.up(self.ranges.height() as usize),
+            Movement::Up => self.move_up(1),
+            Movement::Down => self.move_down(1),
+            Movement::Left => self.move_left(),
+            Movement::Right => self.move_right(),
+            Movement::Top => self.move_up(usize::MAX),
+            Movement::Bottom => self.move_down(usize::MAX),
+            Movement::HalfPageForward => self.move_down(self.ranges.height() as usize / 2),
+            Movement::HalfPageBackward => self.move_up(self.ranges.height() as usize / 2),
+            Movement::PageForward => self.move_down(self.ranges.height() as usize),
+            Movement::PageBackward => self.move_up(self.ranges.height() as usize),
             Movement::JumpTo(path) => self.jump(path.into()),
             Movement::JumpPrevious => self.jump(self.prev.clone()),
         }
@@ -511,7 +511,7 @@ impl MillerPanels {
     //
     // We will create a "update panel" function,
     // that the manager can call, whenever a new panel is ready to be drawn.
-    fn up(&mut self, step: usize) -> PanelAction {
+    fn move_up(&mut self, step: usize) -> PanelAction {
         if self.mid.up(step) {
             PanelAction::UpdatePreview(self.mid.selected_path_owned())
         } else {
@@ -519,7 +519,7 @@ impl MillerPanels {
         }
     }
 
-    fn down(&mut self, step: usize) -> PanelAction {
+    fn move_down(&mut self, step: usize) -> PanelAction {
         if self.mid.down(step) {
             PanelAction::UpdatePreview(self.mid.selected_path_owned())
         } else {
@@ -528,7 +528,7 @@ impl MillerPanels {
     }
 
     // TODO: We could improve, that we don't jump into directories where we do not have access
-    fn right(&mut self) -> PanelAction {
+    fn move_right(&mut self) -> PanelAction {
         if let Some(selected) = self.mid.selected_path() {
             if selected.is_dir() {
                 // TODO: Make this dumb again to get rid of some pitfalls
@@ -563,7 +563,7 @@ impl MillerPanels {
         }
     }
 
-    fn left(&mut self) -> PanelAction {
+    fn move_left(&mut self) -> PanelAction {
         // If the left panel is empty, we cannot move left:
         if self.left.selected_path().is_none() {
             return PanelAction::None;
