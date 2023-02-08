@@ -603,13 +603,11 @@ impl MillerPanels {
 
         self.left.draw(
             stdout,
-            self.show_hidden,
             self.ranges.left_x_range.clone(),
             self.ranges.y_range.clone(),
         )?;
         self.mid.draw(
             stdout,
-            self.show_hidden,
             self.ranges.mid_x_range.clone(),
             self.ranges.y_range.clone(),
         )?;
@@ -617,7 +615,6 @@ impl MillerPanels {
         match &self.right {
             Panel::Dir(panel) => panel.draw(
                 stdout,
-                self.show_hidden,
                 self.ranges.right_x_range.clone(),
                 self.ranges.y_range.clone(),
             )?,
@@ -847,7 +844,6 @@ impl DirPanel {
     pub fn draw(
         &self,
         stdout: &mut Stdout,
-        show_hidden: bool,
         x_range: Range<u16>,
         y_range: Range<u16>,
     ) -> Result<()> {
@@ -874,7 +870,7 @@ impl DirPanel {
             .iter()
             .enumerate()
             .skip(scroll)
-            .filter(|(_, elem)| show_hidden || !elem.is_hidden)
+            .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
             .take(height as usize)
         {
             let y = u16::try_from(y_range.start + y_offset).unwrap_or_else(|_| u16::MAX);
