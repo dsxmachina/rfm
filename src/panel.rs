@@ -853,15 +853,19 @@ impl DirPanel {
         let height = y_range.end.saturating_sub(y_range.start);
 
         // Calculate page-scroll
-        let scroll: usize = if self.elements.len() > height as usize {
+        let scroll: usize = {
             // if selected should be in the middle all the time:
             // bot = min(max-items, selected + height / 2)
             // scroll = min(0, bot - (height + 1))
             //
-            let bot = self.elements.len().min(self.selected + height as usize / 2);
+            let bot = if self.show_hidden {
+                self.elements.len().min(self.selected + height as usize / 2)
+            } else {
+                self.non_hidden
+                    .len()
+                    .min(self.non_hidden_idx + height as usize / 2)
+            };
             bot.saturating_sub(height as usize)
-        } else {
-            0
         };
 
         // Then print new buffer
