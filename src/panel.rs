@@ -397,68 +397,66 @@ impl MillerPanels {
         self.draw()
     }
 
-    pub fn update_panel(&mut self, panel: DirPanel, panel_state: PanelState) -> PanelState {
-        let state = match panel_state.panel {
+    pub fn update_panel(&mut self, panel: DirPanel, panel_state: PanelState) {
+        match panel_state.panel {
             Select::Left => {
                 if panel_state.state_cnt > self.state_cnt.0 {
-                    self.update_left(panel)
+                    self.update_left(panel);
                 } else {
-                    self.state_left()
+                    self.state_left();
                 }
             }
             Select::Mid => {
                 if panel_state.state_cnt > self.state_cnt.1 {
-                    self.update_mid(panel)
+                    self.update_mid(panel);
                 } else {
-                    self.state_mid()
+                    self.state_mid();
                 }
             }
             Select::Right => {
                 if panel_state.state_cnt > self.state_cnt.2 {
-                    self.update_right(Panel::Dir(panel))
+                    self.update_right(Panel::Dir(panel));
                 } else {
-                    self.state_right()
+                    self.state_right();
                 }
             }
         };
-        self.draw().unwrap();
-        state
     }
 
     /// Exclusively updates the right (preview) panel
-    pub fn update_preview(&mut self, preview: Panel, panel_state: PanelState) -> PanelState {
+    pub fn update_preview(&mut self, preview: Panel, panel_state: PanelState) {
         if let Select::Right = &panel_state.panel {
             if panel_state.state_cnt > self.state_cnt.2 {
-                return self.update_right(preview);
+                self.update_right(preview);
             }
         }
-        self.state_right()
+        // self.state_right()
     }
 
     /// Updates the left panel and returns the updates panel-state
-    fn update_left(&mut self, panel: DirPanel) -> PanelState {
+    fn update_left(&mut self, panel: DirPanel) {
         self.left = panel;
         self.left.show_hidden = self.show_hidden;
         self.state_cnt.0 += 1;
-        self.state_left()
+        // self.state_left()
     }
 
     /// Updates the middle panel and returns the updates panel-state
-    fn update_mid(&mut self, panel: DirPanel) -> PanelState {
+    fn update_mid(&mut self, panel: DirPanel) {
         self.mid = panel;
         self.mid.show_hidden = self.show_hidden;
         self.state_cnt.1 += 1;
-        self.state_mid()
+        // self.state_mid()
     }
 
     /// Updates the right panel and returns the updates panel-state
-    fn update_right(&mut self, panel: Panel) -> PanelState {
+    fn update_right(&mut self, panel: Panel) {
         self.right = panel;
         if let Panel::Dir(panel) = &mut self.right {
             panel.show_hidden = self.show_hidden;
         }
         self.state_cnt.2 += 1;
-        self.state_right()
+        // self.state_right()
     }
 
     pub fn state_left(&self) -> PanelState {
@@ -598,8 +596,6 @@ impl MillerPanels {
                 print_header(stdout, path)?;
             }
         }
-
-        // Notification::new().summary("draw!").show().unwrap();
 
         print_footer(
             stdout,
