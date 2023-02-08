@@ -192,6 +192,12 @@ impl PanelManager {
                 }
             }
             PanelAction::UpdateAll(path) => {
+                let path = if path.is_absolute() {
+                    path
+                } else {
+                    path.canonicalize()?
+                };
+                let path = path.canonicalize()?;
                 // Update left
                 let left = self.tmp_panel_from_parent(path.clone());
                 let mid = self.tmp_panel_from_path(path.clone());
@@ -231,6 +237,11 @@ impl PanelManager {
                 );
             }
             PanelAction::UpdateLeft(path) => {
+                let path = if path.is_absolute() {
+                    path
+                } else {
+                    path.canonicalize()?
+                };
                 let left = self.tmp_panel_from_parent(path.clone());
                 let left_path = left.path().to_path_buf();
                 self.panels.update_panel(
@@ -254,17 +265,22 @@ impl PanelManager {
     }
 
     fn open(&self, path: PathBuf) -> Result<()> {
-        let absolute = canonicalize(path)?;
+        let absolute = if path.is_absolute() {
+            path
+        } else {
+            path.canonicalize()?
+        };
+        // Notification::new()
+        //     .summary("open")
+        //     .body(&format!("{}", absolute.display()))
+        //     .show()
+        //     .unwrap();
+        // Image
         // If the selected item is a file,
         // we need to open it
         if let Some(ext) = absolute.extension().and_then(|ext| ext.to_str()) {
             match ext {
                 "png" | "bmp" | "jpg" | "jpeg" => {
-                    // Notification::new()
-                    // .summary(&format!("Image: {}", absolute.display()))
-                    // .show()
-                    // .unwrap();
-                    // Image
                     std::process::Command::new("sxiv")
                         .stderr(Stdio::null())
                         .stdin(Stdio::null())
