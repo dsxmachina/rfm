@@ -181,6 +181,7 @@ impl PanelManager {
                     right,
                     PanelState {
                         state_cnt: self.panels.state_right().state_cnt + 1,
+                        hash: self.panels.state_right().hash,
                         panel: Select::Right,
                     },
                 );
@@ -208,6 +209,7 @@ impl PanelManager {
                     left,
                     PanelState {
                         state_cnt: self.panels.state_left().state_cnt + 1,
+                        hash: self.panels.state_left().hash,
                         panel: Select::Left,
                     },
                 );
@@ -220,6 +222,7 @@ impl PanelManager {
                     mid,
                     PanelState {
                         state_cnt: self.panels.state_mid().state_cnt + 1,
+                        hash: self.panels.state_mid().hash,
                         panel: Select::Mid,
                     },
                 );
@@ -232,6 +235,7 @@ impl PanelManager {
                     right,
                     PanelState {
                         state_cnt: self.panels.state_right().state_cnt + 1,
+                        hash: self.panels.state_right().hash,
                         panel: Select::Right,
                     },
                 );
@@ -248,6 +252,7 @@ impl PanelManager {
                     left,
                     PanelState {
                         state_cnt: self.panels.state_left().state_cnt + 1,
+                        hash: self.panels.state_left().hash,
                         panel: Select::Left,
                     },
                 );

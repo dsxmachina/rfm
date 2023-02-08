@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 cached = "0.42.0"
 crossterm = { version = "0.26.0", features = ["event-stream"] }
+fasthash = "0.4.0"
 futures = "0.3.26"
 futures-timer = "3.0.2"
 notify-rust = "4.7.0"

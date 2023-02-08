@@ -7,11 +7,13 @@ use crossterm::{
     terminal::{self, Clear, ClearType},
     QueueableCommand, Result,
 };
+use fasthash::MetroHasher;
 use notify_rust::Notification;
 use pad::PadStr;
 use std::{
     cmp::Ordering,
     fs::{canonicalize, read_dir, DirEntry},
+    hash::{Hash, Hasher},
     io::{stdout, Stdout, Write},
     mem,
     ops::Range,
@@ -34,6 +36,7 @@ pub enum Select {
 #[derive(Debug, Clone)]
 pub struct PanelState {
     pub state_cnt: u64,
+    pub hash: u64,
     pub panel: Select,
 }
 
@@ -130,6 +133,7 @@ impl PartialOrd for DirElem {
     }
 }
 
+// TODO: Add hash
 #[derive(Debug, Clone)]
 pub struct PreviewPanel {
     path: PathBuf,
@@ -201,6 +205,14 @@ impl Panel {
 
     pub fn empty() -> Panel {
         Panel::Empty
+    }
+
+    pub fn hash(&self) -> u64 {
+        match self {
+            Panel::Dir(panel) => panel.hash,
+            Panel::Preview(panel) => 0, // TODO
+            Panel::Empty => 0,
+        }
     }
 
     pub fn path(&self) -> Option<PathBuf> {
@@ -462,6 +474,7 @@ impl MillerPanels {
     pub fn state_left(&self) -> PanelState {
         PanelState {
             state_cnt: self.state_cnt.0,
+            hash: self.left.hash,
             panel: Select::Left,
         }
     }
@@ -469,6 +482,7 @@ impl MillerPanels {
     pub fn state_mid(&self) -> PanelState {
         PanelState {
             state_cnt: self.state_cnt.1,
+            hash: self.mid.hash,
             panel: Select::Mid,
         }
     }
@@ -476,6 +490,7 @@ impl MillerPanels {
     pub fn state_right(&self) -> PanelState {
         PanelState {
             state_cnt: self.state_cnt.2,
+            hash: self.right.hash(),
             panel: Select::Right,
         }
     }
@@ -642,18 +657,35 @@ impl MillerPanels {
 pub struct DirPanel {
     /// Elements of the directory
     elements: Vec<DirElem>,
+
     /// Number of non-hidden files
     non_hidden: Vec<usize>,
+
     /// Selected element
     selected: usize,
+
     /// Index in the `non_hidden` vector that is our current selection
     non_hidden_idx: usize,
+
     /// Path of the directory that the panel is based on
     path: PathBuf,
+
     /// Weather or not the panel is still loading some data
     loading: bool,
+
     /// Weather or not to show hidden files
     show_hidden: bool,
+
+    /// Hash of the elements
+    hash: u64,
+}
+
+fn hash_elements(elements: &Vec<DirElem>) -> u64 {
+    let mut h: MetroHasher = Default::default();
+    for elem in elements.iter() {
+        elem.name().hash(&mut h);
+    }
+    h.finish()
 }
 
 impl DirPanel {
@@ -666,6 +698,8 @@ impl DirPanel {
             .collect::<Vec<usize>>();
 
         let selected = *non_hidden.first().unwrap_or(&0);
+        let hash = hash_elements(&elements);
+
         DirPanel {
             elements,
             non_hidden,
@@ -674,6 +708,7 @@ impl DirPanel {
             path,
             loading: false,
             show_hidden: false,
+            hash,
         }
     }
 
@@ -721,6 +756,7 @@ impl DirPanel {
             path,
             loading: true,
             show_hidden: false,
+            hash: 0,
         }
     }
 
@@ -736,6 +772,7 @@ impl DirPanel {
             path: "path-of-empty-panel".into(),
             loading: false,
             show_hidden: false,
+            hash: 0,
         }
     }
 

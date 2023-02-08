@@ -1,7 +1,14 @@
-use std::{fs::canonicalize, io, path::PathBuf, sync::Arc};
+use std::{
+    fs::canonicalize,
+    hash::{Hash, Hasher},
+    io,
+    path::PathBuf,
+    sync::Arc,
+};
 
 use cached::{cached_result, Cached, SizedCache, TimedSizedCache};
 use crossterm::terminal;
+use fasthash::MetroHasher;
 use notify_rust::Notification;
 use parking_lot::Mutex;
 use tokio::{fs::read_dir, sync::mpsc};
@@ -91,6 +98,15 @@ cached_result! {
     }
 }
 
+// TODO: This is a dublicate - put this somewhere else
+fn hash_elements(elements: &Vec<DirElem>) -> u64 {
+    let mut h: MetroHasher = Default::default();
+    for elem in elements.iter() {
+        elem.name().hash(&mut h);
+    }
+    h.finish()
+}
+
 impl Manager {
     pub fn new(
         cache: SharedCache,
@@ -108,10 +124,6 @@ impl Manager {
 
     pub async fn run(mut self) {
         while let Some((path, state)) = self.rx.recv().await {
-            let new_state = PanelState {
-                state_cnt: state.state_cnt + 1,
-                panel: state.panel.clone(),
-            };
             if path.is_dir() {
                 // Notification::new()
                 //     .summary(&format!("parsing: {}", path.display()))
@@ -129,18 +141,29 @@ impl Manager {
                 };
 
                 if let Ok(Ok(content)) = result {
-                    // Create dir-panel from content
-                    let panel = DirPanel::new(content.clone(), path.clone());
-                    // Send content back
-                    let _ = self.dir_tx.send((panel, new_state)).await;
-                    // Notification::new()
-                    //     .summary(&format!("finished: {}", path.display()))
-                    //     .show()
-                    //     .unwrap();
+                    // Calculate new state
+                    let new_state = PanelState {
+                        state_cnt: state.state_cnt + 1,
+                        hash: hash_elements(&content),
+                        panel: state.panel.clone(),
+                    };
+                    // Only send new panel, if the content has changed
+                    if state.hash != new_state.hash {
+                        // Create dir-panel from content
+                        let panel = DirPanel::new(content.clone(), path.clone());
+                        // Send content back
+                        let _ = self.dir_tx.send((panel, new_state)).await;
+                    }
                     // Cache result
                     self.cache.insert(path, content);
                 }
             } else {
+                // Calculate new state
+                let new_state = PanelState {
+                    state_cnt: state.state_cnt + 1,
+                    hash: 0,
+                    panel: state.panel.clone(),
+                };
                 // Create preview
                 let _ = self
                     .prev_tx
