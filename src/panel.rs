@@ -360,8 +360,10 @@ impl MillerPanels {
             .queue(Clear(ClearType::All))?
             .queue(cursor::MoveTo(0, 0))?;
         let terminal_size = terminal::size()?;
-        let left = DirPanel::new(dir_content("..".into())?, "..".into());
-        let mid = DirPanel::new(dir_content(".".into())?, ".".into());
+        let parent_path = PathBuf::from("..").canonicalize()?;
+        let current_path = PathBuf::from(".").canonicalize()?;
+        let left = DirPanel::new(dir_content(parent_path.clone())?, parent_path);
+        let mid = DirPanel::new(dir_content(current_path.clone())?, current_path);
         let right = Panel::empty();
         let ranges = Ranges::from_size(terminal_size);
         Ok(MillerPanels {
