@@ -389,10 +389,10 @@ impl MillerPanels {
 
     pub fn toggle_hidden(&mut self) -> Result<()> {
         self.show_hidden = !self.show_hidden;
-        self.left.toggle_hidden();
-        self.mid.toggle_hidden();
+        self.left.show_hidden = self.show_hidden;
+        self.mid.show_hidden = self.show_hidden;
         if let Panel::Dir(panel) = &mut self.right {
-            panel.toggle_hidden();
+            panel.show_hidden = self.show_hidden;
         };
         self.draw()
     }
@@ -438,6 +438,7 @@ impl MillerPanels {
     /// Updates the left panel and returns the updates panel-state
     fn update_left(&mut self, panel: DirPanel) -> PanelState {
         self.left = panel;
+        self.left.show_hidden = self.show_hidden;
         self.state_cnt.0 += 1;
         self.state_left()
     }
@@ -445,6 +446,7 @@ impl MillerPanels {
     /// Updates the middle panel and returns the updates panel-state
     fn update_mid(&mut self, panel: DirPanel) -> PanelState {
         self.mid = panel;
+        self.mid.show_hidden = self.show_hidden;
         self.state_cnt.1 += 1;
         self.state_mid()
     }
@@ -452,6 +454,9 @@ impl MillerPanels {
     /// Updates the right panel and returns the updates panel-state
     fn update_right(&mut self, panel: Panel) -> PanelState {
         self.right = panel;
+        if let Panel::Dir(panel) = &mut self.right {
+            panel.show_hidden = self.show_hidden;
+        }
         self.state_cnt.2 += 1;
         self.state_right()
     }
@@ -676,14 +681,6 @@ impl DirPanel {
         }
     }
 
-    pub fn toggle_hidden(&mut self) {
-        self.show_hidden = !self.show_hidden;
-        // // TODO: Do we need this ?  save selected path
-        // if let Some(path) = self.selected_path().map(|p| p.to_path_buf()) {
-        //     self.select(path.as_path());
-        // }
-    }
-
     pub fn select(&mut self, selection: &Path) {
         self.selected = self
             .elements
@@ -852,6 +849,7 @@ impl DirPanel {
         let width = x_range.end.saturating_sub(x_range.start);
         let height = y_range.end.saturating_sub(y_range.start);
 
+        // TODO: Fix scroll
         // Calculate page-scroll
         let scroll: usize = {
             // if selected should be in the middle all the time:
@@ -867,6 +865,14 @@ impl DirPanel {
             };
             bot.saturating_sub(height as usize)
         };
+
+        if self.selected != 0 {
+            Notification::new()
+                .summary(&format!("{}", self.path.display()))
+                .body(&format!("scroll={scroll}, selected={}", self.selected))
+                .show()
+                .unwrap();
+        }
 
         // Then print new buffer
         let mut y_offset = 0 as u16;
