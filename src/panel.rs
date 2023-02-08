@@ -389,10 +389,10 @@ impl MillerPanels {
 
     pub fn toggle_hidden(&mut self) -> Result<()> {
         self.show_hidden = !self.show_hidden;
-        self.left.show_hidden = self.show_hidden;
-        self.mid.show_hidden = self.show_hidden;
+        self.left.set_hidden(self.show_hidden);
+        self.mid.set_hidden(self.show_hidden);
         if let Panel::Dir(panel) = &mut self.right {
-            panel.show_hidden = self.show_hidden;
+            panel.set_hidden(self.show_hidden);
         };
         self.draw()
     }
@@ -708,6 +708,26 @@ impl DirPanel {
         // self.selected = selected;
     }
 
+    pub fn set_hidden(&mut self, show_hidden: bool) {
+        if self.show_hidden == show_hidden {
+            // Nothing to do
+            return;
+        }
+        if self.show_hidden && !show_hidden {
+            // Currently we show hidden files, but we should stop that
+            // -> non-hidden-idx needs to be updated to the value closest to selection
+            for (idx, elem_idx) in self.non_hidden.iter().enumerate() {
+                self.non_hidden_idx = idx;
+                if *elem_idx >= self.selected {
+                    break;
+                }
+            }
+            self.selected = *self.non_hidden.get(self.non_hidden_idx).unwrap_or(&0);
+        }
+        // Save value and change selection accordingly
+        self.show_hidden = show_hidden;
+    }
+
     pub fn path(&self) -> &Path {
         self.path.as_path()
     }
@@ -849,7 +869,6 @@ impl DirPanel {
         let width = x_range.end.saturating_sub(x_range.start);
         let height = y_range.end.saturating_sub(y_range.start);
 
-        // TODO: Fix scroll
         // Calculate page-scroll
         let scroll: usize = {
             // if selected should be in the middle all the time:
@@ -866,13 +885,13 @@ impl DirPanel {
             bot.saturating_sub(height as usize)
         };
 
-        if self.selected != 0 {
-            Notification::new()
-                .summary(&format!("{}", self.path.display()))
-                .body(&format!("scroll={scroll}, selected={}", self.selected))
-                .show()
-                .unwrap();
-        }
+        // if self.selected != 0 {
+        //     Notification::new()
+        //         .summary(&format!("{}", self.path.display()))
+        //         .body(&format!("scroll={scroll}, selected={}", self.selected))
+        //         .show()
+        //         .unwrap();
+        // }
 
         // Then print new buffer
         let mut y_offset = 0 as u16;
@@ -890,7 +909,7 @@ impl DirPanel {
                 stdout,
                 cursor::MoveTo(x_range.start, y),
                 PrintStyledContent("|".dark_green().bold()),
-                entry.print_styled(self.selected == (idx + scroll), width),
+                entry.print_styled(self.selected == idx, width),
             )?;
             y_offset += 1;
         }
