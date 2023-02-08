@@ -270,11 +270,6 @@ impl PanelManager {
         } else {
             path.canonicalize()?
         };
-        // Notification::new()
-        //     .summary("open")
-        //     .body(&format!("{}", absolute.display()))
-        //     .show()
-        //     .unwrap();
         // Image
         // If the selected item is a file,
         // we need to open it
@@ -285,15 +280,11 @@ impl PanelManager {
                         .stderr(Stdio::null())
                         .stdin(Stdio::null())
                         .stdout(Stdio::null())
-                        .arg(absolute)
+                        .arg(absolute.clone())
                         .spawn()
                         .expect("failed to run sxiv");
                 }
                 _ => {
-                    // Notification::new()
-                    //     .summary(&format!("Other: {}", absolute.display()))
-                    //     .show()
-                    //     .unwrap();
                     // Everything else with vim
                     std::process::Command::new("nvim")
                         .arg(absolute)
@@ -303,6 +294,14 @@ impl PanelManager {
                         .expect("error");
                 }
             }
+        } else {
+            // Try to open things without extensions with vim
+            std::process::Command::new("nvim")
+                .arg(absolute)
+                .spawn()
+                .expect("failed to run neovim")
+                .wait()
+                .expect("error");
         }
         Ok(())
     }
