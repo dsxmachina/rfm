@@ -834,7 +834,7 @@ impl DirPanel {
             // if selected should be in the middle all the time:
             // bot = min(max-items, selected + height / 2)
             // scroll = min(0, bot - (height + 1))
-            let h = height as usize / 2;
+            let h = (height.saturating_add(1)) as usize / 2;
             let bot = if self.show_hidden {
                 self.elements.len().min(self.selected.saturating_add(h))
             } else {
@@ -842,7 +842,7 @@ impl DirPanel {
                     .len()
                     .min(self.non_hidden_idx.saturating_add(h))
             };
-            bot.saturating_add(1).saturating_sub(height as usize)
+            bot.saturating_sub(height as usize)
         };
 
         // Then print new buffer
