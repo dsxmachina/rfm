@@ -536,30 +536,28 @@ impl MillerPanels {
     fn move_right(&mut self) -> PanelAction {
         if let Some(selected) = self.mid.selected_path() {
             if selected.is_dir() {
-                // TODO: Make this dumb again to get rid of some pitfalls
-                PanelAction::UpdateAll(selected.to_path_buf())
-                // // Remember path
-                // self.prev = self.mid.path.clone();
+                // Remember path
+                self.prev = self.mid.path.clone();
 
-                // // If the selected item is a directory,
-                // // all panels will shift to the left,
-                // // and the right panel needs to be recreated:
+                // If the selected item is a directory,
+                // all panels will shift to the left,
+                // and the right panel needs to be recreated:
 
-                // // We do this by swapping:
-                // // | l | m | r |  will become | m | r | l |
-                // // swap left and mid:
-                // // | m | l | r |
-                // mem::swap(&mut self.left, &mut self.mid);
-                // if let Panel::Dir(panel) = &mut self.right {
-                //     mem::swap(&mut self.mid, panel);
-                // } else {
-                //     // This should not be possible!
-                //     panic!(
-                //         "selected item cannot be a directory while right panel is not a dir-panel"
-                //     );
-                // }
-                // // Recreate right panel
-                // PanelAction::UpdatePreview(self.mid.selected_path_owned())
+                // We do this by swapping:
+                // | l | m | r |  will become | m | r | l |
+                // swap left and mid:
+                // | m | l | r |
+                mem::swap(&mut self.left, &mut self.mid);
+                if let Panel::Dir(panel) = &mut self.right {
+                    mem::swap(&mut self.mid, panel);
+                } else {
+                    // This should not be possible!
+                    panic!(
+                        "selected item cannot be a directory while right panel is not a dir-panel"
+                    );
+                }
+                // Recreate right panel
+                PanelAction::UpdatePreview(self.mid.selected_path_owned())
             } else {
                 PanelAction::Open(selected.to_path_buf())
             }
@@ -690,22 +688,6 @@ impl DirPanel {
             .find(|(_, elem)| elem.path() == selection)
             .map(|(idx, _)| idx)
             .unwrap_or(self.selected);
-
-        // let mut selected = 0;
-        // for elem in self
-        //     .elements
-        //     .iter()
-        //     .filter(|elem| self.show_hidden || !elem.is_hidden)
-        // {
-        //     if elem.path() == selection {
-        //         break;
-        //     }
-        //     selected += 1;
-        // }
-        // if selected == self.elements.len() {
-        //     selected = self.elements.len().saturating_sub(1);
-        // }
-        // self.selected = selected;
     }
 
     pub fn set_hidden(&mut self, show_hidden: bool) {
@@ -731,26 +713,6 @@ impl DirPanel {
     pub fn path(&self) -> &Path {
         self.path.as_path()
     }
-
-    // // TODO: Remove
-    // pub fn with_selection(elements: Vec<DirElem>, path: PathBuf, selection: &Path) -> DirPanel {
-    //     let mut selected = 0;
-    //     for elem in elements.iter() {
-    //         if elem.path() == selection {
-    //             break;
-    //         }
-    //         selected += 1;
-    //     }
-    //     if selected == elements.len() {
-    //         selected = elements.len().saturating_sub(1);
-    //     }
-    //     DirPanel {
-    //         elements,
-    //         selected,
-    //         path,
-    //         loading: false,
-    //     }
-    // }
 
     pub fn loading(path: PathBuf) -> Self {
         DirPanel {
@@ -884,14 +846,6 @@ impl DirPanel {
             };
             bot.saturating_sub(height as usize)
         };
-
-        // if self.selected != 0 {
-        //     Notification::new()
-        //         .summary(&format!("{}", self.path.display()))
-        //         .body(&format!("scroll={scroll}, selected={}", self.selected))
-        //         .show()
-        //         .unwrap();
-        // }
 
         // Then print new buffer
         let mut y_offset = 0 as u16;
