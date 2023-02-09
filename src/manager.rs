@@ -23,7 +23,7 @@ use crate::{
     commands::{Command, CommandParser},
     content::SharedCache,
     panel::{
-        DirElem, DirPanel, MillerPanels, Panel, PanelAction, PanelState, PreviewPanel, Select,
+        DirElem, DirPanel, MillerPanels, PanelAction, PanelState, PanelType, PreviewPanel, Select,
     },
 };
 
@@ -124,16 +124,16 @@ impl PanelManager {
         }
     }
 
-    fn tmp_preview_panel<P: AsRef<Path>>(&self, selection: Option<P>) -> Panel {
+    fn tmp_preview_panel<P: AsRef<Path>>(&self, selection: Option<P>) -> PanelType {
         if let Some(path) = selection {
             let path = path.as_ref();
             if path.is_dir() {
-                Panel::Dir(self.tmp_panel_from_path(path.into()))
+                PanelType::Dir(self.tmp_panel_from_path(path.into()))
             } else {
-                Panel::Preview(PreviewPanel::new(path.into()))
+                PanelType::Preview(PreviewPanel::new(path.into()))
             }
         } else {
-            Panel::Empty
+            PanelType::Empty
         }
     }
 
@@ -361,7 +361,7 @@ impl PanelManager {
                     //     .summary("incoming-preview")
                     //     .show()
                     //     .unwrap();
-                    self.panels.update_preview(Panel::Preview(preview), panel_state);
+                    self.panels.update_preview(PanelType::Preview(preview), panel_state);
                     self.panels.draw()?;
                 }
                 // Check incoming new events

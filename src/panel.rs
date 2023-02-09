@@ -24,6 +24,27 @@ use std::{
 
 use crate::{commands::Movement, content::hash_elements};
 
+pub trait Draw {
+    fn draw(&self, stdout: &mut Stdout, x_range: Range<u16>, y_range: Range<u16>);
+}
+
+pub trait Move {
+    fn up(&mut self, step: usize) -> bool;
+    fn down(&mut self, step: usize) -> bool;
+}
+
+// pub trait Panel {
+//     type Content: Draw;
+
+//     fn path(&self) -> &Path;
+
+//     fn content(&self) -> &Self::Content;
+
+//     fn draw(&self, stdout: &mut Stdout, x_range: Range<u16>, y_range: Range<u16>) {
+//         self.content().draw(stdout, x_range, y_range);
+//     }
+// }
+
 /// Enum to indicate which panel is selected for the given operation
 #[derive(Debug, Clone)]
 pub enum Select {
@@ -181,7 +202,7 @@ impl PreviewPanel {
     }
 }
 
-pub enum Panel {
+pub enum PanelType {
     /// Directory preview
     Dir(DirPanel),
     /// File preview
@@ -190,36 +211,36 @@ pub enum Panel {
     Empty,
 }
 
-impl Panel {
-    pub fn from_path<P: AsRef<Path>>(maybe_path: Option<P>) -> Result<Panel> {
+impl PanelType {
+    pub fn from_path<P: AsRef<Path>>(maybe_path: Option<P>) -> Result<PanelType> {
         if let Some(path) = maybe_path {
             if path.as_ref().is_dir() {
-                Ok(Panel::Dir(DirPanel::empty()))
+                Ok(PanelType::Dir(DirPanel::empty()))
             } else {
-                Ok(Panel::Preview(PreviewPanel::new(path.as_ref().into())))
+                Ok(PanelType::Preview(PreviewPanel::new(path.as_ref().into())))
             }
         } else {
-            Ok(Panel::Empty)
+            Ok(PanelType::Empty)
         }
     }
 
-    pub fn empty() -> Panel {
-        Panel::Empty
+    pub fn empty() -> PanelType {
+        PanelType::Empty
     }
 
     pub fn hash(&self) -> u64 {
         match self {
-            Panel::Dir(panel) => panel.hash,
-            Panel::Preview(panel) => 0, // TODO
-            Panel::Empty => 0,
+            PanelType::Dir(panel) => panel.hash,
+            PanelType::Preview(panel) => 0, // TODO
+            PanelType::Empty => 0,
         }
     }
 
     pub fn path(&self) -> Option<PathBuf> {
         match self {
-            Panel::Dir(panel) => Some(panel.path.clone()),
-            Panel::Preview(panel) => Some(panel.path.clone()),
-            Panel::Empty => None,
+            PanelType::Dir(panel) => Some(panel.path.clone()),
+            PanelType::Preview(panel) => Some(panel.path.clone()),
+            PanelType::Empty => None,
         }
     }
 }
@@ -335,7 +356,7 @@ pub struct MillerPanels {
     // Panels
     left: DirPanel,
     mid: DirPanel,
-    right: Panel,
+    right: PanelType,
 
     // Panel state counters
     state_cnt: (u64, u64, u64),
@@ -377,7 +398,7 @@ impl MillerPanels {
         let current_path = PathBuf::from(".").canonicalize()?;
         let left = DirPanel::new(dir_content(parent_path.clone())?, parent_path);
         let mid = DirPanel::new(dir_content(current_path.clone())?, current_path);
-        let right = Panel::empty();
+        let right = PanelType::empty();
         let ranges = Ranges::from_size(terminal_size);
         Ok(MillerPanels {
             left,
@@ -404,7 +425,7 @@ impl MillerPanels {
         self.show_hidden = !self.show_hidden;
         self.left.set_hidden(self.show_hidden);
         self.mid.set_hidden(self.show_hidden);
-        if let Panel::Dir(panel) = &mut self.right {
+        if let PanelType::Dir(panel) = &mut self.right {
             panel.set_hidden(self.show_hidden);
         };
         self.draw()
@@ -428,7 +449,7 @@ impl MillerPanels {
             }
             Select::Right => {
                 if panel_state.state_cnt > self.state_cnt.2 {
-                    self.update_right(Panel::Dir(panel));
+                    self.update_right(PanelType::Dir(panel));
                 } else {
                     self.state_right();
                 }
@@ -437,7 +458,7 @@ impl MillerPanels {
     }
 
     /// Exclusively updates the right (preview) panel
-    pub fn update_preview(&mut self, preview: Panel, panel_state: PanelState) {
+    pub fn update_preview(&mut self, preview: PanelType, panel_state: PanelState) {
         if let Select::Right = &panel_state.panel {
             if panel_state.state_cnt > self.state_cnt.2 {
                 self.update_right(preview);
@@ -463,9 +484,9 @@ impl MillerPanels {
     }
 
     /// Updates the right panel and returns the updates panel-state
-    fn update_right(&mut self, panel: Panel) {
+    fn update_right(&mut self, panel: PanelType) {
         self.right = panel;
-        if let Panel::Dir(panel) = &mut self.right {
+        if let PanelType::Dir(panel) = &mut self.right {
             panel.show_hidden = self.show_hidden;
         }
         self.state_cnt.2 += 1;
@@ -562,7 +583,7 @@ impl MillerPanels {
                 // swap left and mid:
                 // | m | l | r |
                 mem::swap(&mut self.left, &mut self.mid);
-                if let Panel::Dir(panel) = &mut self.right {
+                if let PanelType::Dir(panel) = &mut self.right {
                     mem::swap(&mut self.mid, panel);
                 } else {
                     // This should not be possible!
@@ -593,7 +614,7 @@ impl MillerPanels {
 
         // Create right dir-panel from previous mid
         // | l | m | r |
-        self.right = Panel::Dir(self.mid.clone());
+        self.right = PanelType::Dir(self.mid.clone());
         // | l | m | m |
 
         // swap left and mid:
@@ -632,17 +653,17 @@ impl MillerPanels {
         )?;
 
         match &self.right {
-            Panel::Dir(panel) => panel.draw(
+            PanelType::Dir(panel) => panel.draw(
                 stdout,
                 self.ranges.right_x_range.clone(),
                 self.ranges.y_range.clone(),
             )?,
-            Panel::Preview(panel) => panel.draw(
+            PanelType::Preview(panel) => panel.draw(
                 stdout,
                 self.ranges.right_x_range.clone(),
                 self.ranges.y_range.clone(),
             )?,
-            Panel::Empty => (),
+            PanelType::Empty => (),
         }
         self.stdout.queue(cursor::Hide)?;
         self.stdout.flush()?;
