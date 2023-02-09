@@ -22,7 +22,7 @@ use std::{
     process::Stdio,
 };
 
-use crate::commands::Movement;
+use crate::{commands::Movement, content::hash_elements};
 
 /// Enum to indicate which panel is selected for the given operation
 #[derive(Debug, Clone)]
@@ -678,14 +678,6 @@ pub struct DirPanel {
 
     /// Hash of the elements
     hash: u64,
-}
-
-fn hash_elements(elements: &Vec<DirElem>) -> u64 {
-    let mut h: MetroHasher = Default::default();
-    for elem in elements.iter() {
-        elem.name().hash(&mut h);
-    }
-    h.finish()
 }
 
 impl DirPanel {

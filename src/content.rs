@@ -65,7 +65,7 @@ pub struct Manager {
 // }
 
 cached_result! {
-    DIR_CONTENT: TimedSizedCache<PathBuf, Vec<DirElem>> = TimedSizedCache::with_size_and_lifespan(10, 1);
+    DIR_CONTENT: TimedSizedCache<PathBuf, Vec<DirElem>> = TimedSizedCache::with_size_and_lifespan(10, 2);
     fn dir_content(path: PathBuf) -> Result<Vec<DirElem>, io::Error> = {
         // read directory
         let dir = std::fs::read_dir(path)?;
@@ -81,7 +81,7 @@ cached_result! {
 }
 
 cached_result! {
-    DIR_CONTENT_PREVIEW: TimedSizedCache<(PathBuf, usize), Vec<DirElem>> = TimedSizedCache::with_size_and_lifespan(10, 1);
+    DIR_CONTENT_PREVIEW: TimedSizedCache<(PathBuf, usize), Vec<DirElem>> = TimedSizedCache::with_size_and_lifespan(10, 2);
     fn dir_content_preview(path: PathBuf, max_elem: usize) -> Result<Vec<DirElem>, io::Error> = {
         // read directory
         let dir = std::fs::read_dir(path)?;
@@ -99,8 +99,9 @@ cached_result! {
 }
 
 // TODO: This is a dublicate - put this somewhere else
-fn hash_elements(elements: &Vec<DirElem>) -> u64 {
-    let mut h: MetroHasher = Default::default();
+pub fn hash_elements(elements: &Vec<DirElem>) -> u64 {
+    // let mut h: MetroHasher = Default::default();
+    let mut h: fasthash::XXHasher = Default::default();
     for elem in elements.iter() {
         elem.name().hash(&mut h);
     }
@@ -180,55 +181,72 @@ mod tests {
     use std::time::Instant;
 
     #[test]
-    fn test_dir_parsing_speed() {
+    fn test_dir_hashing_speed() {
         let path: PathBuf = "/home/someone/Bilder/ground_images/-3000_-2000_3000_2000_0".into();
         // read directory
+        let content = dir_content(path).unwrap();
         let now = Instant::now();
-        let dir = std::fs::read_dir(path).unwrap();
-        println!("read-dir: {}", now.elapsed().as_millis());
-        let now = Instant::now();
-        let mut out = Vec::new();
-        for item in dir.skip(1) {
-            let item_path = canonicalize(item.unwrap().path()).unwrap();
-            out.push(DirElem::from(item_path))
-        }
-        println!("load-dir: {}", now.elapsed().as_millis());
-        let now = Instant::now();
-
-        out.sort_by_cached_key(|a| a.name().to_lowercase());
-        out.sort_by_cached_key(|a| a.path().is_dir());
-        // out.sort_by_key(|elem| {
-
-        // })
-        // out.sort();
-
-        println!("sort: {}", now.elapsed().as_millis());
-
-        println!("elements: {}", out.len());
-        assert!(true);
+        let hash = hash_elements(&content);
+        println!(
+            "hashing {} elements took: {}ms",
+            content.len(),
+            now.elapsed().as_millis()
+        );
+        println!("hash={hash}");
+        assert!(false);
     }
-    #[test]
-    fn test_symlink_parent() {
-        let path: PathBuf = "/home/someone/".into();
-        // read directory
-        let dir = std::fs::read_dir(path).unwrap();
-        for item in dir {
-            let entry = item.unwrap();
-            let path_1 = entry.path();
-            let path_2 = canonicalize(path_1.as_path()).unwrap();
 
-            println!(
-                "{}: {}",
-                path_1.display(),
-                path_1.parent().unwrap().display()
-            );
-            println!(
-                "{}: {}",
-                path_2.display(),
-                path_2.parent().unwrap().display()
-            );
-            assert_eq!(path_1.parent(), path_2.parent());
-        }
-        assert!(false)
-    }
+    // #[test]
+    // fn test_dir_parsing_speed() {
+    //     let path: PathBuf = "/home/someone/Bilder/ground_images/-3000_-2000_3000_2000_0".into();
+    //     // read directory
+    //     let now = Instant::now();
+    //     let dir = std::fs::read_dir(path).unwrap();
+    //     println!("read-dir: {}", now.elapsed().as_millis());
+    //     let now = Instant::now();
+    //     let mut out = Vec::new();
+    //     for item in dir.skip(1) {
+    //         let item_path = canonicalize(item.unwrap().path()).unwrap();
+    //         out.push(DirElem::from(item_path))
+    //     }
+    //     println!("load-dir: {}", now.elapsed().as_millis());
+    //     let now = Instant::now();
+
+    //     out.sort_by_cached_key(|a| a.name().to_lowercase());
+    //     out.sort_by_cached_key(|a| a.path().is_dir());
+    //     // out.sort_by_key(|elem| {
+
+    //     // })
+    //     // out.sort();
+
+    //     println!("sort: {}", now.elapsed().as_millis());
+
+    //     println!("elements: {}", out.len());
+    //     assert!(true);
+    // }
+
+    // #[test]
+    // fn test_symlink_parent() {
+    //     let path: PathBuf = "/home/someone/".into();
+    //     // read directory
+    //     let dir = std::fs::read_dir(path).unwrap();
+    //     for item in dir {
+    //         let entry = item.unwrap();
+    //         let path_1 = entry.path();
+    //         let path_2 = canonicalize(path_1.as_path()).unwrap();
+
+    //         println!(
+    //             "{}: {}",
+    //             path_1.display(),
+    //             path_1.parent().unwrap().display()
+    //         );
+    //         println!(
+    //             "{}: {}",
+    //             path_2.display(),
+    //             path_2.parent().unwrap().display()
+    //         );
+    //         assert_eq!(path_1.parent(), path_2.parent());
+    //     }
+    //     assert!(false)
+    // }
 }

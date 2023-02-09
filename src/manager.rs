@@ -266,6 +266,8 @@ impl PanelManager {
             }
             PanelAction::None => (),
         }
+        // Redraw panels
+        self.panels.draw()?;
         Ok(())
     }
 
