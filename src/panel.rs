@@ -280,10 +280,7 @@ fn print_footer(stdout: &mut Stdout, mid: &DirPanel, width: u16, y: u16) -> Resu
     if let Some(selection) = mid.selected() {
         let path = selection.path();
         let metadata = path.metadata()?;
-        // let permissions = format!("{:o}", metadata.permissions().mode());
         let permissions = unix_mode::to_string(metadata.permissions().mode());
-
-        // let x2 = permissions.len() as u16 + 1;
 
         queue!(
             stdout,
@@ -293,15 +290,19 @@ fn print_footer(stdout: &mut Stdout, mid: &DirPanel, width: u16, y: u16) -> Resu
             // cursor::MoveTo(x2, y),
         )?;
     }
-    // queue!(
-    //     stdout,
-    //     cursor::MoveTo(0, 0),
-    //     Clear(ClearType::CurrentLine),
-    //     style::PrintStyledContent(prompt.dark_green().bold()),
-    //     style::Print(" "),
-    //     style::PrintStyledContent(prefix.to_string().dark_blue().bold()),
-    //     style::PrintStyledContent(suffix.to_string().white().bold()),
-    // )?;
+    let (n, m) = if mid.show_hidden {
+        (mid.selected, mid.elements.len())
+    } else {
+        (mid.non_hidden_idx, mid.non_hidden.len())
+    };
+
+    let n_files_string = format!("{n}/{m} ");
+
+    queue!(
+        stdout,
+        cursor::MoveTo(width.saturating_sub(n_files_string.len() as u16), y),
+        style::PrintStyledContent(n_files_string.white()),
+    )?;
     Ok(())
 }
 
