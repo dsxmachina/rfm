@@ -25,7 +25,7 @@ use std::{
 use crate::{commands::Movement, content::hash_elements};
 
 pub trait Draw {
-    fn draw(&self, stdout: &mut Stdout, x_range: Range<u16>, y_range: Range<u16>);
+    fn draw(&self, stdout: &mut Stdout, x_range: Range<u16>, y_range: Range<u16>) -> Result<()>;
 }
 
 pub trait Move {
@@ -33,17 +33,285 @@ pub trait Move {
     fn down(&mut self, step: usize) -> bool;
 }
 
-// pub trait Panel {
-//     type Content: Draw;
+pub trait Panel: Draw {
+    type Content: Clone + Send;
 
-//     fn path(&self) -> &Path;
+    fn path(&self) -> &Path;
 
-//     fn content(&self) -> &Self::Content;
+    fn update_content(&mut self, content: Self::Content);
+}
 
-//     fn draw(&self, stdout: &mut Stdout, x_range: Range<u16>, y_range: Range<u16>) {
-//         self.content().draw(stdout, x_range, y_range);
-//     }
-// }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirPanel {
+    /// Elements of the directory
+    elements: Vec<DirElem>,
+
+    /// Number of non-hidden files
+    non_hidden: Vec<usize>,
+
+    /// Selected element
+    selected: usize,
+
+    /// Index in the `non_hidden` vector that is our current selection
+    non_hidden_idx: usize,
+
+    /// Path of the directory that the panel is based on
+    path: PathBuf,
+
+    /// Weather or not the panel is still loading some data
+    loading: bool,
+
+    /// Weather or not to show hidden files
+    show_hidden: bool,
+
+    /// Hash of the elements
+    hash: u64,
+}
+
+impl Draw for DirPanel {
+    fn draw(&self, stdout: &mut Stdout, x_range: Range<u16>, y_range: Range<u16>) -> Result<()> {
+        let width = x_range.end.saturating_sub(x_range.start);
+        let height = y_range.end.saturating_sub(y_range.start);
+
+        // Calculate page-scroll
+        let scroll: usize = {
+            // if selected should be in the middle all the time:
+            // bot = min(max-items, selected + height / 2)
+            // scroll = min(0, bot - (height + 1))
+            let h = (height.saturating_add(1)) as usize / 2;
+            let bot = if self.show_hidden {
+                self.elements.len().min(self.selected.saturating_add(h))
+            } else {
+                self.non_hidden
+                    .len()
+                    .min(self.non_hidden_idx.saturating_add(h))
+            };
+            bot.saturating_sub(height as usize)
+        };
+
+        // Then print new buffer
+        let mut y_offset = 0 as u16;
+        // Write "height" items to the screen
+        for (idx, entry) in self
+            .elements
+            .iter()
+            .enumerate()
+            .skip(scroll)
+            .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
+            .take(height as usize)
+        {
+            let y = u16::try_from(y_range.start + y_offset).unwrap_or_else(|_| u16::MAX);
+            queue!(
+                stdout,
+                cursor::MoveTo(x_range.start, y),
+                PrintStyledContent("|".dark_green().bold()),
+                entry.print_styled(self.selected == idx, width),
+            )?;
+            y_offset += 1;
+        }
+
+        for y in (y_range.start + y_offset)..y_range.end {
+            queue!(
+                stdout,
+                cursor::MoveTo(x_range.start, y),
+                PrintStyledContent("|".dark_green().bold()),
+            )?;
+            for x in x_range.start + 1..x_range.end {
+                queue!(stdout, cursor::MoveTo(x, y), Print(" "),)?;
+            }
+        }
+
+        // Check if we are loading or not
+        if self.loading {
+            queue!(
+                stdout,
+                cursor::MoveTo(x_range.start + 2, y_range.start + 1),
+                PrintStyledContent("Loading...".dark_green().bold().italic()),
+                cursor::MoveTo(x_range.start + 2, y_range.start + 2),
+                PrintStyledContent(format!("{}", self.path.display()).dark_green().italic()),
+            )?;
+        }
+
+        Ok(())
+    }
+}
+
+impl Panel for DirPanel {
+    type Content = Vec<DirElem>;
+
+    fn path(&self) -> &Path {
+        self.path.as_path()
+    }
+
+    fn update_content(&mut self, content: Self::Content) {
+        todo!()
+    }
+}
+
+impl DirPanel {
+    pub fn new(elements: Vec<DirElem>, path: PathBuf) -> Self {
+        let non_hidden = elements
+            .iter()
+            .enumerate()
+            .filter(|(_, elem)| !elem.is_hidden)
+            .map(|(idx, _)| idx)
+            .collect::<Vec<usize>>();
+
+        let selected = *non_hidden.first().unwrap_or(&0);
+        let hash = hash_elements(&elements);
+
+        DirPanel {
+            elements,
+            non_hidden,
+            selected,
+            non_hidden_idx: 0,
+            path,
+            loading: false,
+            show_hidden: false,
+            hash,
+        }
+    }
+
+    pub fn select(&mut self, selection: &Path) {
+        self.selected = self
+            .elements
+            .iter()
+            .enumerate()
+            .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
+            .find(|(_, elem)| elem.path() == selection)
+            .map(|(idx, _)| idx)
+            .unwrap_or(self.selected);
+    }
+
+    pub fn set_hidden(&mut self, show_hidden: bool) {
+        if self.show_hidden == show_hidden {
+            // Nothing to do
+            return;
+        }
+        if self.show_hidden && !show_hidden {
+            // Currently we show hidden files, but we should stop that
+            // -> non-hidden-idx needs to be updated to the value closest to selection
+            for (idx, elem_idx) in self.non_hidden.iter().enumerate() {
+                self.non_hidden_idx = idx;
+                if *elem_idx >= self.selected {
+                    break;
+                }
+            }
+            self.selected = *self.non_hidden.get(self.non_hidden_idx).unwrap_or(&0);
+        }
+        // Save value and change selection accordingly
+        self.show_hidden = show_hidden;
+    }
+
+    pub fn loading(path: PathBuf) -> Self {
+        DirPanel {
+            elements: Vec::new(),
+            non_hidden: Vec::new(),
+            selected: 0,
+            non_hidden_idx: 0,
+            path,
+            loading: true,
+            show_hidden: false,
+            hash: 0,
+        }
+    }
+
+    /// Creates an empty dir-panel.
+    ///
+    /// Note: The path of this panel is not a valid path!
+    pub fn empty() -> Self {
+        DirPanel {
+            elements: Vec::new(),
+            non_hidden: Vec::new(),
+            selected: 0,
+            non_hidden_idx: 0,
+            path: "path-of-empty-panel".into(),
+            loading: false,
+            show_hidden: false,
+            hash: 0,
+        }
+    }
+
+    /// Move the selection "up" if possible.
+    ///
+    /// Returns true if the panel has changed and
+    /// requires a redraw.
+    pub fn up(&mut self, step: usize) -> bool {
+        if self.show_hidden {
+            if self.selected == 0 {
+                return false;
+            }
+            self.selected = self.selected.saturating_sub(step);
+        } else {
+            if self.non_hidden_idx == 0 {
+                return false;
+            }
+            self.non_hidden_idx = self.non_hidden_idx.saturating_sub(step);
+            self.selected = *self.non_hidden.get(self.non_hidden_idx).unwrap_or(&0);
+        }
+        true
+    }
+
+    /// Move the selection "down" if possible.
+    ///
+    /// Returns true if the panel has changed and
+    /// requires a redraw.
+    pub fn down(&mut self, step: usize) -> bool {
+        if self.show_hidden {
+            // If we are already at the end, do nothing and return
+            if self.selected.saturating_add(1) == self.elements.len() {
+                return false;
+            }
+            // If step is too big, just jump to the end
+            if self.selected.saturating_add(step) >= self.elements.len() {
+                // selected = len(elements) - 1
+                self.selected = self.elements.len().saturating_sub(1);
+            } else {
+                // Otherwise just increase by step
+                self.selected = self.selected.saturating_add(step);
+            }
+        } else {
+            // If we are already at the end, do nothing and return
+            if self.non_hidden_idx.saturating_add(1) == self.non_hidden.len() {
+                return false;
+            }
+            if self.non_hidden_idx.saturating_add(step) >= self.non_hidden.len() {
+                // idx = len(non_hidden) - 1
+                self.non_hidden_idx = self.non_hidden.len().saturating_sub(1);
+            } else {
+                self.non_hidden_idx = self.non_hidden_idx.saturating_add(step);
+            }
+            self.selected = *self.non_hidden.get(self.non_hidden_idx).unwrap_or(&0);
+        }
+        true
+    }
+
+    /// Returns the selcted path of the panel.
+    ///
+    /// If the panel is empty `None` is returned.
+    pub fn selected_path(&self) -> Option<&Path> {
+        self.selected().map(|elem| elem.path())
+    }
+
+    /// Returns the selcted path of the panel as an owned `PathBuf`.
+    ///
+    /// If the panel is empty `None` is returned.
+    pub fn selected_path_owned(&self) -> Option<PathBuf> {
+        self.selected_path().map(|p| p.to_path_buf())
+    }
+
+    // /// Returns a reference to the path of the panel.
+    // pub fn path(&self) -> &Path {
+    //     self.path.as_path()
+    // }
+
+    /// Returns a reference to the selected [`DirElem`].
+    ///
+    /// If the panel is empty `None` is returned.
+    pub fn selected(&self) -> Option<&DirElem> {
+        self.elements.get(self.selected)
+    }
+}
 
 /// Enum to indicate which panel is selected for the given operation
 #[derive(Debug, Clone)]
@@ -667,278 +935,6 @@ impl MillerPanels {
         }
         self.stdout.queue(cursor::Hide)?;
         self.stdout.flush()?;
-        Ok(())
-    }
-}
-
-// A DirPanel can also be empty.
-// We encode this as the vector being empty,
-// because this will return `None` as selected_path when
-// we query it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DirPanel {
-    /// Elements of the directory
-    elements: Vec<DirElem>,
-
-    /// Number of non-hidden files
-    non_hidden: Vec<usize>,
-
-    /// Selected element
-    selected: usize,
-
-    /// Index in the `non_hidden` vector that is our current selection
-    non_hidden_idx: usize,
-
-    /// Path of the directory that the panel is based on
-    path: PathBuf,
-
-    /// Weather or not the panel is still loading some data
-    loading: bool,
-
-    /// Weather or not to show hidden files
-    show_hidden: bool,
-
-    /// Hash of the elements
-    hash: u64,
-}
-
-impl DirPanel {
-    pub fn new(elements: Vec<DirElem>, path: PathBuf) -> Self {
-        let non_hidden = elements
-            .iter()
-            .enumerate()
-            .filter(|(_, elem)| !elem.is_hidden)
-            .map(|(idx, _)| idx)
-            .collect::<Vec<usize>>();
-
-        let selected = *non_hidden.first().unwrap_or(&0);
-        let hash = hash_elements(&elements);
-
-        DirPanel {
-            elements,
-            non_hidden,
-            selected,
-            non_hidden_idx: 0,
-            path,
-            loading: false,
-            show_hidden: false,
-            hash,
-        }
-    }
-
-    pub fn select(&mut self, selection: &Path) {
-        self.selected = self
-            .elements
-            .iter()
-            .enumerate()
-            .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
-            .find(|(_, elem)| elem.path() == selection)
-            .map(|(idx, _)| idx)
-            .unwrap_or(self.selected);
-    }
-
-    pub fn set_hidden(&mut self, show_hidden: bool) {
-        if self.show_hidden == show_hidden {
-            // Nothing to do
-            return;
-        }
-        if self.show_hidden && !show_hidden {
-            // Currently we show hidden files, but we should stop that
-            // -> non-hidden-idx needs to be updated to the value closest to selection
-            for (idx, elem_idx) in self.non_hidden.iter().enumerate() {
-                self.non_hidden_idx = idx;
-                if *elem_idx >= self.selected {
-                    break;
-                }
-            }
-            self.selected = *self.non_hidden.get(self.non_hidden_idx).unwrap_or(&0);
-        }
-        // Save value and change selection accordingly
-        self.show_hidden = show_hidden;
-    }
-
-    pub fn path(&self) -> &Path {
-        self.path.as_path()
-    }
-
-    pub fn loading(path: PathBuf) -> Self {
-        DirPanel {
-            elements: Vec::new(),
-            non_hidden: Vec::new(),
-            selected: 0,
-            non_hidden_idx: 0,
-            path,
-            loading: true,
-            show_hidden: false,
-            hash: 0,
-        }
-    }
-
-    /// Creates an empty dir-panel.
-    ///
-    /// Note: The path of this panel is not a valid path!
-    pub fn empty() -> Self {
-        DirPanel {
-            elements: Vec::new(),
-            non_hidden: Vec::new(),
-            selected: 0,
-            non_hidden_idx: 0,
-            path: "path-of-empty-panel".into(),
-            loading: false,
-            show_hidden: false,
-            hash: 0,
-        }
-    }
-
-    /// Move the selection "up" if possible.
-    ///
-    /// Returns true if the panel has changed and
-    /// requires a redraw.
-    pub fn up(&mut self, step: usize) -> bool {
-        if self.show_hidden {
-            if self.selected == 0 {
-                return false;
-            }
-            self.selected = self.selected.saturating_sub(step);
-        } else {
-            if self.non_hidden_idx == 0 {
-                return false;
-            }
-            self.non_hidden_idx = self.non_hidden_idx.saturating_sub(step);
-            self.selected = *self.non_hidden.get(self.non_hidden_idx).unwrap_or(&0);
-        }
-        true
-    }
-
-    /// Move the selection "down" if possible.
-    ///
-    /// Returns true if the panel has changed and
-    /// requires a redraw.
-    pub fn down(&mut self, step: usize) -> bool {
-        if self.show_hidden {
-            // If we are already at the end, do nothing and return
-            if self.selected.saturating_add(1) == self.elements.len() {
-                return false;
-            }
-            // If step is too big, just jump to the end
-            if self.selected.saturating_add(step) >= self.elements.len() {
-                // selected = len(elements) - 1
-                self.selected = self.elements.len().saturating_sub(1);
-            } else {
-                // Otherwise just increase by step
-                self.selected = self.selected.saturating_add(step);
-            }
-        } else {
-            // If we are already at the end, do nothing and return
-            if self.non_hidden_idx.saturating_add(1) == self.non_hidden.len() {
-                return false;
-            }
-            if self.non_hidden_idx.saturating_add(step) >= self.non_hidden.len() {
-                // idx = len(non_hidden) - 1
-                self.non_hidden_idx = self.non_hidden.len().saturating_sub(1);
-            } else {
-                self.non_hidden_idx = self.non_hidden_idx.saturating_add(step);
-            }
-            self.selected = *self.non_hidden.get(self.non_hidden_idx).unwrap_or(&0);
-        }
-        true
-    }
-
-    /// Returns the selcted path of the panel.
-    ///
-    /// If the panel is empty `None` is returned.
-    pub fn selected_path(&self) -> Option<&Path> {
-        self.selected().map(|elem| elem.path())
-    }
-
-    /// Returns the selcted path of the panel as an owned `PathBuf`.
-    ///
-    /// If the panel is empty `None` is returned.
-    pub fn selected_path_owned(&self) -> Option<PathBuf> {
-        self.selected_path().map(|p| p.to_path_buf())
-    }
-
-    // /// Returns a reference to the path of the panel.
-    // pub fn path(&self) -> &Path {
-    //     self.path.as_path()
-    // }
-
-    /// Returns a reference to the selected [`DirElem`].
-    ///
-    /// If the panel is empty `None` is returned.
-    pub fn selected(&self) -> Option<&DirElem> {
-        self.elements.get(self.selected)
-    }
-
-    /// Draws the panel in its current state.
-    pub fn draw(
-        &self,
-        stdout: &mut Stdout,
-        x_range: Range<u16>,
-        y_range: Range<u16>,
-    ) -> Result<()> {
-        let width = x_range.end.saturating_sub(x_range.start);
-        let height = y_range.end.saturating_sub(y_range.start);
-
-        // Calculate page-scroll
-        let scroll: usize = {
-            // if selected should be in the middle all the time:
-            // bot = min(max-items, selected + height / 2)
-            // scroll = min(0, bot - (height + 1))
-            let h = (height.saturating_add(1)) as usize / 2;
-            let bot = if self.show_hidden {
-                self.elements.len().min(self.selected.saturating_add(h))
-            } else {
-                self.non_hidden
-                    .len()
-                    .min(self.non_hidden_idx.saturating_add(h))
-            };
-            bot.saturating_sub(height as usize)
-        };
-
-        // Then print new buffer
-        let mut y_offset = 0 as u16;
-        // Write "height" items to the screen
-        for (idx, entry) in self
-            .elements
-            .iter()
-            .enumerate()
-            .skip(scroll)
-            .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
-            .take(height as usize)
-        {
-            let y = u16::try_from(y_range.start + y_offset).unwrap_or_else(|_| u16::MAX);
-            queue!(
-                stdout,
-                cursor::MoveTo(x_range.start, y),
-                PrintStyledContent("|".dark_green().bold()),
-                entry.print_styled(self.selected == idx, width),
-            )?;
-            y_offset += 1;
-        }
-
-        for y in (y_range.start + y_offset)..y_range.end {
-            queue!(
-                stdout,
-                cursor::MoveTo(x_range.start, y),
-                PrintStyledContent("|".dark_green().bold()),
-            )?;
-            for x in x_range.start + 1..x_range.end {
-                queue!(stdout, cursor::MoveTo(x, y), Print(" "),)?;
-            }
-        }
-
-        // Check if we are loading or not
-        if self.loading {
-            queue!(
-                stdout,
-                cursor::MoveTo(x_range.start + 2, y_range.start + 1),
-                PrintStyledContent("Loading...".dark_green().bold().italic()),
-                cursor::MoveTo(x_range.start + 2, y_range.start + 2),
-                PrintStyledContent(format!("{}", self.path.display()).dark_green().italic()),
-            )?;
-        }
-
         Ok(())
     }
 }

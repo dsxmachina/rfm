@@ -23,7 +23,8 @@ use crate::{
     commands::{Command, CommandParser},
     content::SharedCache,
     panel::{
-        DirElem, DirPanel, MillerPanels, PanelAction, PanelState, PanelType, PreviewPanel, Select,
+        DirElem, DirPanel, MillerPanels, Panel, PanelAction, PanelState, PanelType, PreviewPanel,
+        Select,
     },
 };
 
