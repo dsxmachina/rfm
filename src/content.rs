@@ -49,21 +49,6 @@ pub struct Manager {
     cache: SharedCache,
 }
 
-// NOTE: This takes way longer than the sync version
-// /// Reads the content of a directory asynchronously
-// async fn async_dir_content(path: PathBuf) -> Result<Vec<DirElem>, io::Error> {
-//     // read directory
-//     let mut dir = tokio::fs::read_dir(path).await?;
-//     let mut out = Vec::new();
-
-//     while let Some(item) = dir.next_entry().await? {
-//         let item_path = canonicalize(item.path())?;
-//         out.push(DirElem::from(item_path))
-//     }
-//     out.sort();
-//     Ok(out)
-// }
-
 cached_result! {
     DIR_CONTENT: TimedSizedCache<PathBuf, Vec<DirElem>> = TimedSizedCache::with_size_and_lifespan(10, 2);
     fn dir_content(path: PathBuf) -> Result<Vec<DirElem>, io::Error> = {
