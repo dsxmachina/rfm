@@ -3,7 +3,7 @@ use crossterm::{
     cursor,
     event::EventStream,
     queue,
-    style::{self, Print, PrintStyledContent, Stylize},
+    style::{self, Colors, Print, PrintStyledContent, ResetColor, SetColors, Stylize},
     terminal::{self, Clear, ClearType},
     QueueableCommand, Result,
 };
@@ -427,6 +427,8 @@ impl PartialOrd for DirElem {
     }
 }
 
+struct ImagePreview {}
+
 // TODO: Add hash
 #[derive(Debug, Clone)]
 pub struct FilePreview {
@@ -435,14 +437,17 @@ pub struct FilePreview {
 
 impl Draw for FilePreview {
     fn draw(&self, stdout: &mut Stdout, x_range: Range<u16>, y_range: Range<u16>) -> Result<()> {
-        let width = x_range.end.saturating_sub(x_range.start + 1);
-        let path = self
+        let width = x_range.end.saturating_sub(x_range.start.saturating_add(1));
+        let height = y_range.end.saturating_sub(y_range.start);
+        let filename = self
             .path
             .file_name()
             .and_then(|s| s.to_str())
             .and_then(|s| Some(s.to_string()))
-            .unwrap_or_default();
-        let preview_string = format!("Preview of {}", path).with_exact_width(width as usize);
+            .unwrap_or_default()
+            .with_exact_width(width as usize);
+        // Print "Preview of ..."
+        let preview_string = format!("Preview of {}", filename).with_exact_width(width as usize);
         queue!(
             stdout,
             cursor::MoveTo(x_range.start, y_range.start),
@@ -450,17 +455,89 @@ impl Draw for FilePreview {
             cursor::MoveTo(x_range.start + 1, y_range.start),
             PrintStyledContent(preview_string.magenta()),
         )?;
-        for y in y_range.start + 1..y_range.end {
-            queue!(
-                stdout,
-                cursor::MoveTo(x_range.start, y),
-                PrintStyledContent("|".dark_green().bold()),
-            )?;
-            for x in x_range.start + 1..x_range.end {
-                queue!(stdout, cursor::MoveTo(x, y), Print(" "),)?;
+        // Extract extension
+        let extension = self
+            .path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+        // img_height
+        let img_height = ((height as f32) - (height as f32) / 3.6).round();
+        match extension {
+            "png" | "bmp" | "jpg" | "jpeg" => {
+                // load image
+                let img = image::io::Reader::open(self.path())?
+                    .decode()
+                    .unwrap_or_default()
+                    // .resize(
+                    //     width as u32,
+                    //     height as u32,
+                    //     image::imageops::FilterType::Nearest,
+                    // )
+                    .thumbnail_exact(width as u32, img_height as u32)
+                    .into_rgb8();
+                if img.is_empty() {
+                    Notification::new().summary("empty image").show().unwrap();
+                }
+                // for pixel in img.pixels() {
+                //     pixel.
+                // }
+                // let density =
+                //     "$@B%8&WM#*oahkbdpqwmZO0QLCJUYXzcvunxrjft/\\|()1{}[]?-_+~<>i!lI;:,\"^`\'. ";
+                // Print preview
+                for y in 0..height {
+                    // cursor y
+                    let cy = y_range.start.saturating_add(y);
+                    queue!(
+                        stdout,
+                        cursor::MoveTo(x_range.start, cy),
+                        ResetColor,
+                        PrintStyledContent("|".dark_green().bold()),
+                    )?;
+                    for x in 0..width {
+                        // cursor x
+                        let cx = x_range.start.saturating_add(x).saturating_add(1);
+                        queue!(stdout, cursor::MoveTo(cx, cy))?;
+                        if let Some(px) = img.get_pixel_checked(x as u32, y as u32) {
+                            let color = Colors::new(
+                                style::Color::Rgb {
+                                    r: px.0[0],
+                                    g: px.0[1],
+                                    b: px.0[2],
+                                },
+                                style::Color::Rgb {
+                                    r: px.0[0],
+                                    g: px.0[1],
+                                    b: px.0[2],
+                                },
+                            );
+                            queue!(stdout, SetColors(color), Print(" "),)?;
+                            // if let Some(c) = density.chars().nth(px.0[0] as usize) {
+                            //     queue!(stdout, SetColors(color), Print(c),)?;
+                            // } else {
+                            //     queue!(stdout, SetColors(color), Print(" "),)?;
+                            // }
+                        } else {
+                            queue!(stdout, cursor::MoveTo(cx, cy), ResetColor, Print(" "),)?;
+                        }
+                    }
+                    queue!(stdout, cursor::MoveTo(0, 0), ResetColor,)?;
+                }
+            }
+            _ => {
+                // Print preview
+                for y in y_range.start + 1..y_range.end {
+                    queue!(
+                        stdout,
+                        cursor::MoveTo(x_range.start, y),
+                        PrintStyledContent("|".dark_green().bold()),
+                    )?;
+                    for x in x_range.start + 1..x_range.end {
+                        queue!(stdout, cursor::MoveTo(x, y), Print(" "),)?;
+                    }
+                }
             }
         }
-
         Ok(())
     }
 }

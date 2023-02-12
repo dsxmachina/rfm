@@ -30,6 +30,7 @@ mod content;
 mod manager;
 // mod new_panel;
 mod panel;
+mod preview;
 
 #[tokio::main]
 async fn main() -> Result<()> {
