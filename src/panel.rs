@@ -21,6 +21,7 @@ use std::{
     os::unix::prelude::PermissionsExt,
     path::{Path, PathBuf},
     process::Stdio,
+    time::UNIX_EPOCH,
 };
 
 use crate::{commands::Movement, content::hash_elements};
@@ -549,6 +550,14 @@ impl FilePreview {
             .and_then(|s| s.to_str())
             .unwrap_or_default();
 
+        let hash = path
+            .metadata()
+            .ok()
+            .and_then(|m| m.accessed().ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .unwrap_or_default()
+            .as_secs();
+
         let preview = match extension {
             "png" | "bmp" | "jpg" | "jpeg" => {
                 if let Ok(img_bytes) = image::io::Reader::open(&path) {
@@ -563,7 +572,7 @@ impl FilePreview {
 
         FilePreview {
             path,
-            hash: 0,
+            hash,
             preview,
         }
     }
@@ -577,7 +586,7 @@ impl Panel for FilePreview {
     }
 
     fn content_hash(&self) -> u64 {
-        todo!()
+        self.hash
     }
 
     fn update_content(&mut self, content: Self::Content) {

@@ -6,14 +6,14 @@ use std::{
     sync::Arc,
 };
 
-use cached::{cached_result, Cached, SizedCache, TimedSizedCache};
+use cached::{cached, cached_result, Cached, SizedCache, TimedSizedCache};
 use crossterm::terminal;
 use fasthash::MetroHasher;
 use notify_rust::Notification;
 use parking_lot::Mutex;
 use tokio::{fs::read_dir, sync::mpsc};
 
-use crate::panel::{DirElem, DirPanel, FilePreview, PanelState, Select};
+use crate::panel::{DirElem, DirPanel, FilePreview, Panel, PanelState, Select};
 
 /// Cache that is shared by the content-manager and the panel-manager.
 #[derive(Clone)]
@@ -84,6 +84,13 @@ cached_result! {
     }
 }
 
+cached! {
+    FILE_PREVIEW: TimedSizedCache<PathBuf, FilePreview> = TimedSizedCache::with_size_and_lifespan(10, 5);
+    fn get_file_preview(path: PathBuf) -> FilePreview = {
+        FilePreview::new(path)
+    }
+}
+
 // TODO: This is a dublicate - put this somewhere else
 pub fn hash_elements(elements: &Vec<DirElem>) -> u64 {
     // let mut h: MetroHasher = Default::default();
@@ -147,15 +154,19 @@ impl Manager {
                     self.directory_cache.insert(path, content);
                 }
             } else {
+                // Create preview
+                let preview = get_file_preview(path.clone());
                 // Calculate new state
                 let new_state = PanelState {
                     state_cnt: state.state_cnt + 1,
-                    hash: state.state_cnt + 1, // TODO calculate hash
+                    hash: preview.content_hash(),
                     panel: state.panel.clone(),
                 };
-                // Create preview
-                let preview = FilePreview::new(path.clone());
-                let _ = self.prev_tx.send((preview.clone(), new_state)).await;
+
+                // Only send new panel, if the content may has changed
+                if state.hash != new_state.hash {
+                    let _ = self.prev_tx.send((preview.clone(), new_state)).await;
+                }
                 // Cache result
                 self.preview_cache.insert(path, preview);
             }
