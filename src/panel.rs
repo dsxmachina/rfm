@@ -301,11 +301,6 @@ impl DirPanel {
         self.selected_path().map(|p| p.to_path_buf())
     }
 
-    // /// Returns a reference to the path of the panel.
-    // pub fn path(&self) -> &Path {
-    //     self.path.as_path()
-    // }
-
     /// Returns a reference to the selected [`DirElem`].
     ///
     /// If the panel is empty `None` is returned.
@@ -425,22 +420,12 @@ impl PartialOrd for DirElem {
 
 // TODO: Add hash
 #[derive(Debug, Clone)]
-pub struct PreviewPanel {
+pub struct FilePreview {
     path: PathBuf,
 }
 
-impl PreviewPanel {
-    pub fn new(path: PathBuf) -> Self {
-        PreviewPanel { path }
-    }
-
-    /// Draws the panel in its current state.
-    pub fn draw(
-        &self,
-        stdout: &mut Stdout,
-        x_range: Range<u16>,
-        y_range: Range<u16>,
-    ) -> Result<()> {
+impl Draw for FilePreview {
+    fn draw(&self, stdout: &mut Stdout, x_range: Range<u16>, y_range: Range<u16>) -> Result<()> {
         let width = x_range.end.saturating_sub(x_range.start + 1);
         let path = self
             .path
@@ -471,11 +456,17 @@ impl PreviewPanel {
     }
 }
 
+impl FilePreview {
+    pub fn new(path: PathBuf) -> Self {
+        FilePreview { path }
+    }
+}
+
 pub enum PanelType {
     /// Directory preview
     Dir(DirPanel),
     /// File preview
-    Preview(PreviewPanel),
+    Preview(FilePreview),
     /// No content
     Empty,
 }
@@ -486,7 +477,7 @@ impl PanelType {
             if path.as_ref().is_dir() {
                 Ok(PanelType::Dir(DirPanel::empty()))
             } else {
-                Ok(PanelType::Preview(PreviewPanel::new(path.as_ref().into())))
+                Ok(PanelType::Preview(FilePreview::new(path.as_ref().into())))
             }
         } else {
             Ok(PanelType::Empty)

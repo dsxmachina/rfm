@@ -23,7 +23,7 @@ use crate::{
     commands::{Command, CommandParser},
     content::SharedCache,
     panel::{
-        DirElem, DirPanel, MillerPanels, Panel, PanelAction, PanelState, PanelType, PreviewPanel,
+        DirElem, DirPanel, FilePreview, MillerPanels, Panel, PanelAction, PanelState, PanelType,
         Select,
     },
 };
@@ -65,7 +65,7 @@ pub struct PanelManager {
     dir_rx: mpsc::Receiver<(DirPanel, PanelState)>,
 
     /// Receiver for incoming preview-panels
-    prev_rx: mpsc::Receiver<(PreviewPanel, PanelState)>,
+    prev_rx: mpsc::Receiver<(FilePreview, PanelState)>,
 
     /// Sends request for new content
     content_tx: mpsc::Sender<(PathBuf, PanelState)>,
@@ -75,7 +75,7 @@ impl PanelManager {
     pub fn new(
         cache: SharedCache,
         dir_rx: mpsc::Receiver<(DirPanel, PanelState)>,
-        prev_rx: mpsc::Receiver<(PreviewPanel, PanelState)>,
+        prev_rx: mpsc::Receiver<(FilePreview, PanelState)>,
         content_tx: mpsc::Sender<(PathBuf, PanelState)>,
     ) -> Result<Self> {
         let stdout = stdout();
@@ -131,7 +131,7 @@ impl PanelManager {
             if path.is_dir() {
                 PanelType::Dir(self.tmp_panel_from_path(path.into()))
             } else {
-                PanelType::Preview(PreviewPanel::new(path.into()))
+                PanelType::Preview(FilePreview::new(path.into()))
             }
         } else {
             PanelType::Empty

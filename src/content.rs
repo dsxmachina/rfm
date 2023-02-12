@@ -13,7 +13,7 @@ use notify_rust::Notification;
 use parking_lot::Mutex;
 use tokio::{fs::read_dir, sync::mpsc};
 
-use crate::panel::{DirElem, DirPanel, PanelState, PreviewPanel, Select};
+use crate::panel::{DirElem, DirPanel, FilePreview, PanelState, Select};
 
 /// Cache that is shared by the content-manager and the panel-manager.
 #[derive(Clone)]
@@ -44,7 +44,7 @@ pub struct Manager {
 
     dir_tx: mpsc::Sender<(DirPanel, PanelState)>,
 
-    prev_tx: mpsc::Sender<(PreviewPanel, PanelState)>,
+    prev_tx: mpsc::Sender<(FilePreview, PanelState)>,
 
     cache: SharedCache,
 }
@@ -98,7 +98,7 @@ impl Manager {
         cache: SharedCache,
         rx: mpsc::Receiver<(PathBuf, PanelState)>,
         dir_tx: mpsc::Sender<(DirPanel, PanelState)>,
-        prev_tx: mpsc::Sender<(PreviewPanel, PanelState)>,
+        prev_tx: mpsc::Sender<(FilePreview, PanelState)>,
     ) -> Self {
         Manager {
             rx,
@@ -151,10 +151,7 @@ impl Manager {
                     panel: state.panel.clone(),
                 };
                 // Create preview
-                let _ = self
-                    .prev_tx
-                    .send((PreviewPanel::new(path), new_state))
-                    .await;
+                let _ = self.prev_tx.send((FilePreview::new(path), new_state)).await;
             }
         }
     }
