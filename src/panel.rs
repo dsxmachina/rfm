@@ -462,45 +462,45 @@ impl FilePreview {
     }
 }
 
-pub enum PanelType {
+pub enum PreviewPanel {
     /// Directory preview
     Dir(DirPanel),
     /// File preview
-    Preview(FilePreview),
+    File(FilePreview),
     /// No content
     Empty,
 }
 
-impl PanelType {
-    pub fn from_path<P: AsRef<Path>>(maybe_path: Option<P>) -> Result<PanelType> {
+impl PreviewPanel {
+    pub fn from_path<P: AsRef<Path>>(maybe_path: Option<P>) -> Result<PreviewPanel> {
         if let Some(path) = maybe_path {
             if path.as_ref().is_dir() {
-                Ok(PanelType::Dir(DirPanel::empty()))
+                Ok(PreviewPanel::Dir(DirPanel::empty()))
             } else {
-                Ok(PanelType::Preview(FilePreview::new(path.as_ref().into())))
+                Ok(PreviewPanel::File(FilePreview::new(path.as_ref().into())))
             }
         } else {
-            Ok(PanelType::Empty)
+            Ok(PreviewPanel::Empty)
         }
     }
 
-    pub fn empty() -> PanelType {
-        PanelType::Empty
+    pub fn empty() -> PreviewPanel {
+        PreviewPanel::Empty
     }
 
     pub fn hash(&self) -> u64 {
         match self {
-            PanelType::Dir(panel) => panel.hash,
-            PanelType::Preview(panel) => 0, // TODO
-            PanelType::Empty => 0,
+            PreviewPanel::Dir(panel) => panel.hash,
+            PreviewPanel::File(panel) => 0, // TODO
+            PreviewPanel::Empty => 0,
         }
     }
 
     pub fn path(&self) -> Option<PathBuf> {
         match self {
-            PanelType::Dir(panel) => Some(panel.path.clone()),
-            PanelType::Preview(panel) => Some(panel.path.clone()),
-            PanelType::Empty => None,
+            PreviewPanel::Dir(panel) => Some(panel.path.clone()),
+            PreviewPanel::File(panel) => Some(panel.path.clone()),
+            PreviewPanel::Empty => None,
         }
     }
 }
@@ -616,7 +616,7 @@ pub struct MillerPanels {
     // Panels
     left: DirPanel,
     mid: DirPanel,
-    right: PanelType,
+    right: PreviewPanel,
 
     // Panel state counters
     state_cnt: (u64, u64, u64),
@@ -658,7 +658,7 @@ impl MillerPanels {
         let current_path = PathBuf::from(".").canonicalize()?;
         let left = DirPanel::new(dir_content(parent_path.clone())?, parent_path);
         let mid = DirPanel::new(dir_content(current_path.clone())?, current_path);
-        let right = PanelType::empty();
+        let right = PreviewPanel::empty();
         let ranges = Ranges::from_size(terminal_size);
         Ok(MillerPanels {
             left,
@@ -685,7 +685,7 @@ impl MillerPanels {
         self.show_hidden = !self.show_hidden;
         self.left.set_hidden(self.show_hidden);
         self.mid.set_hidden(self.show_hidden);
-        if let PanelType::Dir(panel) = &mut self.right {
+        if let PreviewPanel::Dir(panel) = &mut self.right {
             panel.set_hidden(self.show_hidden);
         };
         self.draw()
@@ -709,7 +709,7 @@ impl MillerPanels {
             }
             Select::Right => {
                 if panel_state.state_cnt > self.state_cnt.2 {
-                    self.update_right(PanelType::Dir(panel));
+                    self.update_right(PreviewPanel::Dir(panel));
                 } else {
                     self.state_right();
                 }
@@ -718,7 +718,7 @@ impl MillerPanels {
     }
 
     /// Exclusively updates the right (preview) panel
-    pub fn update_preview(&mut self, preview: PanelType, panel_state: PanelState) {
+    pub fn update_preview(&mut self, preview: PreviewPanel, panel_state: PanelState) {
         if let Select::Right = &panel_state.panel {
             if panel_state.state_cnt > self.state_cnt.2 {
                 self.update_right(preview);
@@ -744,9 +744,9 @@ impl MillerPanels {
     }
 
     /// Updates the right panel and returns the updates panel-state
-    fn update_right(&mut self, panel: PanelType) {
+    fn update_right(&mut self, panel: PreviewPanel) {
         self.right = panel;
-        if let PanelType::Dir(panel) = &mut self.right {
+        if let PreviewPanel::Dir(panel) = &mut self.right {
             panel.show_hidden = self.show_hidden;
         }
         self.state_cnt.2 += 1;
@@ -843,7 +843,7 @@ impl MillerPanels {
                 // swap left and mid:
                 // | m | l | r |
                 mem::swap(&mut self.left, &mut self.mid);
-                if let PanelType::Dir(panel) = &mut self.right {
+                if let PreviewPanel::Dir(panel) = &mut self.right {
                     mem::swap(&mut self.mid, panel);
                 } else {
                     // This should not be possible!
@@ -874,7 +874,7 @@ impl MillerPanels {
 
         // Create right dir-panel from previous mid
         // | l | m | r |
-        self.right = PanelType::Dir(self.mid.clone());
+        self.right = PreviewPanel::Dir(self.mid.clone());
         // | l | m | m |
 
         // swap left and mid:
@@ -913,17 +913,17 @@ impl MillerPanels {
         )?;
 
         match &self.right {
-            PanelType::Dir(panel) => panel.draw(
+            PreviewPanel::Dir(panel) => panel.draw(
                 stdout,
                 self.ranges.right_x_range.clone(),
                 self.ranges.y_range.clone(),
             )?,
-            PanelType::Preview(panel) => panel.draw(
+            PreviewPanel::File(panel) => panel.draw(
                 stdout,
                 self.ranges.right_x_range.clone(),
                 self.ranges.y_range.clone(),
             )?,
-            PanelType::Empty => (),
+            PreviewPanel::Empty => (),
         }
         self.stdout.queue(cursor::Hide)?;
         self.stdout.flush()?;
