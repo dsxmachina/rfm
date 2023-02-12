@@ -134,7 +134,7 @@ impl PanelManager {
                 PreviewPanel::File(FilePreview::new(path.into()))
             }
         } else {
-            PreviewPanel::Empty
+            PreviewPanel::Dir(DirPanel::empty())
         }
     }
 

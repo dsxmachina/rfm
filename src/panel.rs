@@ -36,8 +36,13 @@ pub trait Move {
 pub trait Panel: Draw {
     type Content: Clone + Send;
 
+    /// Path of the panel
     fn path(&self) -> &Path;
 
+    /// Hash of the panels content
+    fn content_hash(&self) -> u64;
+
+    /// Updates the content of the panel
     fn update_content(&mut self, content: Self::Content);
 }
 
@@ -141,6 +146,10 @@ impl Panel for DirPanel {
 
     fn path(&self) -> &Path {
         self.path.as_path()
+    }
+
+    fn content_hash(&self) -> u64 {
+        self.hash
     }
 
     fn update_content(&mut self, content: Self::Content) {
@@ -462,13 +471,56 @@ impl FilePreview {
     }
 }
 
+impl Panel for FilePreview {
+    type Content = FilePreview;
+
+    fn path(&self) -> &Path {
+        self.path.as_path()
+    }
+
+    fn content_hash(&self) -> u64 {
+        todo!()
+    }
+
+    fn update_content(&mut self, content: Self::Content) {
+        *self = content
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum PreviewPanel {
     /// Directory preview
     Dir(DirPanel),
     /// File preview
     File(FilePreview),
-    /// No content
-    Empty,
+}
+
+impl Draw for PreviewPanel {
+    fn draw(&self, stdout: &mut Stdout, x_range: Range<u16>, y_range: Range<u16>) -> Result<()> {
+        match self {
+            PreviewPanel::Dir(panel) => panel.draw(stdout, x_range, y_range),
+            PreviewPanel::File(preview) => preview.draw(stdout, x_range, y_range),
+        }
+    }
+}
+
+impl Panel for PreviewPanel {
+    type Content = PreviewPanel;
+
+    fn path(&self) -> &Path {
+        match self {
+            PreviewPanel::Dir(panel) => panel.path(),
+            PreviewPanel::File(preview) => preview.path(),
+        }
+    }
+
+    fn content_hash(&self) -> u64 {
+        todo!()
+    }
+
+    fn update_content(&mut self, content: Self::Content) {
+        *self = content
+    }
 }
 
 impl PreviewPanel {
@@ -480,19 +532,18 @@ impl PreviewPanel {
                 Ok(PreviewPanel::File(FilePreview::new(path.as_ref().into())))
             }
         } else {
-            Ok(PreviewPanel::Empty)
+            Ok(PreviewPanel::Dir(DirPanel::empty()))
         }
     }
 
     pub fn empty() -> PreviewPanel {
-        PreviewPanel::Empty
+        PreviewPanel::Dir(DirPanel::empty())
     }
 
     pub fn hash(&self) -> u64 {
         match self {
             PreviewPanel::Dir(panel) => panel.hash,
             PreviewPanel::File(panel) => 0, // TODO
-            PreviewPanel::Empty => 0,
         }
     }
 
@@ -500,7 +551,6 @@ impl PreviewPanel {
         match self {
             PreviewPanel::Dir(panel) => Some(panel.path.clone()),
             PreviewPanel::File(panel) => Some(panel.path.clone()),
-            PreviewPanel::Empty => None,
         }
     }
 }
@@ -923,7 +973,6 @@ impl MillerPanels {
                 self.ranges.right_x_range.clone(),
                 self.ranges.y_range.clone(),
             )?,
-            PreviewPanel::Empty => (),
         }
         self.stdout.queue(cursor::Hide)?;
         self.stdout.flush()?;
