@@ -137,14 +137,14 @@ impl Draw for DirPanel {
 }
 
 impl Panel for DirPanel {
-    type Content = Vec<DirElem>;
+    type Content = DirPanel;
 
     fn path(&self) -> &Path {
         self.path.as_path()
     }
 
     fn update_content(&mut self, content: Self::Content) {
-        todo!()
+        *self = content;
     }
 }
 
@@ -172,6 +172,7 @@ impl DirPanel {
         }
     }
 
+    // TODO: This is broken
     pub fn select(&mut self, selection: &Path) {
         self.selected = self
             .elements
