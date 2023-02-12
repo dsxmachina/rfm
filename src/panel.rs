@@ -8,6 +8,7 @@ use crossterm::{
     QueueableCommand, Result,
 };
 use fasthash::MetroHasher;
+use image::DynamicImage;
 use notify_rust::Notification;
 use pad::PadStr;
 use std::{
@@ -427,12 +428,18 @@ impl PartialOrd for DirElem {
     }
 }
 
-struct ImagePreview {}
+#[derive(Debug, Clone)]
+enum Preview {
+    Image { img: Option<DynamicImage> },
+    Text { lines: Vec<String> },
+}
 
 // TODO: Add hash
 #[derive(Debug, Clone)]
 pub struct FilePreview {
     path: PathBuf,
+    hash: u64,
+    preview: Preview,
 }
 
 impl Draw for FilePreview {
@@ -455,83 +462,71 @@ impl Draw for FilePreview {
             cursor::MoveTo(x_range.start + 1, y_range.start),
             PrintStyledContent(preview_string.magenta()),
         )?;
-        // Extract extension
-        let extension = self
-            .path
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default();
-        // img_height
-        let img_height = ((height as f32) - (height as f32) / 3.6).round();
-        match extension {
-            "png" | "bmp" | "jpg" | "jpeg" => {
+
+        // Plot left border
+        for y in y_range.start + 1..y_range.end {
+            queue!(
+                stdout,
+                cursor::MoveTo(x_range.start, y),
+                PrintStyledContent("|".dark_green().bold()),
+            )?;
+        }
+
+        match &self.preview {
+            Preview::Image { img } => {
                 // load image
-                let img = image::io::Reader::open(self.path())?
-                    .decode()
-                    .unwrap_or_default()
-                    // .resize(
-                    //     width as u32,
-                    //     height as u32,
-                    //     image::imageops::FilterType::Nearest,
-                    // )
-                    .thumbnail_exact(width as u32, img_height as u32)
-                    .into_rgb8();
-                if img.is_empty() {
-                    Notification::new().summary("empty image").show().unwrap();
-                }
-                // for pixel in img.pixels() {
-                //     pixel.
-                // }
-                // let density =
-                //     "$@B%8&WM#*oahkbdpqwmZO0QLCJUYXzcvunxrjft/\\|()1{}[]?-_+~<>i!lI;:,\"^`\'. ";
-                // Print preview
-                for y in 0..height {
-                    // cursor y
-                    let cy = y_range.start.saturating_add(y);
+                if let Some(img) = img {
+                    // crop height
+                    let img_height = ((height as f32) - (height as f32) / 3.6).round();
+                    let img = img
+                        .thumbnail_exact(width as u32, img_height as u32)
+                        .into_rgb8();
+                    for y in 0..height {
+                        // cursor y
+                        let cy = y_range.start.saturating_add(y);
+                        for x in 0..width {
+                            // cursor x
+                            let cx = x_range.start.saturating_add(x).saturating_add(1);
+                            queue!(stdout, cursor::MoveTo(cx, cy))?;
+                            if let Some(px) = img.get_pixel_checked(x as u32, y as u32) {
+                                let color = Colors::new(
+                                    style::Color::Rgb {
+                                        r: px.0[0],
+                                        g: px.0[1],
+                                        b: px.0[2],
+                                    },
+                                    style::Color::Rgb {
+                                        r: px.0[0],
+                                        g: px.0[1],
+                                        b: px.0[2],
+                                    },
+                                );
+                                queue!(stdout, SetColors(color), Print(" "),)?;
+                            } else {
+                                queue!(stdout, cursor::MoveTo(cx, cy), ResetColor, Print(" "),)?;
+                            }
+                        }
+                        queue!(stdout, cursor::MoveTo(0, 0), ResetColor,)?;
+                    }
+                } else {
                     queue!(
                         stdout,
-                        cursor::MoveTo(x_range.start, cy),
-                        ResetColor,
-                        PrintStyledContent("|".dark_green().bold()),
+                        cursor::MoveTo(x_range.start + 1, y_range.start + 1),
+                        Print(format!("Failed to load image '{}'", self.path().display())),
                     )?;
-                    for x in 0..width {
-                        // cursor x
-                        let cx = x_range.start.saturating_add(x).saturating_add(1);
-                        queue!(stdout, cursor::MoveTo(cx, cy))?;
-                        if let Some(px) = img.get_pixel_checked(x as u32, y as u32) {
-                            let color = Colors::new(
-                                style::Color::Rgb {
-                                    r: px.0[0],
-                                    g: px.0[1],
-                                    b: px.0[2],
-                                },
-                                style::Color::Rgb {
-                                    r: px.0[0],
-                                    g: px.0[1],
-                                    b: px.0[2],
-                                },
-                            );
-                            queue!(stdout, SetColors(color), Print(" "),)?;
-                            // if let Some(c) = density.chars().nth(px.0[0] as usize) {
-                            //     queue!(stdout, SetColors(color), Print(c),)?;
-                            // } else {
-                            //     queue!(stdout, SetColors(color), Print(" "),)?;
-                            // }
-                        } else {
-                            queue!(stdout, cursor::MoveTo(cx, cy), ResetColor, Print(" "),)?;
+                    for y in y_range.start + 1..y_range.end {
+                        for x in x_range.start + 1..x_range.end {
+                            queue!(stdout, cursor::MoveTo(x, y), Print(" "),)?;
                         }
                     }
-                    queue!(stdout, cursor::MoveTo(0, 0), ResetColor,)?;
                 }
+
+                // let density =
+                //     "$@B%8&WM#*oahkbdpqwmZO0QLCJUYXzcvunxrjft/\\|()1{}[]?-_+~<>i!lI;:,\"^`\'. ";
             }
             _ => {
                 // Print preview
                 for y in y_range.start + 1..y_range.end {
-                    queue!(
-                        stdout,
-                        cursor::MoveTo(x_range.start, y),
-                        PrintStyledContent("|".dark_green().bold()),
-                    )?;
                     for x in x_range.start + 1..x_range.end {
                         queue!(stdout, cursor::MoveTo(x, y), Print(" "),)?;
                     }
@@ -544,7 +539,28 @@ impl Draw for FilePreview {
 
 impl FilePreview {
     pub fn new(path: PathBuf) -> Self {
-        FilePreview { path }
+        let extension = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+
+        let preview = match extension {
+            "png" | "bmp" | "jpg" | "jpeg" => {
+                if let Ok(img_bytes) = image::io::Reader::open(&path) {
+                    let img = img_bytes.decode().ok();
+                    Preview::Image { img }
+                } else {
+                    Preview::Image { img: None }
+                }
+            }
+            _ => Preview::Text { lines: Vec::new() },
+        };
+
+        FilePreview {
+            path,
+            hash: 0,
+            preview,
+        }
     }
 }
 
