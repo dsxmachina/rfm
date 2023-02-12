@@ -36,16 +36,29 @@ mod preview;
 async fn main() -> Result<()> {
     enable_raw_mode()?;
 
-    let cache = SharedCache::with_size(50);
+    let directory_cache = SharedCache::with_size(50);
+    let preview_cache = SharedCache::with_size(50);
 
     let (dir_tx, dir_rx) = mpsc::channel(32);
     let (preview_tx, preview_rx) = mpsc::channel(32);
     let (content_tx, content_rx) = mpsc::channel(32);
 
-    let content_manager = content::Manager::new(cache.clone(), content_rx, dir_tx, preview_tx);
+    let content_manager = content::Manager::new(
+        directory_cache.clone(),
+        preview_cache.clone(),
+        content_rx,
+        dir_tx,
+        preview_tx,
+    );
     let content_handle = tokio::spawn(content_manager.run());
 
-    let panel_manager = PanelManager::new(cache, dir_rx, preview_rx, content_tx)?;
+    let panel_manager = PanelManager::new(
+        directory_cache,
+        preview_cache,
+        dir_rx,
+        preview_rx,
+        content_tx,
+    )?;
     let panel_handle = tokio::spawn(panel_manager.run());
 
     panel_handle.await??;

@@ -17,23 +17,23 @@ use crate::panel::{DirElem, DirPanel, FilePreview, PanelState, Select};
 
 /// Cache that is shared by the content-manager and the panel-manager.
 #[derive(Clone)]
-pub struct SharedCache {
-    cache: Arc<Mutex<SizedCache<PathBuf, Vec<DirElem>>>>,
+pub struct SharedCache<Item: Clone> {
+    cache: Arc<Mutex<SizedCache<PathBuf, Item>>>,
 }
 
-impl SharedCache {
+impl<Item: Clone> SharedCache<Item> {
     pub fn with_size(size: usize) -> Self {
         SharedCache {
             cache: Arc::new(Mutex::new(SizedCache::with_size(size))),
         }
     }
 
-    pub fn get(&self, path: &PathBuf) -> Option<Vec<DirElem>> {
+    pub fn get(&self, path: &PathBuf) -> Option<Item> {
         self.cache.lock().cache_get(&path).cloned()
     }
 
-    pub fn insert(&self, path: PathBuf, elements: Vec<DirElem>) -> Option<Vec<DirElem>> {
-        self.cache.lock().cache_set(path, elements)
+    pub fn insert(&self, path: PathBuf, item: Item) -> Option<Item> {
+        self.cache.lock().cache_set(path, item)
     }
 }
 
@@ -46,7 +46,8 @@ pub struct Manager {
 
     prev_tx: mpsc::Sender<(FilePreview, PanelState)>,
 
-    cache: SharedCache,
+    directory_cache: SharedCache<Vec<DirElem>>,
+    preview_cache: SharedCache<FilePreview>,
 }
 
 cached_result! {
@@ -95,7 +96,8 @@ pub fn hash_elements(elements: &Vec<DirElem>) -> u64 {
 
 impl Manager {
     pub fn new(
-        cache: SharedCache,
+        directory_cache: SharedCache<Vec<DirElem>>,
+        preview_cache: SharedCache<FilePreview>,
         rx: mpsc::Receiver<(PathBuf, PanelState)>,
         dir_tx: mpsc::Sender<(DirPanel, PanelState)>,
         prev_tx: mpsc::Sender<(FilePreview, PanelState)>,
@@ -104,7 +106,8 @@ impl Manager {
             rx,
             dir_tx,
             prev_tx,
-            cache,
+            directory_cache,
+            preview_cache,
         }
     }
 
@@ -141,7 +144,7 @@ impl Manager {
                         let _ = self.dir_tx.send((panel, new_state)).await;
                     }
                     // Cache result
-                    self.cache.insert(path, content);
+                    self.directory_cache.insert(path, content);
                 }
             } else {
                 // Calculate new state
@@ -151,7 +154,10 @@ impl Manager {
                     panel: state.panel.clone(),
                 };
                 // Create preview
-                let _ = self.prev_tx.send((FilePreview::new(path), new_state)).await;
+                let preview = FilePreview::new(path.clone());
+                let _ = self.prev_tx.send((preview.clone(), new_state)).await;
+                // Cache result
+                self.preview_cache.insert(path, preview);
             }
         }
     }

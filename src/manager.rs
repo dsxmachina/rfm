@@ -59,7 +59,10 @@ pub struct PanelManager {
     stdout: Stdout,
 
     /// Cache with directory content
-    cache: SharedCache,
+    directory_cache: SharedCache<Vec<DirElem>>,
+
+    /// Cache for file previews
+    preview_cache: SharedCache<FilePreview>,
 
     /// Receiver for incoming dir-panels
     dir_rx: mpsc::Receiver<(DirPanel, PanelState)>,
@@ -73,7 +76,8 @@ pub struct PanelManager {
 
 impl PanelManager {
     pub fn new(
-        cache: SharedCache,
+        directory_cache: SharedCache<Vec<DirElem>>,
+        preview_cache: SharedCache<FilePreview>,
         dir_rx: mpsc::Receiver<(DirPanel, PanelState)>,
         prev_rx: mpsc::Receiver<(FilePreview, PanelState)>,
         content_tx: mpsc::Sender<(PathBuf, PanelState)>,
@@ -88,7 +92,8 @@ impl PanelManager {
             event_reader,
             parser,
             stdout,
-            cache,
+            directory_cache,
+            preview_cache,
             dir_rx,
             prev_rx,
             content_tx,
@@ -99,7 +104,7 @@ impl PanelManager {
         // Always use absolute paths
         if let Some(parent) = path.parent().and_then(|p| canonicalize(p).ok()) {
             // Lookup cache and reply with some panel
-            if let Some(elements) = self.cache.get(&path) {
+            if let Some(elements) = self.directory_cache.get(&path) {
                 let mut tmp = DirPanel::new(elements, parent);
                 tmp.select(path.as_path());
                 tmp
@@ -115,7 +120,7 @@ impl PanelManager {
         // Always use absolute paths
         if let Some(path) = canonicalize(path).ok() {
             // Lookup cache and reply with some panel
-            if let Some(elements) = self.cache.get(&path) {
+            if let Some(elements) = self.directory_cache.get(&path) {
                 DirPanel::new(elements, path)
             } else {
                 DirPanel::loading(path)
@@ -127,13 +132,22 @@ impl PanelManager {
 
     fn tmp_preview_panel<P: AsRef<Path>>(&self, selection: Option<P>) -> PreviewPanel {
         if let Some(path) = selection {
-            // let path = path.as_ref();
-            // if path.is_dir() {
-            //     PreviewPanel::Dir(self.tmp_panel_from_path(path.into()))
-            // } else {
-            //     PreviewPanel::File(FilePreview::new(path.into()))
-            // }
-            PreviewPanel::Dir(DirPanel::loading(path.as_ref().to_path_buf()))
+            let path = path.as_ref().to_path_buf();
+            if path.is_dir() {
+                // Check directory cache
+                if let Some(elements) = self.directory_cache.get(&path) {
+                    PreviewPanel::Dir(DirPanel::new(elements, path))
+                } else {
+                    PreviewPanel::Dir(DirPanel::loading(path))
+                }
+            } else {
+                // Check file-preview cache
+                if let Some(preview) = self.preview_cache.get(&path) {
+                    PreviewPanel::File(preview)
+                } else {
+                    PreviewPanel::loading(path)
+                }
+            }
         } else {
             PreviewPanel::Dir(DirPanel::empty())
         }

@@ -638,6 +638,10 @@ impl PreviewPanel {
         PreviewPanel::Dir(DirPanel::empty())
     }
 
+    pub fn loading(path: PathBuf) -> PreviewPanel {
+        PreviewPanel::Dir(DirPanel::loading(path))
+    }
+
     pub fn hash(&self) -> u64 {
         match self {
             PreviewPanel::Dir(panel) => panel.hash,
