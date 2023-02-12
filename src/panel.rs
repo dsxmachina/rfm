@@ -134,7 +134,12 @@ impl Draw for DirPanel {
                 cursor::MoveTo(x_range.start + 2, y_range.start + 1),
                 PrintStyledContent("Loading...".dark_green().bold().italic()),
                 cursor::MoveTo(x_range.start + 2, y_range.start + 2),
-                PrintStyledContent(format!("{}", self.path.display()).dark_green().italic()),
+                PrintStyledContent(
+                    format!("{}", self.path.display())
+                        .with_exact_width(width.saturating_sub(2) as usize)
+                        .dark_green()
+                        .italic()
+                ),
             )?;
         }
 

@@ -127,12 +127,13 @@ impl PanelManager {
 
     fn tmp_preview_panel<P: AsRef<Path>>(&self, selection: Option<P>) -> PreviewPanel {
         if let Some(path) = selection {
-            let path = path.as_ref();
-            if path.is_dir() {
-                PreviewPanel::Dir(self.tmp_panel_from_path(path.into()))
-            } else {
-                PreviewPanel::File(FilePreview::new(path.into()))
-            }
+            // let path = path.as_ref();
+            // if path.is_dir() {
+            //     PreviewPanel::Dir(self.tmp_panel_from_path(path.into()))
+            // } else {
+            //     PreviewPanel::File(FilePreview::new(path.into()))
+            // }
+            PreviewPanel::Dir(DirPanel::loading(path.as_ref().to_path_buf()))
         } else {
             PreviewPanel::Dir(DirPanel::empty())
         }

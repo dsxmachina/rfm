@@ -147,7 +147,7 @@ impl Manager {
                 // Calculate new state
                 let new_state = PanelState {
                     state_cnt: state.state_cnt + 1,
-                    hash: 0,
+                    hash: state.state_cnt + 1, // TODO calculate hash
                     panel: state.panel.clone(),
                 };
                 // Create preview
@@ -175,6 +175,19 @@ mod tests {
             now.elapsed().as_millis()
         );
         println!("hash={hash}");
+        assert!(true);
+    }
+
+    #[test]
+    fn test_image_load_speed() {
+        let now = Instant::now();
+        let img = image::io::Reader::open("/home/someone/Bilder/wallpaper_source/abstract/hologram_scheme_scifi_139294_1920x1080.jpg").unwrap().decode().unwrap();
+        let elapsed = now.elapsed().as_millis();
+        println!("loading image took {elapsed}ms");
+        let now = Instant::now();
+        let small_img = img.thumbnail_exact(400, 300).into_rgb8();
+        let elapsed = now.elapsed().as_millis();
+        println!("processing image took {elapsed}ms");
         assert!(false);
     }
 
