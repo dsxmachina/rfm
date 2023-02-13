@@ -440,7 +440,6 @@ enum Preview {
     Text { lines: Vec<String> },
 }
 
-// TODO: Add hash
 #[derive(Debug, Clone)]
 pub struct FilePreview {
     path: PathBuf,
@@ -648,7 +647,10 @@ impl Panel for PreviewPanel {
     }
 
     fn content_hash(&self) -> u64 {
-        todo!()
+        match self {
+            PreviewPanel::Dir(p) => p.content_hash(),
+            PreviewPanel::File(p) => p.content_hash(),
+        }
     }
 
     fn update_content(&mut self, content: Self::Content) {
