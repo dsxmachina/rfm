@@ -13,9 +13,9 @@ use notify_rust::Notification;
 use pad::PadStr;
 use std::{
     cmp::Ordering,
-    fs::{canonicalize, read_dir, DirEntry},
+    fs::{canonicalize, read_dir, DirEntry, File},
     hash::{Hash, Hasher},
-    io::{stdout, Stdout, Write},
+    io::{self, stdout, BufRead, Stdout, Write},
     mem,
     ops::Range,
     os::unix::prelude::PermissionsExt,
@@ -530,6 +530,21 @@ impl Draw for FilePreview {
                 // let density =
                 //     "$@B%8&WM#*oahkbdpqwmZO0QLCJUYXzcvunxrjft/\\|()1{}[]?-_+~<>i!lI;:,\"^`\'. ";
             }
+            Preview::Text { lines } => {
+                // Print preview
+                let mut idx = 0;
+                for line in lines.into_iter().take(height as usize) {
+                    let cy = idx as u16 + y_range.start;
+                    let line = line.replace("\r", "").with_exact_width(width as usize);
+                    queue!(stdout, cursor::MoveTo(x_range.start + 1, cy), Print(line),)?;
+                    idx += 1;
+                }
+                for cy in idx + 1..y_range.end {
+                    for cx in x_range.start + 1..x_range.end {
+                        queue!(stdout, cursor::MoveTo(cx, cy), Print(" "),)?;
+                    }
+                }
+            }
             _ => {
                 // Print preview
                 for y in y_range.start + 1..y_range.end {
@@ -567,7 +582,18 @@ impl FilePreview {
                     Preview::Image { img: None }
                 }
             }
-            _ => Preview::Text { lines: Vec::new() },
+            _ => {
+                if let Ok(file) = File::open(&path) {
+                    let lines = io::BufReader::new(file)
+                        .lines()
+                        .take(128)
+                        .flatten()
+                        .collect();
+                    Preview::Text { lines }
+                } else {
+                    Preview::Text { lines: Vec::new() }
+                }
+            }
         };
 
         FilePreview {
