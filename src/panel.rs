@@ -773,9 +773,9 @@ fn print_footer(stdout: &mut Stdout, mid: &DirPanel, width: u16, y: u16) -> Resu
         )?;
     }
     let (n, m) = if mid.show_hidden {
-        (mid.selected, mid.elements.len())
+        (mid.selected.saturating_add(1), mid.elements.len())
     } else {
-        (mid.non_hidden_idx, mid.non_hidden.len())
+        (mid.non_hidden_idx.saturating_add(1), mid.non_hidden.len())
     };
 
     let n_files_string = format!("{n}/{m} ");
