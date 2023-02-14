@@ -92,6 +92,7 @@ impl Draw for DirPanel {
                 self.non_hidden
                     .len()
                     .min(self.non_hidden_idx.saturating_add(h))
+                    .saturating_add(1)
             };
             bot.saturating_sub(height as usize)
         };
