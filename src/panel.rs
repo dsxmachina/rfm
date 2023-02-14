@@ -847,12 +847,6 @@ fn dir_content(path: PathBuf) -> Result<Vec<DirElem>> {
 
 impl MillerPanels {
     pub fn new() -> Result<Self> {
-        let mut stdout = stdout();
-        // Start with a clear screen
-        stdout
-            .queue(cursor::Hide)?
-            .queue(Clear(ClearType::All))?
-            .queue(cursor::MoveTo(0, 0))?;
         let terminal_size = terminal::size()?;
         let parent_path = PathBuf::from("..").canonicalize()?;
         let current_path = PathBuf::from(".").canonicalize()?;
@@ -868,7 +862,7 @@ impl MillerPanels {
             ranges,
             prev: ".".into(),
             show_hidden: false,
-            stdout,
+            stdout: stdout(),
         })
     }
 

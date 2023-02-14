@@ -7,10 +7,12 @@ use commands::CommandParser;
 use content::SharedCache;
 use crossterm::{
     cursor::{self, position},
-    event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers},
+    event::{DisableMouseCapture, Event, EventStream, KeyCode, KeyEvent, KeyModifiers},
     execute, queue,
     style::{self, PrintStyledContent, Stylize},
-    terminal::{self, disable_raw_mode, enable_raw_mode, Clear, ClearType, SetSize},
+    terminal::{
+        self, disable_raw_mode, enable_raw_mode, Clear, ClearType, DisableLineWrap, SetSize,
+    },
     ExecutableCommand, QueueableCommand, Result,
 };
 use futures::{future::FutureExt, StreamExt};
@@ -35,6 +37,15 @@ mod preview;
 #[tokio::main]
 async fn main() -> Result<()> {
     enable_raw_mode()?;
+
+    // Initialize terminal
+    let mut stdout = stdout();
+    stdout
+        .queue(DisableMouseCapture)?
+        .queue(DisableLineWrap)?
+        .queue(cursor::Hide)?
+        .queue(Clear(ClearType::All))?
+        .queue(cursor::MoveTo(0, 0))?;
 
     let directory_cache = SharedCache::with_size(50);
     let preview_cache = SharedCache::with_size(50);
