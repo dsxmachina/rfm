@@ -121,15 +121,10 @@ impl Manager {
     pub async fn run(mut self) {
         while let Some((path, state)) = self.rx.recv().await {
             if path.is_dir() {
-                // Notification::new()
-                //     .summary(&format!("parsing: {}", path.display()))
-                //     .show()
-                // .unwrap();
-                // Parse directory
                 let dir_path = path.clone();
 
                 let result = if let Select::Right = state.panel {
-                    // let (_, sy) = terminal::size().unwrap_or((128, 128));
+                    // TODO: We mix the preview cache with the "real" one here!
                     tokio::task::spawn_blocking(move || dir_content_preview(dir_path, 16538)).await
                 } else {
                     // Parse entire directory
