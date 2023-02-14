@@ -855,7 +855,8 @@ impl MillerPanels {
         let terminal_size = terminal::size()?;
         let parent_path = PathBuf::from("..").canonicalize()?;
         let current_path = PathBuf::from(".").canonicalize()?;
-        let left = DirPanel::new(dir_content(parent_path.clone())?, parent_path);
+        let mut left = DirPanel::new(dir_content(parent_path.clone())?, parent_path);
+        left.select(&current_path);
         let mid = DirPanel::new(dir_content(current_path.clone())?, current_path);
         let right = PreviewPanel::empty();
         let ranges = Ranges::from_size(terminal_size);
@@ -930,6 +931,7 @@ impl MillerPanels {
     fn update_left(&mut self, panel: DirPanel) {
         self.left = panel;
         self.left.show_hidden = self.show_hidden;
+        self.left.select(self.mid.path());
         self.state_cnt.0 += 1;
         // self.state_left()
     }
