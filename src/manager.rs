@@ -23,9 +23,9 @@ use crate::{
     commands::{Command, CommandParser},
     content::SharedCache,
     panel::{
-        DirElem, DirPanel, FilePreview, MillerPanels, Panel, PanelAction, PanelState, PreviewPanel,
-        Select,
+        DirElem, DirPanel, MillerPanels, Panel, PanelAction, PanelState, PreviewPanel, Select,
     },
+    preview::FilePreview,
 };
 
 // Unifies the management of key-events,
