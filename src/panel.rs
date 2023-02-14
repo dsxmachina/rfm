@@ -111,7 +111,7 @@ impl Draw for DirPanel {
             queue!(
                 stdout,
                 cursor::MoveTo(x_range.start, y),
-                PrintStyledContent("|".dark_green().bold()),
+                PrintStyledContent("│".dark_green().bold()),
                 entry.print_styled(self.selected == idx, width),
             )?;
             y_offset += 1;
@@ -121,7 +121,7 @@ impl Draw for DirPanel {
             queue!(
                 stdout,
                 cursor::MoveTo(x_range.start, y),
-                PrintStyledContent("|".dark_green().bold()),
+                PrintStyledContent("│".dark_green().bold()),
             )?;
             for x in x_range.start + 1..x_range.end {
                 queue!(stdout, cursor::MoveTo(x, y), Print(" "),)?;
@@ -459,21 +459,21 @@ impl Draw for FilePreview {
             .unwrap_or_default()
             .with_exact_width(width as usize);
         // Print "Preview of ..."
-        let preview_string = format!("Preview of {}", filename).with_exact_width(width as usize);
-        queue!(
-            stdout,
-            cursor::MoveTo(x_range.start, y_range.start),
-            PrintStyledContent("|".dark_green().bold()),
-            cursor::MoveTo(x_range.start + 1, y_range.start),
-            PrintStyledContent(preview_string.magenta()),
-        )?;
+        //let preview_string = format!("Preview of {}", filename).with_exact_width(width as usize);
+        //queue!(
+        //    stdout,
+        //    cursor::MoveTo(x_range.start, y_range.start),
+        //    PrintStyledContent("│".dark_green().bold()),
+        //    cursor::MoveTo(x_range.start + 1, y_range.start),
+        //    PrintStyledContent(preview_string.magenta()),
+        //)?;
 
         // Plot left border
         for y in y_range.start + 1..y_range.end {
             queue!(
                 stdout,
                 cursor::MoveTo(x_range.start, y),
-                PrintStyledContent("|".dark_green().bold()),
+                PrintStyledContent("│".dark_green().bold()),
             )?;
         }
 
@@ -582,6 +582,7 @@ impl FilePreview {
                 }
             }
             _ => {
+                // Simple method
                 if let Ok(file) = File::open(&path) {
                     let lines = io::BufReader::new(file)
                         .lines()
@@ -592,6 +593,16 @@ impl FilePreview {
                 } else {
                     Preview::Text { lines: Vec::new() }
                 }
+                // BAT
+                // let output = std::process::Command::new("bat")
+                //     .arg("--color always")
+                //     .arg(&path)
+                //     .spawn()
+                //     .expect("failed to run neovim")
+                //     .wait_with_output()
+                //     .unwrap();
+                // let lines = output.stdout.lines().take(128).flatten().collect();
+                // Preview::Text { lines }
             }
         };
 
@@ -679,12 +690,12 @@ impl PreviewPanel {
         PreviewPanel::Dir(DirPanel::loading(path))
     }
 
-    pub fn hash(&self) -> u64 {
-        match self {
-            PreviewPanel::Dir(panel) => panel.hash,
-            PreviewPanel::File(panel) => 0, // TODO
-        }
-    }
+    // pub fn hash(&self) -> u64 {
+    //     match self {
+    //         PreviewPanel::Dir(panel) => panel.hash,
+    //         PreviewPanel::File(panel) => 0, // TODO
+    //     }
+    // }
 
     pub fn path(&self) -> Option<PathBuf> {
         match self {
@@ -961,7 +972,7 @@ impl MillerPanels {
     pub fn state_right(&self) -> PanelState {
         PanelState {
             state_cnt: self.state_cnt.2,
-            hash: self.right.hash(),
+            hash: self.right.content_hash(),
             panel: Select::Right,
         }
     }
