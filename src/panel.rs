@@ -826,7 +826,7 @@ impl MillerPanels {
         let current_path = PathBuf::from(".").canonicalize()?;
         let mut left = DirPanel::new(dir_content(parent_path.clone())?, parent_path);
         left.select(&current_path);
-        let mid = DirPanel::new(dir_content(current_path.clone())?, current_path);
+        let mid = DirPanel::new(dir_content(current_path.clone())?, current_path.clone());
         let right = PreviewPanel::empty();
         let ranges = Ranges::from_size(terminal_size);
         Ok(MillerPanels {
@@ -835,7 +835,7 @@ impl MillerPanels {
             right,
             state_cnt: (0, 0, 0),
             ranges,
-            prev: ".".into(),
+            prev: current_path,
             show_hidden: false,
             stdout: stdout(),
         })
