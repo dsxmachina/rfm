@@ -130,7 +130,7 @@ impl Manager {
 
                 let result = if let Select::Right = state.panel {
                     // let (_, sy) = terminal::size().unwrap_or((128, 128));
-                    tokio::task::spawn_blocking(move || dir_content_preview(dir_path, 1024)).await
+                    tokio::task::spawn_blocking(move || dir_content_preview(dir_path, 16538)).await
                 } else {
                     // Parse entire directory
                     tokio::task::spawn_blocking(move || dir_content(dir_path)).await

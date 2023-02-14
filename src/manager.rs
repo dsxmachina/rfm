@@ -208,6 +208,28 @@ impl PanelManager {
                         .expect("Receiver dropped or closed");
                 }
             }
+            PanelAction::UpdateMidRight((mid_path, maybe_path)) => {
+                let right = self.tmp_preview_panel(maybe_path);
+                let path = right.path();
+                self.panels.update_preview(
+                    right,
+                    PanelState {
+                        state_cnt: self.panels.state_right().state_cnt + 1,
+                        hash: self.panels.state_right().hash,
+                        panel: Select::Right,
+                    },
+                );
+                self.content_tx
+                    .send((mid_path, self.panels.state_mid()))
+                    .await
+                    .expect("Receiver dropped or closed");
+                if let Some(path) = path {
+                    self.content_tx
+                        .send((path, self.panels.state_right()))
+                        .await
+                        .expect("Receiver dropped or closed");
+                }
+            }
             PanelAction::UpdateAll(path) => {
                 let path = if path.is_absolute() {
                     path

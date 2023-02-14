@@ -794,6 +794,10 @@ pub enum PanelAction {
     /// Anyway, we need a new preview buffer.
     UpdatePreview(Option<PathBuf>),
 
+    /// We have moved right, therefore we need to update the preview panel,
+    /// and trigger the content-manager to reload new data
+    UpdateMidRight((PathBuf, Option<PathBuf>)),
+
     /// All buffers have changed. This happens when we jump around
     /// the directories.
     UpdateAll(PathBuf),
@@ -1046,7 +1050,7 @@ impl MillerPanels {
                     );
                 }
                 // Recreate right panel
-                PanelAction::UpdatePreview(self.mid.selected_path_owned())
+                PanelAction::UpdateMidRight((self.mid.path.clone(), self.mid.selected_path_owned()))
             } else {
                 PanelAction::Open(selected.to_path_buf())
             }
