@@ -118,6 +118,7 @@ impl CommandParser {
             )),
         );
         key_commands.insert("gm", Command::Move(Movement::JumpTo("~/Musik".into())));
+        key_commands.insert("gN", Command::Move(Movement::JumpTo("/nix/store".into())));
 
         // Toggle hidden files
         key_commands.insert("zh", Command::ToggleHidden);
