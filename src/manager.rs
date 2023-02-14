@@ -28,20 +28,6 @@ use crate::{
     },
 };
 
-/// Reads the content of a directory asynchronously
-async fn panel_content(path: PathBuf, panel: Select) -> Result<(Vec<DirElem>, Select)> {
-    // read directory
-    let mut dir = read_dir(path).await?;
-    let mut out = Vec::new();
-
-    while let Some(item) = dir.next_entry().await? {
-        let item_path = canonicalize(item.path())?;
-        out.push(DirElem::from(item_path))
-    }
-    out.sort();
-    Ok((out, panel))
-}
-
 // Unifies the management of key-events,
 // redrawing and querying content.
 //

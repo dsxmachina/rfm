@@ -452,22 +452,6 @@ impl Draw for FilePreview {
     fn draw(&self, stdout: &mut Stdout, x_range: Range<u16>, y_range: Range<u16>) -> Result<()> {
         let width = x_range.end.saturating_sub(x_range.start.saturating_add(1));
         let height = y_range.end.saturating_sub(y_range.start);
-        let filename = self
-            .path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .and_then(|s| Some(s.to_string()))
-            .unwrap_or_default()
-            .with_exact_width(width as usize);
-        // Print "Preview of ..."
-        //let preview_string = format!("Preview of {}", filename).with_exact_width(width as usize);
-        //queue!(
-        //    stdout,
-        //    cursor::MoveTo(x_range.start, y_range.start),
-        //    PrintStyledContent("│".dark_green().bold()),
-        //    cursor::MoveTo(x_range.start + 1, y_range.start),
-        //    PrintStyledContent(preview_string.magenta()),
-        //)?;
 
         // Plot left border
         for y in y_range.start + 1..y_range.end {
@@ -542,14 +526,6 @@ impl Draw for FilePreview {
                 for cy in idx + 1..y_range.end {
                     for cx in x_range.start + 1..x_range.end {
                         queue!(stdout, cursor::MoveTo(cx, cy), Print(" "),)?;
-                    }
-                }
-            }
-            _ => {
-                // Print preview
-                for y in y_range.start + 1..y_range.end {
-                    for x in x_range.start + 1..x_range.end {
-                        queue!(stdout, cursor::MoveTo(x, y), Print(" "),)?;
                     }
                 }
             }
@@ -671,17 +647,17 @@ impl Panel for PreviewPanel {
 }
 
 impl PreviewPanel {
-    pub fn from_path<P: AsRef<Path>>(maybe_path: Option<P>) -> Result<PreviewPanel> {
-        if let Some(path) = maybe_path {
-            if path.as_ref().is_dir() {
-                Ok(PreviewPanel::Dir(DirPanel::empty()))
-            } else {
-                Ok(PreviewPanel::File(FilePreview::new(path.as_ref().into())))
-            }
-        } else {
-            Ok(PreviewPanel::Dir(DirPanel::empty()))
-        }
-    }
+    // pub fn from_path<P: AsRef<Path>>(maybe_path: Option<P>) -> Result<PreviewPanel> {
+    //     if let Some(path) = maybe_path {
+    //         if path.as_ref().is_dir() {
+    //             Ok(PreviewPanel::Dir(DirPanel::empty()))
+    //         } else {
+    //             Ok(PreviewPanel::File(FilePreview::new(path.as_ref().into())))
+    //         }
+    //     } else {
+    //         Ok(PreviewPanel::Dir(DirPanel::empty()))
+    //     }
+    // }
 
     pub fn empty() -> PreviewPanel {
         PreviewPanel::Dir(DirPanel::empty())
@@ -690,13 +666,6 @@ impl PreviewPanel {
     pub fn loading(path: PathBuf) -> PreviewPanel {
         PreviewPanel::Dir(DirPanel::loading(path))
     }
-
-    // pub fn hash(&self) -> u64 {
-    //     match self {
-    //         PreviewPanel::Dir(panel) => panel.hash,
-    //         PreviewPanel::File(panel) => 0, // TODO
-    //     }
-    // }
 
     pub fn path(&self) -> Option<PathBuf> {
         match self {
