@@ -1,8 +1,5 @@
 #![allow(unused_imports)]
-use crate::{
-    commands::{Command, Movement},
-    panel::MillerPanels,
-};
+use crate::commands::{Command, Movement};
 use commands::CommandParser;
 use content::SharedCache;
 use crossterm::{
@@ -16,7 +13,7 @@ use crossterm::{
     ExecutableCommand, QueueableCommand, Result,
 };
 use futures::{future::FutureExt, StreamExt};
-use manager::PanelManager;
+use panel::manager::PanelManager;
 use std::{
     cmp::Ordering,
     fmt::Display,
@@ -29,7 +26,7 @@ use tokio::sync::mpsc;
 
 mod commands;
 mod content;
-mod manager;
+// mod manager;
 mod panel;
 
 #[tokio::main]
@@ -49,25 +46,30 @@ async fn main() -> Result<()> {
     let preview_cache = SharedCache::with_size(50);
 
     let (dir_tx, dir_rx) = mpsc::channel(32);
-    let (preview_tx, preview_rx) = mpsc::channel(32);
-    let (content_tx, content_rx) = mpsc::channel(32);
+    let (prev_tx, prev_rx) = mpsc::channel(32);
+
+    let (preview_tx, preview_rx) = mpsc::unbounded_channel();
+    let (directory_tx, directory_rx) = mpsc::unbounded_channel();
 
     let content_manager = content::Manager::new(
         directory_cache.clone(),
         preview_cache.clone(),
-        content_rx,
+        directory_rx,
+        preview_rx,
         dir_tx,
-        preview_tx,
+        prev_tx,
     );
+
     let content_handle = tokio::spawn(content_manager.run());
 
     let panel_manager = PanelManager::new(
         directory_cache,
         preview_cache,
         dir_rx,
-        preview_rx,
-        content_tx,
-    )?;
+        prev_rx,
+        directory_tx,
+        preview_tx,
+    );
     let panel_handle = tokio::spawn(panel_manager.run());
 
     panel_handle.await??;

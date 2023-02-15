@@ -13,7 +13,9 @@ use notify_rust::Notification;
 use parking_lot::Mutex;
 use tokio::{fs::read_dir, sync::mpsc};
 
-use crate::panel::{DirElem, DirPanel, FilePreview, PanelContent, PanelState, Select};
+use crate::panel::{
+    DirElem, DirPanel, FilePreview, PanelContent, PanelState, PanelUpdate, PreviewPanel,
+};
 
 /// Cache that is shared by the content-manager and the panel-manager.
 #[derive(Clone)]
@@ -39,17 +41,15 @@ impl<Item: Clone> SharedCache<Item> {
 
 /// Receives commands to parse the directory or generate a new preview.
 pub struct Manager {
-    /// Check the path and respond accordingly
-    rx: mpsc::Receiver<(PathBuf, PanelState)>,
+    preview_rx: mpsc::UnboundedReceiver<PanelUpdate>,
+    directory_rx: mpsc::UnboundedReceiver<PanelUpdate>,
 
     dir_tx: mpsc::Sender<(DirPanel, PanelState)>,
 
-    prev_tx: mpsc::Sender<(FilePreview, PanelState)>,
+    prev_tx: mpsc::Sender<(PreviewPanel, PanelState)>,
 
-    // TODO: This should save DirPanels
-    directory_cache: SharedCache<Vec<DirElem>>,
-    // TODO: This should save PreviewPanels
-    preview_cache: SharedCache<FilePreview>,
+    directory_cache: SharedCache<DirPanel>,
+    preview_cache: SharedCache<PreviewPanel>,
 }
 
 cached_result! {
@@ -93,7 +93,6 @@ cached! {
     }
 }
 
-// TODO: This is a dublicate - put this somewhere else
 pub fn hash_elements(elements: &Vec<DirElem>) -> u64 {
     // let mut h: MetroHasher = Default::default();
     let mut h: fasthash::XXHasher = Default::default();
@@ -105,14 +104,16 @@ pub fn hash_elements(elements: &Vec<DirElem>) -> u64 {
 
 impl Manager {
     pub fn new(
-        directory_cache: SharedCache<Vec<DirElem>>,
-        preview_cache: SharedCache<FilePreview>,
-        rx: mpsc::Receiver<(PathBuf, PanelState)>,
+        directory_cache: SharedCache<DirPanel>,
+        preview_cache: SharedCache<PreviewPanel>,
+        directory_rx: mpsc::UnboundedReceiver<PanelUpdate>,
+        preview_rx: mpsc::UnboundedReceiver<PanelUpdate>,
         dir_tx: mpsc::Sender<(DirPanel, PanelState)>,
-        prev_tx: mpsc::Sender<(FilePreview, PanelState)>,
+        prev_tx: mpsc::Sender<(PreviewPanel, PanelState)>,
     ) -> Self {
         Manager {
-            rx,
+            directory_rx,
+            preview_rx,
             dir_tx,
             prev_tx,
             directory_cache,
@@ -121,51 +122,52 @@ impl Manager {
     }
 
     pub async fn run(mut self) {
-        while let Some((path, state)) = self.rx.recv().await {
-            if path.is_dir() {
-                let dir_path = path.clone();
-
-                let result = if let Select::Right = state.panel {
-                    // TODO: We mix the preview cache with the "real" one here!
-                    tokio::task::spawn_blocking(move || dir_content_preview(dir_path, 16538)).await
-                } else {
-                    // Parse entire directory
-                    tokio::task::spawn_blocking(move || dir_content(dir_path)).await
-                };
-
-                if let Ok(Ok(content)) = result {
-                    // Calculate new state
-                    let new_state = PanelState {
-                        state_cnt: state.state_cnt + 1,
-                        hash: hash_elements(&content),
-                        panel: state.panel.clone(),
-                    };
-                    // Only send new panel, if the content has changed
-                    if state.hash != new_state.hash {
-                        // Create dir-panel from content
-                        let panel = DirPanel::new(content.clone(), path.clone());
-                        // Send content back
-                        let _ = self.dir_tx.send((panel, new_state)).await;
+        loop {
+            tokio::select! {
+                biased;
+                result = self.directory_rx.recv() => {
+                    if result.is_none() {
+                        break;
                     }
-                    // Cache result
-                    self.directory_cache.insert(path, content);
+                    let update = result.unwrap();
+                    if !update.path.is_dir() {
+                        continue;
+                    }
+                    let dir_path = update.path.clone();
+                    let result = tokio::task::spawn_blocking(move || dir_content(dir_path)).await;
+                    if let Ok(Ok(content)) = result {
+                        // Only update when the hash has changed
+                        let panel = DirPanel::new(content, update.path.clone());
+                        if update.hash != panel.content_hash() {
+                            self.dir_tx.send((panel.clone(), update.state.increased())).await.expect("Receiver dropped or closed");
+                        }
+                        self.directory_cache.insert(update.path, panel);
+                    }
                 }
-            } else {
-                // Create preview
-                let preview = get_file_preview(path.clone());
-                // Calculate new state
-                let new_state = PanelState {
-                    state_cnt: state.state_cnt + 1,
-                    hash: preview.content_hash(),
-                    panel: state.panel.clone(),
-                };
-
-                // Only send new panel, if the content may has changed
-                if state.hash != new_state.hash {
-                    let _ = self.prev_tx.send((preview.clone(), new_state)).await;
+                result = self.preview_rx.recv() => {
+                    if result.is_none() {
+                        break;
+                    }
+                    let update = result.unwrap();
+                    if update.path.is_dir() {
+                        let dir_path = update.path.clone();
+                        let result = tokio::task::spawn_blocking(move || dir_content_preview(dir_path, 16538)).await;
+                        if let Ok(Ok(content)) = result {
+                            let panel = PreviewPanel::Dir(DirPanel::new(content, update.path.clone()));
+                            if update.hash != panel.content_hash() {
+                                self.prev_tx.send((panel.clone(), update.state.increased())).await.expect("Receiver dropped or closed");
+                            }
+                            self.preview_cache.insert(update.path, panel);
+                        }
+                    } else {
+                        // Create preview
+                        let panel = PreviewPanel::File(get_file_preview(update.path.clone()));
+                        if update.hash != panel.content_hash() {
+                            self.prev_tx.send((panel.clone(), update.state.increased())).await.expect("Receiver dropped or closed");
+                        }
+                        self.preview_cache.insert(update.path, panel);
+                    }
                 }
-                // Cache result
-                self.preview_cache.insert(path, preview);
             }
         }
     }

@@ -1,1 +1,349 @@
+use crossterm::event::{Event, EventStream};
+use futures::{FutureExt, StreamExt};
+
+use crate::commands::{Command, CommandParser};
+
 use super::*;
+
+pub struct PanelManager {
+    /// Left panel
+    left: ManagedPanel<DirPanel>,
+    /// Center panel
+    center: ManagedPanel<DirPanel>,
+    /// Right panel
+    right: ManagedPanel<PreviewPanel>,
+
+    /// Miller-Columns layout
+    layout: MillerColumns,
+
+    /// Show hidden files
+    show_hidden: bool,
+
+    /// Event-stream from the terminal
+    event_reader: EventStream,
+
+    // TODO: Implement "history"
+    /// Previous path
+    previous: PathBuf,
+
+    /// command-parser
+    parser: CommandParser,
+
+    /// Handle to the standard-output
+    stdout: Stdout,
+
+    /// Receiver for incoming dir-panels
+    dir_rx: mpsc::Receiver<(DirPanel, PanelState)>,
+
+    /// Receiver for incoming preview-panels
+    prev_rx: mpsc::Receiver<(PreviewPanel, PanelState)>,
+}
+
+impl PanelManager {
+    pub fn new(
+        directory_cache: SharedCache<DirPanel>,
+        preview_cache: SharedCache<PreviewPanel>,
+        dir_rx: mpsc::Receiver<(DirPanel, PanelState)>,
+        prev_rx: mpsc::Receiver<(PreviewPanel, PanelState)>,
+        directory_tx: mpsc::UnboundedSender<PanelUpdate>,
+        preview_tx: mpsc::UnboundedSender<PanelUpdate>,
+    ) -> Self {
+        let stdout = stdout();
+        let event_reader = EventStream::new();
+        let parser = CommandParser::new();
+        let terminal_size = terminal::size().unwrap_or_default();
+        let layout = MillerColumns::from_size(terminal_size);
+
+        let left = ManagedPanel::new(
+            DirPanel::loading("..".into()),
+            directory_cache.clone(),
+            directory_tx.clone(),
+        );
+        let center = ManagedPanel::new(
+            DirPanel::loading(".".into()),
+            directory_cache.clone(),
+            directory_tx,
+        );
+        let right = ManagedPanel::new(
+            PreviewPanel::empty(),
+            preview_cache.clone(),
+            preview_tx.clone(),
+        );
+
+        PanelManager {
+            left,
+            center,
+            right,
+            layout,
+            show_hidden: false,
+            event_reader,
+            previous: ".".into(),
+            parser,
+            stdout,
+            dir_rx,
+            prev_rx,
+        }
+    }
+
+    fn draw_panels(&mut self) -> Result<()> {
+        // TODO: Add header + footer
+        self.left.panel().draw(
+            &mut self.stdout,
+            self.layout.left_x_range.clone(),
+            self.layout.y_range.clone(),
+        )?;
+        self.center.panel().draw(
+            &mut self.stdout,
+            self.layout.center_x_range.clone(),
+            self.layout.y_range.clone(),
+        )?;
+        self.right.panel().draw(
+            &mut self.stdout,
+            self.layout.right_x_range.clone(),
+            self.layout.y_range.clone(),
+        )?;
+        self.stdout.queue(cursor::Hide)?;
+        self.stdout.flush()?;
+        Ok(())
+    }
+
+    fn toggle_hidden(&mut self) -> Result<()> {
+        self.show_hidden = !self.show_hidden;
+        self.left.panel_mut().set_hidden(self.show_hidden);
+        self.center.panel_mut().set_hidden(self.show_hidden);
+        if let PreviewPanel::Dir(panel) = self.right.panel_mut() {
+            panel.set_hidden(self.show_hidden);
+        };
+        self.draw_panels()
+    }
+
+    fn move_up(&mut self, step: usize) -> bool {
+        if self.center.panel_mut().up(step) {
+            self.right.new_panel(self.center.panel().selected_path());
+            true
+        } else {
+            false
+        }
+    }
+
+    fn move_down(&mut self, step: usize) -> bool {
+        if self.center.panel_mut().down(step) {
+            self.right.new_panel(self.center.panel().selected_path());
+            true
+        } else {
+            false
+        }
+    }
+
+    fn move_right(&mut self) -> bool {
+        if let Some(selected) = self.center.panel().selected_path().map(|p| p.to_path_buf()) {
+            // If the selected item is a directory, all panels will shift to the left
+            if selected.is_dir() {
+                self.previous = self.center.panel().path().to_path_buf();
+
+                // swap left and mid:
+                mem::swap(&mut self.left, &mut self.center);
+
+                // Recreate mid and right
+                self.center.new_panel(Some(&selected));
+                self.right.new_panel(Some(&selected));
+
+                true
+                // if let PreviewPanel::Dir(panel) = &mut self.right.panel_mut() {
+                //     mem::swap(&mut self.center, panel);
+                // } else {
+                //     // This should not be possible!
+                //     panic!(
+                //         "selected item cannot be a directory while right panel is not a dir-panel"
+                //     );
+                // }
+                // // Recreate right panel
+                // PanelAction::UpdateMidRight((self.mid.path.clone(), self.mid.selected_path_owned()))
+            } else {
+                self.open(selected);
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    fn move_left(&mut self) -> bool {
+        // If the left panel is empty, we cannot move left:
+        if self.left.panel().selected_path().is_none() {
+            return false;
+        }
+        self.previous = self.center.panel().path().to_path_buf();
+
+        // All panels will shift to the right
+        // and the left panel needs to be recreated:
+
+        // Create right dir-panel from previous mid
+        // | l | m | r |
+        self.right
+            .panel_mut()
+            .update_content(PreviewPanel::Dir(self.center.panel().clone()));
+        // | l | m | m |
+
+        // swap left and mid:
+        mem::swap(&mut self.left, &mut self.center);
+        // | m | l | m |
+        // TODO: When we followed some symlink we don't want to take the parent here.
+        self.left.new_panel(self.center.panel().path().parent());
+
+        true
+    }
+
+    fn jump(&mut self, path: PathBuf) -> bool {
+        if path.exists() {
+            self.previous = self.center.panel().path().to_path_buf();
+            self.left.new_panel(path.parent());
+            self.center.new_panel(Some(&path));
+            // TODO: Update right panel whenever we update the center
+            self.right.new_panel(self.center.panel().selected_path());
+            true
+        } else {
+            false
+        }
+    }
+
+    fn move_cursor(&mut self, movement: Movement) -> bool {
+        match movement {
+            Movement::Up => self.move_up(1),
+            Movement::Down => self.move_down(1),
+            Movement::Left => self.move_left(),
+            Movement::Right => self.move_right(),
+            Movement::Top => self.move_up(usize::MAX),
+            Movement::Bottom => self.move_down(usize::MAX),
+            Movement::HalfPageForward => self.move_down(self.layout.height() as usize / 2),
+            Movement::HalfPageBackward => self.move_up(self.layout.height() as usize / 2),
+            Movement::PageForward => self.move_down(self.layout.height() as usize),
+            Movement::PageBackward => self.move_up(self.layout.height() as usize),
+            Movement::JumpTo(path) => self.jump(path.into()),
+            Movement::JumpPrevious => self.jump(self.previous.clone()),
+        }
+    }
+
+    fn open(&self, path: PathBuf) {
+        let absolute = if path.is_absolute() {
+            path
+        } else {
+            path.canonicalize().unwrap_or_default()
+        };
+        // Image
+        // If the selected item is a file,
+        // we need to open it
+        if let Some(ext) = absolute.extension().and_then(|ext| ext.to_str()) {
+            match ext {
+                "png" | "bmp" | "jpg" | "jpeg" => {
+                    std::process::Command::new("sxiv")
+                        .stderr(Stdio::null())
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .arg(absolute.clone())
+                        .spawn()
+                        .expect("failed to run sxiv");
+                }
+                _ => {
+                    // Everything else with vim
+                    std::process::Command::new("nvim")
+                        .arg(absolute)
+                        .spawn()
+                        .expect("failed to run neovim")
+                        .wait()
+                        .expect("error");
+                }
+            }
+        } else {
+            // Try to open things without extensions with vim
+            std::process::Command::new("nvim")
+                .arg(absolute)
+                .spawn()
+                .expect("failed to run neovim")
+                .wait()
+                .expect("error");
+        }
+    }
+
+    pub async fn run(mut self) -> Result<()> {
+        // Initialize panels
+        self.draw_panels()?;
+
+        loop {
+            let event_reader = self.event_reader.next().fuse();
+            tokio::select! {
+                // Check incoming new dir-panels
+                result = self.dir_rx.recv() => {
+                    // Shutdown if sender has been dropped
+                    if result.is_none() {
+                        break;
+                    }
+                    let (panel, state) = result.unwrap();
+
+                    let updated;
+                    // Find panel and update it
+                    if self.center.check_update(&state) {
+                        self.center.update_panel(panel);
+                        // update preview (if necessary)
+                        self.right.new_panel(self.center.panel().selected_path());
+                        updated = true;
+                    } else if self.left.check_update(&state) {
+                        self.left.update_panel(panel);
+                        updated = true;
+                    } else {
+                        updated = false;
+                    }
+                    if updated {
+                        self.draw_panels()?;
+                    }
+                }
+                // Check incoming new preview-panels
+                result = self.prev_rx.recv() => {
+                    // Shutdown if sender has been dropped
+                    if result.is_none() {
+                        break;
+                    }
+                    let (panel, state) = result.unwrap();
+
+                    if self.right.check_update(&state) {
+                        self.right.update_panel(panel);
+                        self.draw_panels()?;
+                    }
+                }
+                // Check incoming new events
+                result = event_reader => {
+                    // Shutdown if reader has been dropped
+                    if result.is_none() {
+                        break;
+                    }
+                    let event = result.unwrap()?;
+                    if let Event::Key(key_event) = event {
+                        match self.parser.add_event(key_event) {
+                            Command::Move(direction) => {
+                                if self.move_cursor(direction) {
+                                    self.draw_panels()?;
+                                }
+                            }
+                            Command::ToggleHidden => {
+                                self.toggle_hidden()?;
+                            }
+                            Command::Quit => break,
+                            Command::None => (),
+                        }
+                    }
+                    if let Event::Resize(sx, sy) = event {
+                        self.layout = MillerColumns::from_size((sx, sy));
+                        self.draw_panels()?;
+                    }
+                }
+            }
+        }
+        // Cleanup after leaving this function
+        self.stdout
+            .queue(Clear(ClearType::All))?
+            .queue(cursor::MoveTo(0, 0))?
+            .queue(cursor::Show)?
+            .flush()?;
+        Ok(())
+    }
+}
