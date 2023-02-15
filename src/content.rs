@@ -133,6 +133,7 @@ impl Manager {
                     if !update.path.is_dir() {
                         continue;
                     }
+                    // Notification::new().summary("recv update-request").body(&format!("{:?}", update.state)).show().unwrap();
                     let dir_path = update.path.clone();
                     let result = tokio::task::spawn_blocking(move || dir_content(dir_path)).await;
                     if let Ok(Ok(content)) = result {
@@ -140,6 +141,8 @@ impl Manager {
                         let panel = DirPanel::new(content, update.path.clone());
                         if update.hash != panel.content_hash() {
                             self.dir_tx.send((panel.clone(), update.state.increased())).await.expect("Receiver dropped or closed");
+                        } else {
+                            // Notification::new().summary("unchanged hash").body(&format!("{}", update.hash)).show().unwrap();
                         }
                         self.directory_cache.insert(update.path, panel);
                     }
@@ -150,11 +153,11 @@ impl Manager {
                     }
                     let update = result.unwrap();
                     if update.path.is_dir() {
-                        Notification::new()
-                            .summary("Request Dir-Preview")
-                            .body(&format!("{}", update.path.display()))
-                            .show()
-                            .unwrap();
+                        // Notification::new()
+                        //     .summary("Request Dir-Preview")
+                        //     .body(&format!("{}", update.path.display()))
+                        //     .show()
+                        //     .unwrap();
                         let dir_path = update.path.clone();
                         let result = tokio::task::spawn_blocking(move || dir_content_preview(dir_path, 16538)).await;
                         if let Ok(Ok(content)) = result {

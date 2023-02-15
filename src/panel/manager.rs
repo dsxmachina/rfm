@@ -190,18 +190,18 @@ impl PanelManager {
             if selected.is_dir() {
                 self.previous = self.center.panel().path().to_path_buf();
 
-                Notification::new()
-                    .summary("move-right")
-                    .body(&format!("dir={}", selected.display()))
-                    .show()
-                    .unwrap();
+                // Notification::new()
+                //     .summary("move-right")
+                //     .body(&format!("dir={}", selected.display()))
+                //     .show()
+                //     .unwrap();
 
                 // swap left and mid:
                 mem::swap(&mut self.left, &mut self.center);
 
                 // Recreate mid and right
                 self.center.new_panel(Some(&selected));
-                // self.right.new_panel(Some(&selected));
+                self.right.new_panel(self.center.panel().selected_path());
 
                 true
                 // if let PreviewPanel::Dir(panel) = &mut self.right.panel_mut() {
@@ -336,20 +336,21 @@ impl PanelManager {
                     }
                     let (panel, state) = result.unwrap();
 
-
                     let updated;
                     // Find panel and update it
                     if self.center.check_update(&state) {
-                        Notification::new().summary("update-center").body(&format!("{:?}", state)).show().unwrap();
+                        // Notification::new().summary("update-center").body(&format!("{:?}", state)).show().unwrap();
                         self.center.update_panel(panel);
                         // update preview (if necessary)
                         self.right.new_panel(self.center.panel().selected_path());
                         updated = true;
                     } else if self.left.check_update(&state) {
+                        // Notification::new().summary("update-left").body(&format!("{:?}", state)).show().unwrap();
                         self.left.update_panel(panel);
                         self.left.panel_mut().select(self.center.panel().path());
                         updated = true;
                     } else {
+                        // Notification::new().summary("unknown update").body(&format!("{:?}", state)).show().unwrap();
                         updated = false;
                     }
                     if updated {

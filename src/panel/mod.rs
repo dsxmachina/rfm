@@ -178,10 +178,10 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
         if let Some(path) = path.and_then(|p| canonicalize(p.as_ref()).ok()) {
             // Only create a new panel when the path has changed
             if path == self.panel.path() {
-                Notification::new()
-                    .summary("No change for panel")
-                    .show()
-                    .unwrap();
+                // Notification::new()
+                //     .summary("No change for panel")
+                //     .show()
+                //     .unwrap();
                 return;
             }
             let panel = self
@@ -190,11 +190,11 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                 .unwrap_or_else(|| PanelType::loading(path.clone()));
             self.panel.update_content(panel);
             // Send update request for given panel
-            Notification::new()
-                .summary("send update request")
-                .body(&format!("{:?}", self.state.increased()))
-                .show()
-                .unwrap();
+            // Notification::new()
+            //     .summary("send update request")
+            //     .body(&format!("{:?}", self.state.increased()))
+            //     .show()
+            //     .unwrap();
             self.content_tx
                 .send(PanelUpdate {
                     path,
