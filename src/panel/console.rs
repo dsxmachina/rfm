@@ -1,0 +1,34 @@
+use super::*;
+
+#[derive(Default)]
+pub struct Console {
+    text: String,
+}
+
+impl Draw for Console {
+    fn draw(&self, stdout: &mut Stdout, x_range: Range<u16>, y_range: Range<u16>) -> Result<()> {
+        let width = x_range.end.saturating_sub(x_range.start);
+        let height = y_range.end.saturating_sub(y_range.start);
+
+        let x_start = x_range.start;
+        let y_center = y_range.end.saturating_add(y_range.start) / 2;
+
+        let text = self
+            .text
+            .pad_to_width_with_alignment(width.into(), pad::Alignment::Middle);
+
+        if height >= 3 {
+            for x in x_range {
+                queue!(
+                    stdout,
+                    cursor::MoveTo(x, y_center.saturating_sub(1)),
+                    PrintStyledContent("-".dark_green().bold()),
+                    cursor::MoveTo(x, y_center.saturating_add(1)),
+                    PrintStyledContent("-".dark_green().bold()),
+                )?;
+            }
+        }
+        queue!(stdout, cursor::MoveTo(x_start, y_center), Print(text))?;
+        Ok(())
+    }
+}

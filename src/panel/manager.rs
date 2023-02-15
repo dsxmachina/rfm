@@ -3,7 +3,7 @@ use futures::{FutureExt, StreamExt};
 
 use crate::commands::{Command, CommandParser};
 
-use super::*;
+use super::{console::Console, *};
 
 pub struct PanelManager {
     /// Left panel
@@ -13,11 +13,17 @@ pub struct PanelManager {
     /// Right panel
     right: ManagedPanel<PreviewPanel>,
 
+    /// Console panel
+    console: Console,
+
     /// Miller-Columns layout
     layout: MillerColumns,
 
     /// Show hidden files
     show_hidden: bool,
+
+    /// Show console
+    show_console: bool,
 
     /// Event-stream from the terminal
     event_reader: EventStream,
@@ -66,7 +72,9 @@ impl PanelManager {
             center,
             right,
             layout,
+            console: Default::default(),
             show_hidden: false,
+            show_console: false,
             event_reader,
             previous: ".".into(),
             parser,
@@ -133,6 +141,14 @@ impl PanelManager {
         Ok(())
     }
 
+    fn draw(&mut self) -> Result<()> {
+        self.draw_panels()?;
+        if self.show_console {
+            self.draw_console()?;
+        }
+        Ok(())
+    }
+
     fn draw_panels(&mut self) -> Result<()> {
         self.print_header()?;
         self.print_footer()?;
@@ -154,6 +170,14 @@ impl PanelManager {
         self.stdout.queue(cursor::Hide)?;
         self.stdout.flush()?;
         Ok(())
+    }
+
+    fn draw_console(&mut self) -> Result<()> {
+        self.console.draw(
+            &mut self.stdout,
+            self.layout.left_x_range.start..self.layout.right_x_range.end,
+            self.layout.y_range.clone(),
+        )
     }
 
     fn toggle_hidden(&mut self) -> Result<()> {
@@ -387,13 +411,17 @@ impl PanelManager {
                             Command::ToggleHidden => {
                                 self.toggle_hidden()?;
                             }
+                            Command::ShowConsole => {
+                                self.show_console = true;
+                                self.draw_console()?;
+                            }
                             Command::Quit => break,
                             Command::None => (),
                         }
                     }
                     if let Event::Resize(sx, sy) = event {
                         self.layout = MillerColumns::from_size((sx, sy));
-                        self.draw_panels()?;
+                        self.draw()?;
                     }
                 }
             }

@@ -59,6 +59,7 @@ pub enum Movement {
 pub enum Command {
     Move(Movement),
     ToggleHidden,
+    ShowConsole,
     Quit,
     None,
 }
@@ -125,6 +126,9 @@ impl CommandParser {
 
         // Jump to previous location
         key_commands.insert("\'\'", Command::Move(Movement::JumpPrevious));
+
+        // Show console
+        key_commands.insert(":", Command::ShowConsole);
 
         // Quit
         key_commands.insert("q", Command::Quit);

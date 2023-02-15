@@ -22,6 +22,7 @@ use crate::{
     content::{hash_elements, SharedCache},
 };
 
+mod console;
 mod directory;
 pub mod manager;
 mod preview;
