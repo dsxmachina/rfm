@@ -251,6 +251,10 @@ impl DirPanel {
     }
 
     pub fn select(&mut self, selection: &Path) {
+        // Do nothing if the path is already selected
+        if self.selected_path() == Some(selection) {
+            return;
+        }
         self.selected = self
             .elements
             .iter()
@@ -383,5 +387,14 @@ impl DirPanel {
     /// If the panel is empty `None` is returned.
     pub fn selected(&self) -> Option<&DirElem> {
         self.elements.get(self.selected)
+    }
+
+    /// Returns the selected index (starting at 1) and the total number of items.
+    pub fn index_vs_total(&self) -> (usize, usize) {
+        if self.show_hidden {
+            (self.selected.saturating_add(1), self.elements.len())
+        } else {
+            (self.non_hidden_idx.saturating_add(1), self.non_hidden.len())
+        }
     }
 }

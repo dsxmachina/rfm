@@ -178,6 +178,10 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
         if let Some(path) = path.and_then(|p| canonicalize(p.as_ref()).ok()) {
             // Only create a new panel when the path has changed
             if path == self.panel.path() {
+                Notification::new()
+                    .summary("No change for panel")
+                    .show()
+                    .unwrap();
                 return;
             }
             let panel = self
@@ -186,6 +190,11 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                 .unwrap_or_else(|| PanelType::loading(path.clone()));
             self.panel.update_content(panel);
             // Send update request for given panel
+            Notification::new()
+                .summary("send update request")
+                .body(&format!("{:?}", self.state.increased()))
+                .show()
+                .unwrap();
             self.content_tx
                 .send(PanelUpdate {
                     path,
@@ -220,62 +229,6 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
     }
 }
 
-// Prints our header
-fn print_header<P: AsRef<Path>>(stdout: &mut Stdout, path: P) -> Result<()> {
-    let prompt = format!("{}@{}", whoami::username(), whoami::hostname());
-    let absolute = canonicalize(path.as_ref())?;
-    let file_name = absolute
-        .file_name()
-        .unwrap_or_default()
-        .to_str()
-        .unwrap_or_default();
-    let absolute = absolute.to_str().unwrap_or_default();
-
-    let (prefix, suffix) = absolute.split_at(absolute.len() - file_name.len());
-
-    queue!(
-        stdout,
-        cursor::MoveTo(0, 0),
-        Clear(ClearType::CurrentLine),
-        style::PrintStyledContent(prompt.dark_green().bold()),
-        style::Print(" "),
-        style::PrintStyledContent(prefix.to_string().dark_blue().bold()),
-        style::PrintStyledContent(suffix.to_string().white().bold()),
-    )?;
-    Ok(())
-}
-
-// Prints a footer
-fn print_footer(stdout: &mut Stdout, mid: &DirPanel, width: u16, y: u16) -> Result<()> {
-    if let Some(selection) = mid.selected() {
-        let path = selection.path();
-        let metadata = path.metadata()?;
-        let permissions = unix_mode::to_string(metadata.permissions().mode());
-
-        queue!(
-            stdout,
-            cursor::MoveTo(0, y),
-            Clear(ClearType::CurrentLine),
-            style::PrintStyledContent(permissions.dark_cyan()),
-            // cursor::MoveTo(x2, y),
-        )?;
-    }
-    let (n, m) = if mid.show_hidden {
-        (mid.selected.saturating_add(1), mid.elements.len())
-    } else {
-        (mid.non_hidden_idx.saturating_add(1), mid.non_hidden.len())
-    };
-
-    let n_files_string = format!("{n}/{m} ");
-
-    queue!(
-        stdout,
-        cursor::MoveTo(width.saturating_sub(n_files_string.len() as u16), y),
-        style::PrintStyledContent(n_files_string.white()),
-    )?;
-    Ok(())
-}
-
 #[derive(Clone)]
 struct MillerColumns {
     left_x_range: Range<u16>,
@@ -297,7 +250,15 @@ impl MillerColumns {
         }
     }
 
+    pub fn footer(&self) -> u16 {
+        self.y_range.end.saturating_add(1)
+    }
+
     pub fn height(&self) -> u16 {
         self.y_range.end.saturating_sub(self.y_range.start)
+    }
+
+    pub fn width(&self) -> u16 {
+        self.width
     }
 }

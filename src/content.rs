@@ -150,6 +150,11 @@ impl Manager {
                     }
                     let update = result.unwrap();
                     if update.path.is_dir() {
+                        Notification::new()
+                            .summary("Request Dir-Preview")
+                            .body(&format!("{}", update.path.display()))
+                            .show()
+                            .unwrap();
                         let dir_path = update.path.clone();
                         let result = tokio::task::spawn_blocking(move || dir_content_preview(dir_path, 16538)).await;
                         if let Ok(Ok(content)) = result {
