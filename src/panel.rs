@@ -23,21 +23,19 @@ use std::{
     process::Stdio,
     time::UNIX_EPOCH,
 };
+use tokio::sync::mpsc;
 
-use crate::{commands::Movement, content::hash_elements, preview::FilePreview};
+use crate::{
+    commands::Movement,
+    content::{hash_elements, SharedCache},
+    preview::FilePreview,
+};
 
 pub trait Draw {
     fn draw(&self, stdout: &mut Stdout, x_range: Range<u16>, y_range: Range<u16>) -> Result<()>;
 }
 
-pub trait Move {
-    fn up(&mut self, step: usize) -> bool;
-    fn down(&mut self, step: usize) -> bool;
-}
-
-pub trait Panel: Draw {
-    type Content: Clone + Send;
-
+pub trait Panel: Draw + Clone + Send {
     /// Path of the panel
     fn path(&self) -> &Path;
 
@@ -45,7 +43,47 @@ pub trait Panel: Draw {
     fn content_hash(&self) -> u64;
 
     /// Updates the content of the panel
-    fn update_content(&mut self, content: Self::Content);
+    fn update_content(&mut self, content: Self);
+}
+
+pub struct UpdatePanel {
+    path: PathBuf,
+    panel_id: u64,
+    state_cnt: u64,
+    hash: u64,
+}
+
+pub struct PanelUpdater<PanelType: Panel> {
+    /// Panel to be updated.
+    panel: PanelType,
+
+    /// Counter that increases everytime we update the panel.
+    ///
+    /// This prevents the manager from accidently overwriting the panel with older content
+    /// that was requested before some other content, that is displayed now.
+    /// Since the [`ContentManager`] works asynchronously we need this mechanism,
+    /// because there is no guarantee that requests that were sent earlier,
+    /// will also finish earlier.
+    state_cnt: u64,
+
+    /// ID of the panel that is managed by the updater.
+    ///
+    /// The ID is generated randomly upon creation of the PanelUpdater.
+    /// When we send an update request to the [`ContentManager`], we attach the ID
+    /// to the request, so that the [`PanelManager`] is able to know which panel needs to be updated.
+    panel_id: u64,
+
+    /// Cached panels from previous requests.
+    ///
+    /// When we want to create a new panel, we first look into the cache,
+    /// if a panel for the specified path was already created in the past.
+    /// If so, we still send an update request to the [`ContentManager`],
+    /// to avoid working with outdated information.
+    /// If the cache is empty, we generate a `loading`-panel (see [`DirPanel::loading`]).
+    panel_cache: SharedCache<PanelType>,
+
+    /// Sends request for new panel content.
+    content_tx: mpsc::Sender<UpdatePanel>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,8 +188,6 @@ impl Draw for DirPanel {
 }
 
 impl Panel for DirPanel {
-    type Content = DirPanel;
-
     fn path(&self) -> &Path {
         self.path.as_path()
     }
@@ -160,7 +196,16 @@ impl Panel for DirPanel {
         self.hash
     }
 
-    fn update_content(&mut self, content: Self::Content) {
+    fn update_content(&mut self, mut content: Self) {
+        // Keep "hidden" state
+        content.show_hidden = self.show_hidden;
+        // If the content is for the same directory
+        if content.path == self.path {
+            // Set the selection accordingly
+            if let Some(path) = self.selected_path() {
+                content.select(path);
+            }
+        }
         *self = content;
     }
 }
@@ -189,7 +234,6 @@ impl DirPanel {
         }
     }
 
-    // TODO: This is broken
     pub fn select(&mut self, selection: &Path) {
         self.selected = self
             .elements
@@ -453,8 +497,6 @@ impl Draw for PreviewPanel {
 }
 
 impl Panel for PreviewPanel {
-    type Content = PreviewPanel;
-
     fn path(&self) -> &Path {
         match self {
             PreviewPanel::Dir(panel) => panel.path(),
@@ -469,8 +511,8 @@ impl Panel for PreviewPanel {
         }
     }
 
-    fn update_content(&mut self, content: Self::Content) {
-        *self = content
+    fn update_content(&mut self, content: Self) {
+        *self = content;
     }
 }
 

@@ -173,8 +173,6 @@ impl FilePreview {
 }
 
 impl Panel for FilePreview {
-    type Content = FilePreview;
-
     fn path(&self) -> &Path {
         self.path.as_path()
     }
@@ -183,7 +181,7 @@ impl Panel for FilePreview {
         self.hash
     }
 
-    fn update_content(&mut self, content: Self::Content) {
+    fn update_content(&mut self, content: Self) {
         *self = content
     }
 }

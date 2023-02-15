@@ -49,7 +49,9 @@ pub struct Manager {
 
     prev_tx: mpsc::Sender<(FilePreview, PanelState)>,
 
+    // TODO: This should save DirPanels
     directory_cache: SharedCache<Vec<DirElem>>,
+    // TODO: This should save PreviewPanels
     preview_cache: SharedCache<FilePreview>,
 }
 
