@@ -153,12 +153,11 @@ pub struct ManagedPanel<PanelType: BasePanel> {
 
 impl<PanelType: BasePanel> ManagedPanel<PanelType> {
     pub fn new(
-        panel: PanelType,
         cache: SharedCache<PanelType>,
         content_tx: mpsc::UnboundedSender<PanelUpdate>,
     ) -> Self {
         ManagedPanel {
-            panel,
+            panel: PanelType::empty(),
             state: Default::default(),
             cache,
             content_tx,

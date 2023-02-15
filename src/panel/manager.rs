@@ -54,21 +54,12 @@ impl PanelManager {
         let terminal_size = terminal::size().unwrap_or_default();
         let layout = MillerColumns::from_size(terminal_size);
 
-        let left = ManagedPanel::new(
-            DirPanel::loading("..".into()),
-            directory_cache.clone(),
-            directory_tx.clone(),
-        );
-        let center = ManagedPanel::new(
-            DirPanel::loading(".".into()),
-            directory_cache.clone(),
-            directory_tx,
-        );
-        let right = ManagedPanel::new(
-            PreviewPanel::empty(),
-            preview_cache.clone(),
-            preview_tx.clone(),
-        );
+        let mut left = ManagedPanel::new(directory_cache.clone(), directory_tx.clone());
+        let mut center = ManagedPanel::new(directory_cache.clone(), directory_tx);
+        let right = ManagedPanel::new(preview_cache.clone(), preview_tx.clone());
+
+        left.new_panel(Some(".."));
+        center.new_panel(Some("."));
 
         PanelManager {
             left,
