@@ -14,7 +14,7 @@ use crossterm::{
 use image::DynamicImage;
 use pad::PadStr;
 
-use crate::panel::{Draw, Panel};
+use super::{BasePanel, DirPanel, Draw};
 
 #[derive(Debug, Clone)]
 pub enum Preview {
@@ -172,7 +172,7 @@ impl FilePreview {
     }
 }
 
-impl Panel for FilePreview {
+impl BasePanel for FilePreview {
     fn path(&self) -> &Path {
         self.path.as_path()
     }
@@ -183,5 +183,70 @@ impl Panel for FilePreview {
 
     fn update_content(&mut self, content: Self) {
         *self = content
+    }
+}
+#[derive(Debug, Clone)]
+pub enum PreviewPanel {
+    /// Directory preview
+    Dir(DirPanel),
+    /// File preview
+    File(FilePreview),
+}
+
+impl Draw for PreviewPanel {
+    fn draw(&self, stdout: &mut Stdout, x_range: Range<u16>, y_range: Range<u16>) -> Result<()> {
+        match self {
+            PreviewPanel::Dir(panel) => panel.draw(stdout, x_range, y_range),
+            PreviewPanel::File(preview) => preview.draw(stdout, x_range, y_range),
+        }
+    }
+}
+
+impl BasePanel for PreviewPanel {
+    fn path(&self) -> &Path {
+        match self {
+            PreviewPanel::Dir(panel) => panel.path(),
+            PreviewPanel::File(preview) => preview.path(),
+        }
+    }
+
+    fn content_hash(&self) -> u64 {
+        match self {
+            PreviewPanel::Dir(p) => p.content_hash(),
+            PreviewPanel::File(p) => p.content_hash(),
+        }
+    }
+
+    fn update_content(&mut self, content: Self) {
+        *self = content;
+    }
+}
+
+impl PreviewPanel {
+    // pub fn from_path<P: AsRef<Path>>(maybe_path: Option<P>) -> Result<PreviewPanel> {
+    //     if let Some(path) = maybe_path {
+    //         if path.as_ref().is_dir() {
+    //             Ok(PreviewPanel::Dir(DirPanel::empty()))
+    //         } else {
+    //             Ok(PreviewPanel::File(FilePreview::new(path.as_ref().into())))
+    //         }
+    //     } else {
+    //         Ok(PreviewPanel::Dir(DirPanel::empty()))
+    //     }
+    // }
+
+    pub fn empty() -> PreviewPanel {
+        PreviewPanel::Dir(DirPanel::empty())
+    }
+
+    pub fn loading(path: PathBuf) -> PreviewPanel {
+        PreviewPanel::Dir(DirPanel::loading(path))
+    }
+
+    pub fn path(&self) -> Option<PathBuf> {
+        match self {
+            PreviewPanel::Dir(panel) => Some(panel.path().to_path_buf()),
+            PreviewPanel::File(panel) => Some(panel.path().to_path_buf()),
+        }
     }
 }

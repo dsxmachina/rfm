@@ -13,10 +13,7 @@ use notify_rust::Notification;
 use parking_lot::Mutex;
 use tokio::{fs::read_dir, sync::mpsc};
 
-use crate::{
-    panel::{DirElem, DirPanel, Panel, PanelState, Select},
-    preview::FilePreview,
-};
+use crate::panel::{BasePanel, DirElem, DirPanel, FilePreview, PanelState, Select};
 
 /// Cache that is shared by the content-manager and the panel-manager.
 #[derive(Clone)]
