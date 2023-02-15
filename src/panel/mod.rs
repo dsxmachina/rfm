@@ -64,11 +64,15 @@ pub trait BasePanel: PanelContent {
     fn loading(path: PathBuf) -> Self;
 }
 
+/// Combines all data that is necessary to update a panel.
+///
+/// Will be send as a request to the [`ContentManager`].
+#[derive(Debug)]
 pub struct PanelUpdate {
-    path: PathBuf,
-    panel_id: u64,
-    state_cnt: u64,
-    hash: u64,
+    pub path: PathBuf,
+    pub panel_id: u64,
+    pub state_cnt: u64,
+    pub hash: u64,
 }
 
 pub struct ManagedPanel<PanelType: BasePanel> {
@@ -98,7 +102,7 @@ pub struct ManagedPanel<PanelType: BasePanel> {
     /// If so, we still send an update request to the [`ContentManager`],
     /// to avoid working with outdated information.
     /// If the cache is empty, we generate a `loading`-panel (see [`DirPanel::loading`]).
-    panel_cache: SharedCache<PanelType>,
+    cache: SharedCache<PanelType>,
 
     /// Sends request for new panel content.
     content_tx: mpsc::Sender<PanelUpdate>,
@@ -110,10 +114,58 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
         cache: SharedCache<PanelType>,
         content_tx: mpsc::Sender<PanelUpdate>,
     ) -> Self {
-        todo!()
+        // Generate a random id here - because we only have three panels,
+        // the chance of collision is pretty low.
+        let panel_id = rand::random();
+        ManagedPanel {
+            panel,
+            state_cnt: 0,
+            panel_id,
+            cache,
+            content_tx,
+        }
     }
 
-    pub fn update(&mut self, path: Option<PathBuf>) {}
+    /// Generates a new panel for the given path.
+    ///
+    /// Uses cached values to instantly display something, while in the background
+    /// the [`ContentManager`] is triggered to load new data.
+    /// If the cache is empty, a generic "loading..." panel is created.
+    /// An empty panel is created if the given path is `None`.
+    pub async fn update_panel<P: AsRef<Path>>(&mut self, path: Option<P>) {
+        if let Some(path) = path.and_then(|p| canonicalize(p.as_ref()).ok()) {
+            let panel = self
+                .cache
+                .get(&path)
+                .unwrap_or_else(|| PanelType::loading(path.clone()));
+            self.panel.update_content(panel);
+            // Send update request for given panel
+            self.content_tx
+                .send(PanelUpdate {
+                    path,
+                    panel_id: self.panel_id,
+                    state_cnt: self.state_cnt + 1,
+                    hash: self.panel.content_hash(),
+                })
+                .await
+                .expect("Receiver dropped or closed");
+        } else {
+            self.panel.update_content(PanelType::empty());
+        }
+        // Increase state counter
+        self.state_cnt += 1;
+    }
+
+    /// Inserts a pre-generated panel.
+    ///
+    /// The panel is only inserted, if the external state-counter is higher than
+    /// the internally saved value.
+    pub fn insert_panel(&mut self, panel: PanelType, state_cnt: u64) {
+        if self.state_cnt < state_cnt {
+            self.panel.update_content(panel);
+            self.state_cnt += 1;
+        }
+    }
 }
 
 // TODO: Remove all of this
