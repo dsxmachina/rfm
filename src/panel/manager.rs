@@ -76,8 +76,66 @@ impl PanelManager {
         }
     }
 
+    // Prints our header
+    fn print_header(&mut self) -> Result<()> {
+        let prompt = format!("{}@{}", whoami::username(), whoami::hostname());
+        let absolute = canonicalize(self.center.panel().path())?;
+        let file_name = absolute
+            .file_name()
+            .unwrap_or_default()
+            .to_str()
+            .unwrap_or_default();
+        let absolute = absolute.to_str().unwrap_or_default();
+
+        let (prefix, suffix) = absolute.split_at(absolute.len() - file_name.len());
+
+        queue!(
+            self.stdout,
+            cursor::MoveTo(0, 0),
+            Clear(ClearType::CurrentLine),
+            style::PrintStyledContent(prompt.dark_green().bold()),
+            style::Print(" "),
+            style::PrintStyledContent(prefix.to_string().dark_blue().bold()),
+            style::PrintStyledContent(suffix.to_string().white().bold()),
+        )?;
+        Ok(())
+    }
+
+    // Prints a footer
+    fn print_footer(&mut self) -> Result<()> {
+        if let Some(selection) = self.center.panel().selected() {
+            let path = selection.path();
+            let metadata = path.metadata()?;
+            let permissions = unix_mode::to_string(metadata.permissions().mode());
+
+            queue!(
+                self.stdout,
+                cursor::MoveTo(0, self.layout.footer()),
+                Clear(ClearType::CurrentLine),
+                style::PrintStyledContent(permissions.dark_cyan()),
+                // cursor::MoveTo(x2, y),
+            )?;
+        }
+
+        let (n, m) = self.center.panel().index_vs_total();
+        let n_files_string = format!("{n}/{m} ");
+
+        queue!(
+            self.stdout,
+            cursor::MoveTo(
+                self.layout
+                    .width()
+                    .saturating_sub(n_files_string.len() as u16),
+                self.layout.footer(),
+            ),
+            style::PrintStyledContent(n_files_string.white()),
+        )?;
+        Ok(())
+    }
+
     fn draw_panels(&mut self) -> Result<()> {
-        // TODO: Add header + footer
+        self.print_header()?;
+        self.print_footer()?;
         self.left.panel().draw(
             &mut self.stdout,
             self.layout.left_x_range.clone(),
@@ -132,12 +190,18 @@ impl PanelManager {
             if selected.is_dir() {
                 self.previous = self.center.panel().path().to_path_buf();
 
+                Notification::new()
+                    .summary("move-right")
+                    .body(&format!("dir={}", selected.display()))
+                    .show()
+                    .unwrap();
+
                 // swap left and mid:
                 mem::swap(&mut self.left, &mut self.center);
 
                 // Recreate mid and right
                 self.center.new_panel(Some(&selected));
-                self.right.new_panel(Some(&selected));
+                // self.right.new_panel(Some(&selected));
 
                 true
                 // if let PreviewPanel::Dir(panel) = &mut self.right.panel_mut() {
@@ -181,6 +245,7 @@ impl PanelManager {
         // | m | l | m |
         // TODO: When we followed some symlink we don't want to take the parent here.
         self.left.new_panel(self.center.panel().path().parent());
+        self.left.panel_mut().select(self.center.panel().path());
 
         true
     }
@@ -271,15 +336,18 @@ impl PanelManager {
                     }
                     let (panel, state) = result.unwrap();
 
+
                     let updated;
                     // Find panel and update it
                     if self.center.check_update(&state) {
+                        Notification::new().summary("update-center").body(&format!("{:?}", state)).show().unwrap();
                         self.center.update_panel(panel);
                         // update preview (if necessary)
                         self.right.new_panel(self.center.panel().selected_path());
                         updated = true;
                     } else if self.left.check_update(&state) {
                         self.left.update_panel(panel);
+                        self.left.panel_mut().select(self.center.panel().path());
                         updated = true;
                     } else {
                         updated = false;
