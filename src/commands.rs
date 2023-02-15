@@ -56,10 +56,19 @@ pub enum Movement {
 }
 
 #[derive(Debug, Clone)]
+pub enum Keyboard {
+    Char(char),
+    Backspace,
+    Enter,
+    Esc,
+}
+
+#[derive(Debug, Clone)]
 pub enum Command {
     Move(Movement),
     ToggleHidden,
     ShowConsole,
+    Input(Keyboard),
     Quit,
     None,
 }
@@ -73,6 +82,7 @@ pub struct CommandParser {
     key_commands: PatriciaMap<Command>,
     mod_commands: HashMap<KeyEvent, Command>,
     buffer: String,
+    console_mode: bool,
 }
 
 // TODO: Make this configurable from a config-file
@@ -167,7 +177,12 @@ impl CommandParser {
             key_commands,
             mod_commands,
             buffer: "".to_string(),
+            console_mode: false,
         }
+    }
+
+    pub fn set_console_mode(&mut self, console_mode: bool) {
+        self.console_mode = console_mode;
     }
 
     /// Parse an event and return the command that is assigned to it
@@ -177,6 +192,10 @@ impl CommandParser {
             KeyModifiers::NONE | KeyModifiers::SHIFT => {
                 // Put character into buffer
                 if let KeyCode::Char(c) = event.code {
+                    // In console mode, just return the character and leave
+                    if self.console_mode {
+                        return Command::Input(Keyboard::Char(c));
+                    }
                     if event.modifiers.contains(KeyModifiers::SHIFT) {
                         // uppercase
                         self.buffer.push(c.to_ascii_uppercase());
@@ -185,6 +204,19 @@ impl CommandParser {
                         self.buffer.push(c.to_ascii_lowercase());
                     }
                 }
+
+                if self.console_mode {
+                    if let KeyCode::Backspace = event.code {
+                        return Command::Input(Keyboard::Backspace);
+                    }
+                    if let KeyCode::Enter = event.code {
+                        return Command::Input(Keyboard::Enter);
+                    }
+                    if let KeyCode::Esc = event.code {
+                        return Command::Input(Keyboard::Esc);
+                    }
+                }
+
                 // Check if there are commands with that prefix
                 if self
                     .key_commands

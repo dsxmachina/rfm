@@ -32,3 +32,17 @@ impl Draw for Console {
         Ok(())
     }
 }
+
+impl Console {
+    pub fn insert(&mut self, character: char) {
+        self.text.push(character);
+    }
+
+    pub fn clear(&mut self) {
+        self.text.clear();
+    }
+
+    pub fn del(&mut self) {
+        self.text.pop();
+    }
+}

@@ -1,7 +1,7 @@
 use crossterm::event::{Event, EventStream};
 use futures::{FutureExt, StreamExt};
 
-use crate::commands::{Command, CommandParser};
+use crate::commands::{Command, CommandParser, Keyboard};
 
 use super::{console::Console, *};
 
@@ -413,7 +413,28 @@ impl PanelManager {
                             }
                             Command::ShowConsole => {
                                 self.show_console = true;
+                                self.parser.set_console_mode(true);
                                 self.draw_console()?;
+                            }
+                            Command::Input(input) => {
+                                if self.show_console {
+                                    match input {
+                                        Keyboard::Char(c) => {
+                                            self.console.insert(c);
+                                            self.draw_console()?;
+                                        }
+                                        Keyboard::Backspace => {
+                                            self.console.del();
+                                            self.draw_console()?;
+                                        }
+                                        Keyboard::Enter | Keyboard::Esc=> {
+                                            self.show_console = false;
+                                            self.parser.set_console_mode(false);
+                                            self.console.clear();
+                                            self.draw_panels()?;
+                                        }
+                                    }
+                                }
                             }
                             Command::Quit => break,
                             Command::None => (),
