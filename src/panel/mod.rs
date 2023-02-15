@@ -31,16 +31,19 @@ use crate::{
 };
 
 mod directory;
+mod manager;
 mod preview;
 
 pub use directory::{DirElem, DirPanel};
 pub use preview::{FilePreview, Preview, PreviewPanel};
 
+/// Basic trait that lets us draw something on the terminal in a specified range.
 pub trait Draw {
     fn draw(&self, stdout: &mut Stdout, x_range: Range<u16>, y_range: Range<u16>) -> Result<()>;
 }
 
-pub trait BasePanel: Draw + Clone + Send {
+/// Basic trait for managing the content of a panel
+pub trait PanelContent: Draw + Clone + Send {
     /// Path of the panel
     fn path(&self) -> &Path;
 
@@ -49,6 +52,16 @@ pub trait BasePanel: Draw + Clone + Send {
 
     /// Updates the content of the panel
     fn update_content(&mut self, content: Self);
+}
+
+/// Basic trait for our panels.
+pub trait BasePanel: PanelContent {
+    /// Creates an empty panel without content
+    fn empty() -> Self;
+
+    /// Creates a temporary panel to indicate that we are still loading
+    /// some data
+    fn loading(path: PathBuf) -> Self;
 }
 
 pub struct PanelUpdate {
@@ -99,6 +112,8 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
     ) -> Self {
         todo!()
     }
+
+    pub fn update(&mut self, path: Option<PathBuf>) {}
 }
 
 // TODO: Remove all of this

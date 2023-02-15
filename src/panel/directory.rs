@@ -193,7 +193,7 @@ impl Draw for DirPanel {
     }
 }
 
-impl BasePanel for DirPanel {
+impl PanelContent for DirPanel {
     fn path(&self) -> &Path {
         self.path.as_path()
     }
@@ -213,6 +213,16 @@ impl BasePanel for DirPanel {
             }
         }
         *self = content;
+    }
+}
+
+impl BasePanel for DirPanel {
+    fn empty() -> Self {
+        DirPanel::empty()
+    }
+
+    fn loading(path: PathBuf) -> Self {
+        DirPanel::loading(path)
     }
 }
 

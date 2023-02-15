@@ -14,7 +14,7 @@ use crossterm::{
 use image::DynamicImage;
 use pad::PadStr;
 
-use super::{BasePanel, DirPanel, Draw};
+use super::{BasePanel, DirPanel, Draw, PanelContent};
 
 #[derive(Debug, Clone)]
 pub enum Preview {
@@ -172,7 +172,7 @@ impl FilePreview {
     }
 }
 
-impl BasePanel for FilePreview {
+impl PanelContent for FilePreview {
     fn path(&self) -> &Path {
         self.path.as_path()
     }
@@ -202,7 +202,7 @@ impl Draw for PreviewPanel {
     }
 }
 
-impl BasePanel for PreviewPanel {
+impl PanelContent for PreviewPanel {
     fn path(&self) -> &Path {
         match self {
             PreviewPanel::Dir(panel) => panel.path(),
@@ -219,6 +219,16 @@ impl BasePanel for PreviewPanel {
 
     fn update_content(&mut self, content: Self) {
         *self = content;
+    }
+}
+
+impl BasePanel for PreviewPanel {
+    fn empty() -> Self {
+        PreviewPanel::Dir(DirPanel::empty())
+    }
+
+    fn loading(path: PathBuf) -> Self {
+        PreviewPanel::Dir(DirPanel::loading(path))
     }
 }
 
