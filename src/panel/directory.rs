@@ -263,6 +263,19 @@ impl DirPanel {
             .find(|(_, elem)| elem.path() == selection)
             .map(|(idx, _)| idx)
             .unwrap_or(self.selected);
+        if !self.show_hidden {
+            self.set_non_hidden_idx();
+        }
+    }
+
+    /// Sets non-hidden-idx to the value closest to selection
+    fn set_non_hidden_idx(&mut self) {
+        for (idx, elem_idx) in self.non_hidden.iter().enumerate() {
+            self.non_hidden_idx = idx;
+            if *elem_idx >= self.selected {
+                break;
+            }
+        }
     }
 
     pub fn set_hidden(&mut self, show_hidden: bool) {
@@ -273,12 +286,8 @@ impl DirPanel {
         if self.show_hidden && !show_hidden {
             // Currently we show hidden files, but we should stop that
             // -> non-hidden-idx needs to be updated to the value closest to selection
-            for (idx, elem_idx) in self.non_hidden.iter().enumerate() {
-                self.non_hidden_idx = idx;
-                if *elem_idx >= self.selected {
-                    break;
-                }
-            }
+            self.set_non_hidden_idx();
+            // Update selection accordingly for the next time we toggle hidden files
             self.selected = *self.non_hidden.get(self.non_hidden_idx).unwrap_or(&0);
         }
         // Save value and change selection accordingly
