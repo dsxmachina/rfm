@@ -1,27 +1,13 @@
-#![allow(unused_imports)]
-use crate::commands::{Command, Movement};
-use commands::CommandParser;
+#![allow(dead_code)]
 use content::SharedCache;
 use crossterm::{
-    cursor::{self, position},
-    event::{DisableMouseCapture, Event, EventStream, KeyCode, KeyEvent, KeyModifiers},
-    execute, queue,
-    style::{self, PrintStyledContent, Stylize},
-    terminal::{
-        self, disable_raw_mode, enable_raw_mode, Clear, ClearType, DisableLineWrap, SetSize,
-    },
-    ExecutableCommand, QueueableCommand, Result,
+    cursor,
+    event::DisableMouseCapture,
+    terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType, DisableLineWrap},
+    QueueableCommand, Result,
 };
-use futures::{future::FutureExt, StreamExt};
 use panel::manager::PanelManager;
-use std::{
-    cmp::Ordering,
-    fmt::Display,
-    fs::{canonicalize, read_dir},
-    io::{self, stdout, Stdout, Write},
-    path::{Path, PathBuf},
-};
-use thiserror::Error;
+use std::io::stdout;
 use tokio::sync::mpsc;
 
 mod commands;

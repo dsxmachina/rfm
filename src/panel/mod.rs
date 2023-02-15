@@ -1,25 +1,19 @@
-use cached::{cached_result, SizedCache};
 use crossterm::{
     cursor, queue,
-    style::{self, Colors, Print, PrintStyledContent, ResetColor, SetColors, Stylize},
+    style::{self, Print, PrintStyledContent, Stylize},
     terminal::{self, Clear, ClearType},
     QueueableCommand, Result,
 };
-use fasthash::MetroHasher;
-use image::DynamicImage;
-use notify_rust::Notification;
 use pad::PadStr;
 use std::{
     cmp::Ordering,
-    fs::{canonicalize, read_dir, DirEntry, File},
-    hash::{Hash, Hasher},
-    io::{self, stdout, BufRead, Stdout, Write},
+    fs::canonicalize,
+    io::{stdout, Stdout, Write},
     mem,
     ops::Range,
     os::unix::prelude::PermissionsExt,
     path::{Path, PathBuf},
     process::Stdio,
-    time::UNIX_EPOCH,
 };
 use tokio::sync::mpsc;
 

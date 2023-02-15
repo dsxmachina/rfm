@@ -1,17 +1,12 @@
+use cached::{cached, cached_result, Cached, SizedCache, TimedSizedCache};
+use parking_lot::Mutex;
 use std::{
-    fs::canonicalize,
     hash::{Hash, Hasher},
     io,
     path::PathBuf,
     sync::Arc,
 };
-
-use cached::{cached, cached_result, Cached, SizedCache, TimedSizedCache};
-use crossterm::terminal;
-use fasthash::MetroHasher;
-use notify_rust::Notification;
-use parking_lot::Mutex;
-use tokio::{fs::read_dir, sync::mpsc};
+use tokio::sync::mpsc;
 
 use crate::panel::{
     DirElem, DirPanel, FilePreview, PanelContent, PanelState, PanelUpdate, PreviewPanel,
