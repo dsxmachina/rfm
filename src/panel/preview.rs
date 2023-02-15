@@ -98,9 +98,9 @@ impl Draw for FilePreview {
             Preview::Text { lines } => {
                 // Print preview
                 let mut idx = 0;
-                for line in lines.into_iter().take(height as usize) {
-                    let cy = idx as u16 + y_range.start;
-                    let line = line.replace("\r", "").with_exact_width(width as usize);
+                for line in lines.iter().take(height as usize) {
+                    let cy = idx + y_range.start;
+                    let line = line.replace('\r', "").with_exact_width(width as usize);
                     queue!(stdout, cursor::MoveTo(x_range.start + 1, cy), Print(line),)?;
                     idx += 1;
                 }

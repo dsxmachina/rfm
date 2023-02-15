@@ -4,7 +4,7 @@ use super::*;
 /// Shorthand for saving a path together whith what we want to display.
 /// E.g. a file with path `/home/user/something.txt` should only be
 /// displayed as `something.txt`.
-#[derive(Debug, Clone, PartialEq, Eq, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirElem {
     name: String,
     path: PathBuf,
@@ -29,12 +29,10 @@ impl DirElem {
             } else {
                 PrintStyledContent(name.dark_green().bold())
             }
+        } else if selected {
+            PrintStyledContent(name.grey().negative().bold())
         } else {
-            if selected {
-                PrintStyledContent(name.grey().negative().bold())
-            } else {
-                PrintStyledContent(name.grey())
-            }
+            PrintStyledContent(name.grey())
         }
     }
 }
@@ -44,12 +42,11 @@ impl<P: AsRef<Path>> From<P> for DirElem {
         let name = path
             .as_ref()
             .file_name()
-            .map(|p| p.to_str())
-            .flatten()
+            .and_then(|p| p.to_str())
             .map(|s| s.to_string())
             .unwrap_or_default();
 
-        let is_hidden = name.starts_with(".");
+        let is_hidden = name.starts_with('.');
 
         // Always use an absolute path here
         let path: PathBuf = canonicalize(path.as_ref()).unwrap_or_else(|_| path.as_ref().into());
@@ -64,7 +61,7 @@ impl<P: AsRef<Path>> From<P> for DirElem {
 
 impl AsRef<DirElem> for DirElem {
     fn as_ref(&self) -> &DirElem {
-        &self
+        self
     }
 }
 
@@ -77,17 +74,15 @@ impl PartialOrd for DirElem {
                     .to_lowercase()
                     .partial_cmp(&other.name().to_lowercase());
             } else {
-                return Some(Ordering::Less);
+                Some(Ordering::Less)
             }
+        } else if other.path.is_dir() {
+            Some(Ordering::Greater)
         } else {
-            if other.path.is_dir() {
-                return Some(Ordering::Greater);
-            } else {
-                return self
-                    .name()
-                    .to_lowercase()
-                    .partial_cmp(&other.name().to_lowercase());
-            }
+            return self
+                .name()
+                .to_lowercase()
+                .partial_cmp(&other.name().to_lowercase());
         }
     }
 }
@@ -142,7 +137,7 @@ impl Draw for DirPanel {
         };
 
         // Then print new buffer
-        let mut y_offset = 0 as u16;
+        let mut y_offset = 0_u16;
         // Write "height" items to the screen
         for (idx, entry) in self
             .elements
@@ -152,7 +147,7 @@ impl Draw for DirPanel {
             .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
             .take(height as usize)
         {
-            let y = u16::try_from(y_range.start + y_offset).unwrap_or_else(|_| u16::MAX);
+            let y = y_range.start + y_offset;
             queue!(
                 stdout,
                 cursor::MoveTo(x_range.start, y),

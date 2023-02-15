@@ -55,8 +55,8 @@ impl PanelManager {
         let layout = MillerColumns::from_size(terminal_size);
 
         let mut left = ManagedPanel::new(directory_cache.clone(), directory_tx.clone());
-        let mut center = ManagedPanel::new(directory_cache.clone(), directory_tx);
-        let right = ManagedPanel::new(preview_cache.clone(), preview_tx.clone());
+        let mut center = ManagedPanel::new(directory_cache, directory_tx);
+        let right = ManagedPanel::new(preview_cache, preview_tx);
 
         left.new_panel(Some(".."));
         center.new_panel(Some("."));

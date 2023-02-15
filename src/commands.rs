@@ -16,10 +16,10 @@ impl From<&str> for ExpandedPath {
         let mut string = path.to_string();
 
         // Expand "~"
-        if string.starts_with("~") {
+        if string.starts_with('~') {
             // Replace with users home directory
             let home = std::env::var("HOME").unwrap_or_default();
-            string = string.replace("~", &home);
+            string = string.replace('~', &home);
         }
         // TODO: Extract environment variables
 

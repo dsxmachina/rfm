@@ -26,7 +26,7 @@ impl<Item: Clone> SharedCache<Item> {
     }
 
     pub fn get(&self, path: &PathBuf) -> Option<Item> {
-        self.cache.lock().cache_get(&path).cloned()
+        self.cache.lock().cache_get(path).cloned()
     }
 
     pub fn insert(&self, path: PathBuf, item: Item) -> Option<Item> {
@@ -88,7 +88,7 @@ cached! {
     }
 }
 
-pub fn hash_elements(elements: &Vec<DirElem>) -> u64 {
+pub fn hash_elements(elements: &[DirElem]) -> u64 {
     // let mut h: MetroHasher = Default::default();
     let mut h: fasthash::XXHasher = Default::default();
     for elem in elements.iter() {
@@ -204,7 +204,7 @@ mod tests {
         let elapsed = now.elapsed().as_millis();
         println!("loading image took {elapsed}ms");
         let now = Instant::now();
-        let small_img = img.thumbnail_exact(400, 300).into_rgb8();
+        let _small_img = img.thumbnail_exact(400, 300).into_rgb8();
         let elapsed = now.elapsed().as_millis();
         println!("processing image took {elapsed}ms");
         assert!(false);
