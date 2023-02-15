@@ -166,6 +166,16 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
             self.state_cnt += 1;
         }
     }
+
+    /// Returns a mutable reference to the managed panel
+    pub fn panel_mut(&mut self) -> &mut PanelType {
+        &mut self.panel
+    }
+
+    /// Returns a reference to the managed panel
+    pub fn panel(&self) -> &PanelType {
+        &self.panel
+    }
 }
 
 // TODO: Remove all of this
@@ -187,7 +197,7 @@ pub struct PanelState {
 }
 
 #[derive(Clone)]
-struct Ranges {
+struct MillerColumns {
     left_x_range: Range<u16>,
     mid_x_range: Range<u16>,
     right_x_range: Range<u16>,
@@ -195,7 +205,7 @@ struct Ranges {
     width: u16,
 }
 
-impl Ranges {
+impl MillerColumns {
     pub fn from_size(terminal_size: (u16, u16)) -> Self {
         let (sx, sy) = terminal_size;
         Self {
@@ -307,7 +317,7 @@ pub struct MillerPanels {
     state_cnt: (u64, u64, u64),
 
     // Data
-    ranges: Ranges,
+    ranges: MillerColumns,
     // prev-path (after jump-mark)
     prev: PathBuf,
 
@@ -339,7 +349,7 @@ impl MillerPanels {
         left.select(&current_path);
         let mid = DirPanel::new(dir_content(current_path.clone())?, current_path.clone());
         let right = PreviewPanel::empty();
-        let ranges = Ranges::from_size(terminal_size);
+        let ranges = MillerColumns::from_size(terminal_size);
         Ok(MillerPanels {
             left,
             mid,
@@ -357,7 +367,7 @@ impl MillerPanels {
     }
 
     pub fn terminal_resize(&mut self, terminal_size: (u16, u16)) -> Result<()> {
-        self.ranges = Ranges::from_size(terminal_size);
+        self.ranges = MillerColumns::from_size(terminal_size);
         self.draw()
     }
 
