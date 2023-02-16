@@ -381,6 +381,7 @@ impl PanelManager {
         if path.exists() {
             self.previous = self.center.panel().path().to_path_buf();
             self.left.new_panel(path.parent());
+            self.left.panel_mut().select(&path);
             self.center.new_panel(Some(&path));
             self.right.new_panel(self.center.panel().selected_path());
             self.redraw_panels();
@@ -533,19 +534,21 @@ impl PanelManager {
                                 if self.show.console {
                                     match input {
                                         Keyboard::Char(c) => {
-                                            self.console.insert(c);
-                                            // Notification::new().summary(&self.console.text).show().unwrap();
+                                            if let Some(path) = self.console.insert(c) {
+                                                self.jump(path);
+                                            }
                                             self.redraw_console();
                                         }
                                         Keyboard::Backspace => {
                                             if let Some(path) = self.console.del().map(|p| p.to_path_buf()) {
-                                                self.jump(path.clone());
-                                                self.console.open(path);
+                                                self.jump(path);
                                             }
                                             self.redraw_console();
                                         }
                                         Keyboard::Tab => {
-                                            self.console.tab();
+                                            if let Some(path) = self.console.tab() {
+                                                self.jump(path);
+                                            }
                                             self.redraw_console();
                                         }
                                         Keyboard::Enter | Keyboard::Esc=> {

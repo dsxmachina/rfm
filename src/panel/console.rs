@@ -1,3 +1,4 @@
+use notify_rust::Notification;
 use patricia_tree::PatriciaSet;
 
 use super::*;
@@ -9,6 +10,7 @@ pub struct Console {
     path: PathBuf,
     rec_idx: usize,
     rec_total: usize,
+    tmp_input: String,
     recommendations: PatriciaSet,
 }
 
@@ -39,22 +41,36 @@ impl Draw for Console {
 
         // TODO: Make this a box. Or something else.
 
-        if height >= 3 {
+        if height >= 5 {
             for x in x_range {
                 queue!(
                     stdout,
                     cursor::MoveTo(x, y_center.saturating_sub(1)),
                     PrintStyledContent("―".dark_green().bold()),
-                    cursor::MoveTo(x, y_center.saturating_add(1)),
+                    cursor::MoveTo(x, y_center.saturating_add(4)),
                     PrintStyledContent("―".dark_green().bold()),
                 )?;
             }
         }
         queue!(
             stdout,
+            // Clear line and print main text
             cursor::MoveTo(x_start + offset, y_center),
             Clear(ClearType::CurrentLine),
             Print(text),
+            // Clear line and print main input
+            cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(1)),
+            Clear(ClearType::CurrentLine),
+            Print(&format!("input: {}", self.input)),
+            // Clear line and print tmp-input
+            cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(2)),
+            Clear(ClearType::CurrentLine),
+            Print(&format!("tmp  : {}", self.tmp_input)),
+            // Clear line and print path
+            cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(3)),
+            Clear(ClearType::CurrentLine),
+            Print(&format!("path : {}", self.path.display())),
+            // Print recommendation
             cursor::MoveTo(x_start + rec_offset, y_center),
             PrintStyledContent(rec_text.dark_grey()),
             cursor::MoveTo(x_start + rec_offset, y_center),
@@ -75,53 +91,118 @@ impl Console {
             .unwrap_or_default();
 
         // Delete existing recommendations
-        self.recommendations.clear();
+        self.change_dir(self.path.clone());
+    }
 
+    fn change_dir(&mut self, path: PathBuf) {
+        // remember path
+        self.path = path;
+        self.recommendations.clear();
         // parse directory and create recommendations
         let content = dir_content(self.path.clone()).unwrap_or_default();
         for item in content {
-            self.recommendations.insert(item.name());
+            if item.path().is_dir() && !item.is_hidden() {
+                self.recommendations.insert(item.name());
+            }
         }
+        // clear input and recommendations
         self.input.clear();
+        self.tmp_input.clear();
         self.rec_total = self.recommendations.len();
         self.rec_idx = 0;
     }
 
     fn recommendation(&self) -> String {
-        self.recommendations
-            .iter_prefix(self.input.as_bytes())
+        let mut all_keys: Vec<String> = self
+            .recommendations
+            .iter_prefix(self.tmp_input.as_bytes())
+            .map(|bytes| String::from_utf8(bytes))
+            .flatten()
+            .collect();
+        all_keys.sort_by_cached_key(|name| name.to_lowercase());
+        all_keys
+            .into_iter()
+            .cycle()
             .skip(self.rec_idx)
             .next()
-            .and_then(|bytes| String::from_utf8(bytes).ok())
             .unwrap_or_default()
     }
 
-    pub fn insert(&mut self, character: char) {
-        self.input.push(character);
-        self.rec_idx = 0; // reset recommendation index
-        self.rec_total = self
-            .recommendations
-            .iter_prefix(self.input.as_bytes())
-            .count();
+    pub fn insert(&mut self, character: char) -> Option<PathBuf> {
+        let joined_path = self.path.join(&self.input);
+        if joined_path.is_dir() {
+            self.change_dir(joined_path.clone());
+            self.input.push(character);
+            self.tmp_input.push(character);
+            return Some(joined_path);
+        }
+        if character != '/' {
+            self.input.push(character);
+            self.tmp_input.push(character);
+            // self.active_rec = self.input.clone();
+
+            self.rec_idx = 0; // reset recommendation index
+            self.rec_total = self
+                .recommendations
+                .iter_prefix(self.input.as_bytes())
+                .count();
+        }
+
+        let joined_path = self.path.join(&self.input);
+        // Notification::new()
+        //     .summary(&format!("{}", joined_path.display()))
+        //     .body(&format!("{}", self.path.display()))
+        //     .show()
+        //     .unwrap();
+        if joined_path.is_dir() {
+            self.change_dir(joined_path.clone());
+            Some(joined_path)
+        } else {
+            None
+        }
     }
 
-    pub fn tab(&mut self) {
+    pub fn tab(&mut self) -> Option<PathBuf> {
+        self.input = self.recommendation();
         self.rec_idx = self.rec_idx.saturating_add(1);
-        if self.rec_idx >= self.rec_total {
-            self.rec_idx = 0;
+        let joined_path = self.path.join(&self.input);
+        // Notification::new()
+        //     .summary(&format!("{}", joined_path.display()))
+        //     .body(&format!("{}", self.path.display()))
+        //     .show()
+        //     .unwrap();
+        if joined_path.is_dir() {
+            Some(joined_path)
+        } else {
+            None
         }
     }
 
     pub fn clear(&mut self) {
         self.input.clear();
+        self.tmp_input.clear();
     }
 
     pub fn del(&mut self) -> Option<&Path> {
         if self.input.is_empty() {
-            self.path.parent()
+            // self.active_rec.clear();
+            if let Some(parent) = self.path.parent().map(|p| p.to_path_buf()) {
+                self.change_dir(parent);
+                Some(self.path.as_path())
+            } else {
+                None
+            }
         } else {
-            self.input.pop();
-            None
+            if self.rec_total == 0 {
+                self.input.pop();
+                self.tmp_input.pop();
+                None
+            } else {
+                self.input.clear();
+                self.tmp_input.clear();
+                self.recommendations.clear();
+                Some(self.path.as_path())
+            }
         }
     }
 }

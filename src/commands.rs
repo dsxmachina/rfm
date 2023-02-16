@@ -141,6 +141,7 @@ impl CommandParser {
 
         // Show console
         key_commands.insert(":", Command::ShowConsole);
+        key_commands.insert("cd", Command::ShowConsole);
 
         // Quit
         key_commands.insert("q", Command::Quit);
