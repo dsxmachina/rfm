@@ -6,6 +6,26 @@ use crate::commands::{Command, CommandParser, Keyboard};
 
 use super::{console::Console, *};
 
+struct Redraw {
+    left: bool,
+    center: bool,
+    right: bool,
+    console: bool,
+    header: bool,
+    footer: bool,
+}
+
+impl Redraw {
+    fn any(&self) -> bool {
+        self.left || self.center || self.right || self.console || self.header || self.footer
+    }
+}
+
+struct Show {
+    hidden: bool,
+    console: bool,
+}
+
 pub struct PanelManager {
     /// Left panel
     left: ManagedPanel<DirPanel>,
@@ -20,11 +40,11 @@ pub struct PanelManager {
     /// Miller-Columns layout
     layout: MillerColumns,
 
-    /// Show hidden files
-    show_hidden: bool,
+    /// Indicates what we want to show or hide
+    show: Show,
 
-    /// Show console
-    show_console: bool,
+    /// Elements that needs to be redrawn
+    redraw: Redraw,
 
     /// Event-stream from the terminal
     event_reader: EventStream,
@@ -74,8 +94,18 @@ impl PanelManager {
             right,
             layout,
             console: Default::default(),
-            show_hidden: false,
-            show_console: false,
+            show: Show {
+                hidden: false,
+                console: false,
+            },
+            redraw: Redraw {
+                left: true,
+                center: true,
+                right: true,
+                console: true,
+                header: true,
+                footer: true,
+            },
             event_reader,
             previous: ".".into(),
             parser,
@@ -85,10 +115,63 @@ impl PanelManager {
         }
     }
 
+    fn redraw_header(&mut self) {
+        self.redraw.header = true;
+    }
+
+    fn redraw_footer(&mut self) {
+        self.redraw.footer = true;
+    }
+
+    fn redraw_panels(&mut self) {
+        self.redraw.left = true;
+        self.redraw.center = true;
+        self.redraw.right = true;
+        self.redraw.header = true;
+        self.redraw.footer = true;
+    }
+
+    fn redraw_left(&mut self) {
+        self.redraw.left = true;
+    }
+
+    fn redraw_center(&mut self) {
+        self.redraw.center = true;
+        // if something changed in the center,
+        // also redraw header and footer
+        self.redraw.footer = true;
+        self.redraw.header = true;
+    }
+
+    fn redraw_right(&mut self) {
+        self.redraw.right = true;
+    }
+
+    fn redraw_console(&mut self) {
+        self.redraw.console = true;
+    }
+
+    fn redraw_everything(&mut self) {
+        self.redraw.header = true;
+        self.redraw.footer = true;
+        self.redraw.left = true;
+        self.redraw.center = true;
+        self.redraw.right = true;
+        self.redraw.console = true;
+    }
+
     // Prints our header
-    fn print_header(&mut self) -> Result<()> {
+    fn draw_header(&mut self) -> Result<()> {
+        if !self.redraw.header {
+            return Ok(());
+        }
         let prompt = format!("{}@{}", whoami::username(), whoami::hostname());
-        let absolute = canonicalize(self.center.panel().path())?;
+        let absolute = canonicalize(
+            self.center
+                .panel()
+                .selected_path()
+                .unwrap_or_else(|| self.center.panel().path()),
+        )?;
         let file_name = absolute
             .file_name()
             .unwrap_or_default()
@@ -107,11 +190,15 @@ impl PanelManager {
             style::PrintStyledContent(prefix.to_string().dark_blue().bold()),
             style::PrintStyledContent(suffix.to_string().white().bold()),
         )?;
+        self.redraw.header = false;
         Ok(())
     }
 
     // Prints a footer
-    fn print_footer(&mut self) -> Result<()> {
+    fn draw_footer(&mut self) -> Result<()> {
+        if !self.redraw.footer {
+            return Ok(());
+        }
         if let Some(selection) = self.center.panel().selected() {
             let path = selection.path();
             let metadata = path.metadata()?;
@@ -141,79 +228,91 @@ impl PanelManager {
             ),
             style::PrintStyledContent(n_files_string.white()),
         )?;
+        self.redraw.footer = false;
         Ok(())
     }
 
     fn draw(&mut self) -> Result<()> {
-        self.print_footer()?;
+        if !self.redraw.any() {
+            return Ok(());
+        }
+        self.stdout.queue(cursor::Hide)?;
+        self.draw_footer()?;
+        self.draw_header()?;
         self.draw_panels()?;
-        if self.show_console {
+        if self.show.console {
             self.draw_console()?;
         }
-        Ok(())
+        self.stdout.flush()
     }
 
     fn draw_panels(&mut self) -> Result<()> {
-        self.stdout.queue(cursor::Hide)?;
-        self.print_header()?;
-        // self.print_footer()?;
-        self.left.panel().draw(
-            &mut self.stdout,
-            self.layout.left_x_range.clone(),
-            self.layout.y_range.clone(),
-        )?;
-        self.center.panel().draw(
-            &mut self.stdout,
-            self.layout.center_x_range.clone(),
-            self.layout.y_range.clone(),
-        )?;
-        self.right.panel().draw(
-            &mut self.stdout,
-            self.layout.right_x_range.clone(),
-            self.layout.y_range.clone(),
-        )?;
-        self.stdout.flush()?;
+        if self.redraw.left {
+            self.left.panel().draw(
+                &mut self.stdout,
+                self.layout.left_x_range.clone(),
+                self.layout.y_range.clone(),
+            )?;
+            self.redraw.left = false;
+        }
+        if self.redraw.center {
+            self.center.panel().draw(
+                &mut self.stdout,
+                self.layout.center_x_range.clone(),
+                self.layout.y_range.clone(),
+            )?;
+            self.redraw.center = false;
+        }
+        if self.redraw.right {
+            self.right.panel().draw(
+                &mut self.stdout,
+                self.layout.right_x_range.clone(),
+                self.layout.y_range.clone(),
+            )?;
+            self.redraw.right = false;
+        }
         Ok(())
     }
 
     fn draw_console(&mut self) -> Result<()> {
-        self.console.draw(
-            &mut self.stdout,
-            self.layout.left_x_range.start..self.layout.right_x_range.end,
-            self.layout.y_range.clone(),
-        )?;
-        self.stdout.flush()
+        if self.redraw.console {
+            self.console.draw(
+                &mut self.stdout,
+                self.layout.left_x_range.start..self.layout.right_x_range.end,
+                self.layout.y_range.clone(),
+            )?;
+            self.redraw.console = false;
+        }
+        Ok(())
     }
 
-    fn toggle_hidden(&mut self) -> Result<()> {
-        self.show_hidden = !self.show_hidden;
-        self.left.panel_mut().set_hidden(self.show_hidden);
-        self.center.panel_mut().set_hidden(self.show_hidden);
+    fn toggle_hidden(&mut self) {
+        self.show.hidden = !self.show.hidden;
+        self.left.panel_mut().set_hidden(self.show.hidden);
+        self.center.panel_mut().set_hidden(self.show.hidden);
         if let PreviewPanel::Dir(panel) = self.right.panel_mut() {
-            panel.set_hidden(self.show_hidden);
+            panel.set_hidden(self.show.hidden);
         };
-        self.draw_panels()
+        self.redraw_everything();
     }
 
-    fn move_up(&mut self, step: usize) -> bool {
+    fn move_up(&mut self, step: usize) {
         if self.center.panel_mut().up(step) {
             self.right.new_panel(self.center.panel().selected_path());
-            true
-        } else {
-            false
+            self.redraw_center();
+            self.redraw_right();
         }
     }
 
-    fn move_down(&mut self, step: usize) -> bool {
+    fn move_down(&mut self, step: usize) {
         if self.center.panel_mut().down(step) {
             self.right.new_panel(self.center.panel().selected_path());
-            true
-        } else {
-            false
+            self.redraw_center();
+            self.redraw_right();
         }
     }
 
-    fn move_right(&mut self) -> bool {
+    fn move_right(&mut self) {
         if let Some(selected) = self.center.panel().selected_path().map(|p| p.to_path_buf()) {
             // If the selected item is a directory, all panels will shift to the left
             if selected.is_dir() {
@@ -232,7 +331,8 @@ impl PanelManager {
                 self.center.new_panel(Some(&selected));
                 self.right.new_panel(self.center.panel().selected_path());
 
-                true
+                // All panels needs to be redrawn
+                self.redraw_panels();
                 // if let PreviewPanel::Dir(panel) = &mut self.right.panel_mut() {
                 //     mem::swap(&mut self.center, panel);
                 // } else {
@@ -245,17 +345,14 @@ impl PanelManager {
                 // PanelAction::UpdateMidRight((self.mid.path.clone(), self.mid.selected_path_owned()))
             } else {
                 self.open(selected);
-                false
             }
-        } else {
-            false
         }
     }
 
-    fn move_left(&mut self) -> bool {
+    fn move_left(&mut self) {
         // If the left panel is empty, we cannot move left:
         if self.left.panel().selected_path().is_none() {
-            return false;
+            return;
         }
         self.previous = self.center.panel().path().to_path_buf();
 
@@ -276,23 +373,22 @@ impl PanelManager {
         self.left.new_panel(self.center.panel().path().parent());
         self.left.panel_mut().select(self.center.panel().path());
 
-        true
+        // All panels needs to be redrawn
+        self.redraw_panels();
     }
 
-    fn jump(&mut self, path: PathBuf) -> bool {
+    fn jump(&mut self, path: PathBuf) {
         if path.exists() {
             self.previous = self.center.panel().path().to_path_buf();
             self.left.new_panel(path.parent());
             self.center.new_panel(Some(&path));
-            // TODO: Update right panel whenever we update the center
             self.right.new_panel(self.center.panel().selected_path());
-            true
-        } else {
-            false
+            self.redraw_panels();
         }
     }
 
-    fn move_cursor(&mut self, movement: Movement) -> bool {
+    fn move_cursor(&mut self, movement: Movement) {
+        // NOTE: Movement functions needs to determine which panels require a redraw.
         match movement {
             Movement::Up => self.move_up(1),
             Movement::Down => self.move_down(1),
@@ -306,7 +402,7 @@ impl PanelManager {
             Movement::PageBackward => self.move_up(self.layout.height() as usize),
             Movement::JumpTo(path) => self.jump(path.into()),
             Movement::JumpPrevious => self.jump(self.previous.clone()),
-        }
+        };
     }
 
     fn open(&self, path: PathBuf) {
@@ -352,6 +448,7 @@ impl PanelManager {
 
     pub async fn run(mut self) -> Result<()> {
         // Initial draw
+        self.redraw_everything();
         self.draw()?;
 
         loop {
@@ -365,26 +462,23 @@ impl PanelManager {
                     }
                     let (panel, state) = result.unwrap();
 
-                    let updated;
                     // Find panel and update it
                     if self.center.check_update(&state) {
                         // Notification::new().summary("update-center").body(&format!("{:?}", state)).show().unwrap();
                         self.center.update_panel(panel);
                         // update preview (if necessary)
                         self.right.new_panel(self.center.panel().selected_path());
-                        updated = true;
+                        self.redraw_center();
+                        self.redraw_right();
                     } else if self.left.check_update(&state) {
                         // Notification::new().summary("update-left").body(&format!("{:?}", state)).show().unwrap();
                         self.left.update_panel(panel);
                         self.left.panel_mut().select(self.center.panel().path());
-                        updated = true;
+                        self.redraw_left();
                     } else {
                         // Notification::new().summary("unknown update").body(&format!("{:?}", state)).show().unwrap();
-                        updated = false;
                     }
-                    if updated {
-                        self.draw_panels()?;
-                    }
+                    self.draw()?;
                 }
                 // Check incoming new preview-panels
                 result = self.prev_rx.recv() => {
@@ -396,8 +490,9 @@ impl PanelManager {
 
                     if self.right.check_update(&state) {
                         self.right.update_panel(panel);
-                        self.draw_panels()?;
+                        self.redraw_right();
                     }
+                    self.draw()?;
                 }
                 // Check incoming new events
                 result = event_reader => {
@@ -409,46 +504,45 @@ impl PanelManager {
                     if let Event::Key(key_event) = event {
                         match self.parser.add_event(key_event) {
                             Command::Move(direction) => {
-                                if self.move_cursor(direction) {
-                                    self.draw_panels()?;
-                                }
+                                self.move_cursor(direction);
                             }
                             Command::ToggleHidden => {
-                                self.toggle_hidden()?;
+                                self.toggle_hidden();
                             }
                             Command::ShowConsole => {
-                                self.show_console = true;
+                                self.show.console = true;
                                 self.parser.set_console_mode(true);
                                 self.console.open(self.center.panel().path());
-                                self.draw_console()?;
+                                self.redraw_console();
                             }
                             Command::Esc => {
                                 // Stop whatever we are doing.
-                                if self.show_console {
-                                    self.show_console = false;
+                                if self.show.console {
+                                    self.show.console = false;
                                     self.parser.set_console_mode(false);
                                     self.console.clear();
-                                    self.draw_panels()?;
+                                    self.redraw_panels();
                                 }
                                 self.parser.clear_buffer();
+                                self.redraw_footer();
                             }
                             Command::Input(input) => {
-                                if self.show_console {
+                                if self.show.console {
                                     match input {
                                         Keyboard::Char(c) => {
                                             self.console.insert(c);
                                             // Notification::new().summary(&self.console.text).show().unwrap();
-                                            self.draw_console()?;
+                                            self.redraw_console();
                                         }
                                         Keyboard::Backspace => {
                                             self.console.del();
-                                            self.draw_console()?;
+                                            self.redraw_console();
                                         }
                                         Keyboard::Enter | Keyboard::Esc=> {
-                                            self.show_console = false;
+                                            self.show.console = false;
                                             self.parser.set_console_mode(false);
                                             self.console.clear();
-                                            self.draw_panels()?;
+                                            self.redraw_panels();
                                         }
                                     }
                                 }
@@ -456,13 +550,12 @@ impl PanelManager {
                             Command::Quit => break,
                             Command::None => (),
                         }
-                        self.print_footer()?;
-                        self.stdout.flush()?;
                     }
                     if let Event::Resize(sx, sy) = event {
                         self.layout = MillerColumns::from_size((sx, sy));
-                        self.draw()?;
+                        self.redraw_everything();
                     }
+                    self.draw()?;
                 }
             }
         }
