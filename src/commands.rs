@@ -60,6 +60,7 @@ pub enum Keyboard {
     Char(char),
     Backspace,
     Enter,
+    Tab,
     Esc,
 }
 
@@ -217,6 +218,9 @@ impl CommandParser {
                 if self.console_mode {
                     if let KeyCode::Backspace = event.code {
                         return Command::Input(Keyboard::Backspace);
+                    }
+                    if let KeyCode::Tab = event.code {
+                        return Command::Input(Keyboard::Tab);
                     }
                     if let KeyCode::Enter = event.code {
                         return Command::Input(Keyboard::Enter);

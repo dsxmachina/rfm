@@ -35,6 +35,10 @@ impl DirElem {
             PrintStyledContent(name.grey())
         }
     }
+
+    pub fn into_parts(self) -> (String, PathBuf) {
+        (self.name, self.path)
+    }
 }
 
 impl<P: AsRef<Path>> From<P> for DirElem {

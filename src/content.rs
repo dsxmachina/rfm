@@ -162,7 +162,7 @@ impl Manager {
                         if let Ok(Ok(Ok(content))) = result {
                             let panel = PreviewPanel::Dir(DirPanel::new(content, update.path.clone()));
                             if update.hash != panel.content_hash() {
-                                self.prev_tx.send((panel.clone(), update.state.increased())).await.expect("Receiver dropped or closed");
+                                let _ = self.prev_tx.send((panel.clone(), update.state.increased())).await;
                             }
                             self.preview_cache.insert(update.path, panel);
                         }
@@ -173,7 +173,7 @@ impl Manager {
                         if let Ok(Ok(preview)) = result {
                             let panel = PreviewPanel::File(preview);
                             if update.hash != panel.content_hash() {
-                                self.prev_tx.send((panel.clone(), update.state.increased())).await.expect("Receiver dropped or closed");
+                                let _ = self.prev_tx.send((panel.clone(), update.state.increased())).await;
                             }
                             self.preview_cache.insert(update.path, panel);
                         }

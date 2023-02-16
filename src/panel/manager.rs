@@ -470,11 +470,13 @@ impl PanelManager {
                         self.right.new_panel(self.center.panel().selected_path());
                         self.redraw_center();
                         self.redraw_right();
+                        self.redraw_console();
                     } else if self.left.check_update(&state) {
                         // Notification::new().summary("update-left").body(&format!("{:?}", state)).show().unwrap();
                         self.left.update_panel(panel);
                         self.left.panel_mut().select(self.center.panel().path());
                         self.redraw_left();
+                        self.redraw_console();
                     } else {
                         // Notification::new().summary("unknown update").body(&format!("{:?}", state)).show().unwrap();
                     }
@@ -491,6 +493,7 @@ impl PanelManager {
                     if self.right.check_update(&state) {
                         self.right.update_panel(panel);
                         self.redraw_right();
+                        self.redraw_console();
                     }
                     self.draw()?;
                 }
@@ -535,7 +538,14 @@ impl PanelManager {
                                             self.redraw_console();
                                         }
                                         Keyboard::Backspace => {
-                                            self.console.del();
+                                            if let Some(path) = self.console.del().map(|p| p.to_path_buf()) {
+                                                self.jump(path.clone());
+                                                self.console.open(path);
+                                            }
+                                            self.redraw_console();
+                                        }
+                                        Keyboard::Tab => {
+                                            self.console.tab();
                                             self.redraw_console();
                                         }
                                         Keyboard::Enter | Keyboard::Esc=> {
