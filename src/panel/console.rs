@@ -8,6 +8,7 @@ pub struct Console {
     input: String,
     path: PathBuf,
     rec_idx: usize,
+    rec_total: usize,
     recommendations: PatriciaSet,
 }
 
@@ -73,12 +74,16 @@ impl Console {
             .canonicalize()
             .unwrap_or_default();
 
-        // parse directory
+        // Delete existing recommendations
+        self.recommendations.clear();
+
+        // parse directory and create recommendations
         let content = dir_content(self.path.clone()).unwrap_or_default();
         for item in content {
             self.recommendations.insert(item.name());
         }
         self.input.clear();
+        self.rec_total = self.recommendations.len();
         self.rec_idx = 0;
     }
 
@@ -94,16 +99,15 @@ impl Console {
     pub fn insert(&mut self, character: char) {
         self.input.push(character);
         self.rec_idx = 0; // reset recommendation index
+        self.rec_total = self
+            .recommendations
+            .iter_prefix(self.input.as_bytes())
+            .count();
     }
 
     pub fn tab(&mut self) {
         self.rec_idx = self.rec_idx.saturating_add(1);
-        if self.rec_idx
-            >= self
-                .recommendations
-                .iter_prefix(self.input.as_bytes())
-                .count()
-        {
+        if self.rec_idx >= self.rec_total {
             self.rec_idx = 0;
         }
     }
