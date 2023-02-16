@@ -1,4 +1,3 @@
-use notify_rust::Notification;
 use patricia_tree::PatriciaSet;
 
 use super::*;
@@ -73,7 +72,7 @@ impl Draw for Console {
             // Clear(ClearType::CurrentLine),
             // Print(&format!("tmp  : {}", self.tmp_input)),
             // // Clear line and print path
-            // cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(1)),
+            // cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(3)),
             // Clear(ClearType::CurrentLine),
             // Print(&format!("path : {}", self.path.display())),
             // Print recommendation
@@ -118,6 +117,13 @@ impl Console {
         self.rec_idx = 0;
     }
 
+    fn push_char(&mut self, character: char) {
+        if character != '/' {
+            self.input.push(character);
+            self.tmp_input.push(character);
+        }
+    }
+
     fn recommendation(&self) -> String {
         let mut all_keys: Vec<String> = self
             .recommendations
@@ -138,28 +144,18 @@ impl Console {
         let joined_path = self.path.join(&self.input);
         if joined_path.is_dir() {
             self.change_dir(joined_path.clone());
-            self.input.push(character);
-            self.tmp_input.push(character);
+            self.push_char(character);
             return Some(joined_path);
         }
-        if character != '/' {
-            self.input.push(character);
-            self.tmp_input.push(character);
-            // self.active_rec = self.input.clone();
+        self.push_char(character);
+        // self.active_rec = self.input.clone();
 
-            self.rec_idx = 0; // reset recommendation index
-            self.rec_total = self
-                .recommendations
-                .iter_prefix(self.input.as_bytes())
-                .count();
-        }
-
+        self.rec_idx = 0; // reset recommendation index
+        self.rec_total = self
+            .recommendations
+            .iter_prefix(self.input.as_bytes())
+            .count();
         let joined_path = self.path.join(&self.input);
-        // Notification::new()
-        //     .summary(&format!("{}", joined_path.display()))
-        //     .body(&format!("{}", self.path.display()))
-        //     .show()
-        //     .unwrap();
         if joined_path.is_dir() {
             self.change_dir(joined_path.clone());
             Some(joined_path)
@@ -209,7 +205,7 @@ impl Console {
             } else {
                 self.input.clear();
                 self.tmp_input.clear();
-                self.recommendations.clear();
+                self.change_dir(self.path.clone());
                 Some(self.path.as_path())
             }
         }

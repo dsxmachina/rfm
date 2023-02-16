@@ -1,6 +1,5 @@
 use crossterm::event::{Event, EventStream};
 use futures::{FutureExt, StreamExt};
-use notify_rust::Notification;
 
 use crate::commands::{Command, CommandParser, Keyboard};
 
@@ -296,6 +295,16 @@ impl PanelManager {
         self.redraw_everything();
     }
 
+    // fn select(&mut self, path: &Path) {
+    //     if self.center.panel().selected_path() == Some(path) {
+    //         return;
+    //     }
+    //     self.center.panel_mut().select(path);
+    //     self.right.new_panel(self.center.panel().selected_path());
+    //     self.redraw_center();
+    //     self.redraw_right();
+    // }
+
     fn move_up(&mut self, step: usize) {
         if self.center.panel_mut().up(step) {
             self.right.new_panel(self.center.panel().selected_path());
@@ -378,6 +387,10 @@ impl PanelManager {
     }
 
     fn jump(&mut self, path: PathBuf) {
+        // Don't do anything, if the path hasn't changed
+        if path.as_path() == self.center.panel().path() {
+            return;
+        }
         if path.exists() {
             self.previous = self.center.panel().path().to_path_buf();
             self.left.new_panel(path.parent());
