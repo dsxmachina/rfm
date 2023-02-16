@@ -199,8 +199,20 @@ impl Console {
             }
         } else {
             if self.rec_total == 0 {
-                self.input.pop();
-                self.tmp_input.pop();
+                loop {
+                    self.input.pop();
+                    self.tmp_input.pop();
+                    if let Some(_) = self
+                        .recommendations
+                        .iter_prefix(self.tmp_input.as_bytes())
+                        .next()
+                    {
+                        break;
+                    }
+                    if self.tmp_input.is_empty() {
+                        break;
+                    }
+                }
                 None
             } else {
                 self.input.clear();
