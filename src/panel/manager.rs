@@ -150,6 +150,7 @@ impl PanelManager {
     }
 
     fn draw_panels(&mut self) -> Result<()> {
+        self.stdout.queue(cursor::Hide)?;
         self.print_header()?;
         self.print_footer()?;
         self.left.panel().draw(
@@ -167,7 +168,6 @@ impl PanelManager {
             self.layout.right_x_range.clone(),
             self.layout.y_range.clone(),
         )?;
-        self.stdout.queue(cursor::Hide)?;
         self.stdout.flush()?;
         Ok(())
     }
@@ -177,7 +177,8 @@ impl PanelManager {
             &mut self.stdout,
             self.layout.left_x_range.start..self.layout.right_x_range.end,
             self.layout.y_range.clone(),
-        )
+        )?;
+        self.stdout.flush()
     }
 
     fn toggle_hidden(&mut self) -> Result<()> {
@@ -421,6 +422,7 @@ impl PanelManager {
                                     match input {
                                         Keyboard::Char(c) => {
                                             self.console.insert(c);
+                                            // Notification::new().summary(&self.console.text).show().unwrap();
                                             self.draw_console()?;
                                         }
                                         Keyboard::Backspace => {

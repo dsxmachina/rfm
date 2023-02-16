@@ -13,6 +13,7 @@ use crate::panel::{
     DirElem, DirPanel, FilePreview, PanelContent, PanelState, PanelUpdate, PreviewPanel,
 };
 
+// Nobody waits 30 seconds for a preview.
 const PREVIEW_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Cache that is shared by the content-manager and the panel-manager.
