@@ -430,7 +430,7 @@ impl PanelManager {
         // we need to open it
         if let Some(ext) = absolute.extension().and_then(|ext| ext.to_str()) {
             match ext {
-                "png" | "bmp" | "jpg" | "jpeg" => {
+                "png" | "bmp" | "jpg" | "jpeg" | "svg" => {
                     std::process::Command::new("sxiv")
                         .stderr(Stdio::null())
                         .stdin(Stdio::null())
