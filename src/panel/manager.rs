@@ -1,9 +1,9 @@
-use crossterm::event::{Event, EventStream};
+use crossterm::event::{Event, EventStream, KeyCode};
 use futures::{FutureExt, StreamExt};
 
-use crate::commands::{Command, CommandParser, Keyboard};
+use crate::commands::{Command, CommandParser};
 
-use super::{console::Console, *};
+use super::{console::DirConsole, *};
 
 struct Redraw {
     left: bool,
@@ -34,7 +34,7 @@ pub struct PanelManager {
     right: ManagedPanel<PreviewPanel>,
 
     /// Console panel
-    console: Console,
+    console: DirConsole,
 
     /// Miller-Columns layout
     layout: MillerColumns,
@@ -295,15 +295,15 @@ impl PanelManager {
         self.redraw_everything();
     }
 
-    // fn select(&mut self, path: &Path) {
-    //     if self.center.panel().selected_path() == Some(path) {
-    //         return;
-    //     }
-    //     self.center.panel_mut().select(path);
-    //     self.right.new_panel(self.center.panel().selected_path());
-    //     self.redraw_center();
-    //     self.redraw_right();
-    // }
+    fn select(&mut self, path: &Path) {
+        if self.center.panel().selected_path() == Some(path) {
+            return;
+        }
+        self.center.panel_mut().select(path);
+        self.right.new_panel(self.center.panel().selected_path());
+        self.redraw_center();
+        self.redraw_right();
+    }
 
     fn move_up(&mut self, step: usize) {
         if self.center.panel_mut().up(step) {
@@ -522,6 +522,7 @@ impl PanelManager {
                     }
                     let event = result.unwrap()?;
                     if let Event::Key(key_event) = event {
+                        if !self.show.console {
                         match self.parser.add_event(key_event) {
                             Command::Move(direction) => {
                                 self.move_cursor(direction);
@@ -547,46 +548,72 @@ impl PanelManager {
                                 self.parser.clear_buffer();
                                 self.redraw_footer();
                             }
-                            Command::Input(input) => {
-                                if self.show.console {
-                                    match input {
-                                        Keyboard::Char(c) => {
-                                            if let Some(path) = self.console.insert(c) {
-                                                self.jump(path);
-                                            }
-                                            self.redraw_console();
-                                        }
-                                        Keyboard::Backspace => {
-                                            if let Some(path) = self.console.del().map(|p| p.to_path_buf()) {
-                                                self.jump(path);
-                                            }
-                                            self.redraw_console();
-                                        }
-                                        Keyboard::Tab => {
-                                            if let Some(path) = self.console.tab() {
-                                                self.jump(path);
-                                            }
-                                            self.redraw_console();
-                                        }
-                                        Keyboard::Enter => {
-                                            self.show.console = false;
-                                            self.parser.set_console_mode(false);
-                                            self.console.clear();
-                                            self.redraw_panels();
-                                        }
-                                        Keyboard::Esc => {
-                                            self.show.console = false;
-                                            self.parser.set_console_mode(false);
-                                            self.console.clear();
-                                            self.jump(pre_console_path.clone());
-                                            self.redraw_panels();
-                                        }
-
-                                    }
-                                }
-                            }
                             Command::Quit => break,
                             Command::None => (),
+                        }
+                        } else {
+                            match key_event.code {
+                                KeyCode::Backspace => {
+                                    if let Some(path) = self.console.del().map(|p| p.to_path_buf()) {
+                                        self.jump(path);
+                                    }
+                                    self.redraw_console();
+                                }
+                                KeyCode::Enter => {
+                                    self.show.console = false;
+                                    self.parser.set_console_mode(false);
+                                    self.console.clear();
+                                    self.redraw_panels();
+                                }
+                                KeyCode::Down => {
+                                    self.move_cursor(Movement::Down);
+                                    self.console.down();
+                                    // self.console.open(self.center.panel().path());
+                                    self.redraw_console();
+                                }
+                                KeyCode::Up => {
+                                    self.move_cursor(Movement::Up);
+                                    self.console.up();
+                                    // self.console.open(self.center.panel().path());
+                                    self.redraw_console();
+                                }
+                                KeyCode::Left => {
+                                    self.move_cursor(Movement::Left);
+                                    self.console.open(self.center.panel().path());
+                                    self.redraw_console();
+                                }
+                                KeyCode::Right => {
+                                    self.move_cursor(Movement::Right);
+                                    self.console.open(self.center.panel().path());
+                                    self.redraw_console();
+                                }
+                                KeyCode::Tab  => {
+                                    if let Some(path) = self.console.tab() {
+                                        self.jump(path);
+                                    }
+                                    self.redraw_console();
+                                }
+                                KeyCode::BackTab  => {
+                                    if let Some(path) = self.console.backtab() {
+                                        self.jump(path);
+                                    }
+                                    self.redraw_console();
+                                }
+                                KeyCode::Char(c) => {
+                                    if let Some(path) = self.console.insert(c) {
+                                        self.jump(path);
+                                    }
+                                    self.redraw_console();
+                                }
+                                KeyCode::Esc => {
+                                    self.show.console = false;
+                                    self.parser.set_console_mode(false);
+                                    self.console.clear();
+                                    self.jump(pre_console_path.clone());
+                                    self.redraw_panels();
+                                }
+                                _ => (),
+                            }
                         }
                     }
                     if let Event::Resize(sx, sy) = event {

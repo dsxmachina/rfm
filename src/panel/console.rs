@@ -4,7 +4,7 @@ use super::*;
 use crate::content::dir_content;
 
 #[derive(Default)]
-pub struct Console {
+pub struct DirConsole {
     input: String,
     path: PathBuf,
     rec_idx: usize,
@@ -13,7 +13,7 @@ pub struct Console {
     recommendations: PatriciaSet,
 }
 
-impl Draw for Console {
+impl Draw for DirConsole {
     fn draw(&self, stdout: &mut Stdout, x_range: Range<u16>, y_range: Range<u16>) -> Result<()> {
         let width = x_range.end.saturating_sub(x_range.start);
         let height = y_range.end.saturating_sub(y_range.start);
@@ -87,7 +87,7 @@ impl Draw for Console {
     }
 }
 
-impl Console {
+impl DirConsole {
     pub fn open<P: AsRef<Path>>(&mut self, path: P) {
         self.path = path
             .as_ref()
@@ -168,11 +168,20 @@ impl Console {
         self.input = self.recommendation();
         self.rec_idx = self.rec_idx.saturating_add(1);
         let joined_path = self.path.join(&self.input);
-        // Notification::new()
-        //     .summary(&format!("{}", joined_path.display()))
-        //     .body(&format!("{}", self.path.display()))
-        //     .show()
-        //     .unwrap();
+        if joined_path.is_dir() {
+            if self.rec_total <= 1 {
+                self.change_dir(joined_path.clone());
+            }
+            Some(joined_path)
+        } else {
+            None
+        }
+    }
+
+    pub fn backtab(&mut self) -> Option<PathBuf> {
+        self.rec_idx = self.rec_idx.saturating_sub(1);
+        self.input = self.recommendation();
+        let joined_path = self.path.join(&self.input);
         if joined_path.is_dir() {
             if self.rec_total <= 1 {
                 self.change_dir(joined_path.clone());
@@ -187,6 +196,21 @@ impl Console {
         self.input.clear();
         self.tmp_input.clear();
     }
+
+    pub fn up(&mut self) {
+        self.rec_idx = self.rec_idx.saturating_sub(1);
+        self.input = self.recommendation();
+    }
+
+    pub fn down(&mut self) {
+        self.rec_idx = self.rec_idx.saturating_add(1);
+        self.input = self.recommendation();
+    }
+
+    // pub fn set_to(&mut self, input: String) {
+    //     self.input = input.clone();
+    //     self.tmp_input = input;
+    // }
 
     pub fn del(&mut self) -> Option<&Path> {
         if self.input.is_empty() {

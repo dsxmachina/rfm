@@ -56,20 +56,10 @@ pub enum Movement {
 }
 
 #[derive(Debug, Clone)]
-pub enum Keyboard {
-    Char(char),
-    Backspace,
-    Enter,
-    Tab,
-    Esc,
-}
-
-#[derive(Debug, Clone)]
 pub enum Command {
     Move(Movement),
     ToggleHidden,
     ShowConsole,
-    Input(Keyboard),
     Esc,
     Quit,
     None,
@@ -203,31 +193,12 @@ impl CommandParser {
             KeyModifiers::NONE | KeyModifiers::SHIFT => {
                 // Put character into buffer
                 if let KeyCode::Char(c) = event.code {
-                    // In console mode, just return the character and leave
-                    if self.console_mode {
-                        return Command::Input(Keyboard::Char(c));
-                    }
                     if event.modifiers.contains(KeyModifiers::SHIFT) {
                         // uppercase
                         self.buffer.push(c.to_ascii_uppercase());
                     } else {
                         // lowercase
                         self.buffer.push(c.to_ascii_lowercase());
-                    }
-                }
-
-                if self.console_mode {
-                    if let KeyCode::Backspace = event.code {
-                        return Command::Input(Keyboard::Backspace);
-                    }
-                    if let KeyCode::Tab = event.code {
-                        return Command::Input(Keyboard::Tab);
-                    }
-                    if let KeyCode::Enter = event.code {
-                        return Command::Input(Keyboard::Enter);
-                    }
-                    if let KeyCode::Esc = event.code {
-                        return Command::Input(Keyboard::Esc);
                     }
                 }
 
