@@ -69,6 +69,7 @@ pub enum Command {
     ToggleHidden,
     ShowConsole,
     Input(Keyboard),
+    Esc,
     Quit,
     None,
 }
@@ -146,8 +147,8 @@ impl CommandParser {
         // --- Commands for modifier + key:
         let mut mod_commands = HashMap::new();
 
-        // Quit
-        mod_commands.insert(CTRL_C, Command::Quit);
+        // Escape from what you are doing
+        mod_commands.insert(CTRL_C, Command::Esc);
 
         // Advanced movement
         mod_commands.insert(
@@ -183,6 +184,14 @@ impl CommandParser {
 
     pub fn set_console_mode(&mut self, console_mode: bool) {
         self.console_mode = console_mode;
+    }
+
+    pub fn clear_buffer(&mut self) {
+        self.buffer.clear();
+    }
+
+    pub fn buffer(&self) -> String {
+        self.buffer.clone()
     }
 
     /// Parse an event and return the command that is assigned to it

@@ -1,5 +1,6 @@
 use crossterm::event::{Event, EventStream};
 use futures::{FutureExt, StreamExt};
+use notify_rust::Notification;
 
 use crate::commands::{Command, CommandParser, Keyboard};
 
@@ -121,15 +122,17 @@ impl PanelManager {
                 cursor::MoveTo(0, self.layout.footer()),
                 Clear(ClearType::CurrentLine),
                 style::PrintStyledContent(permissions.dark_cyan()),
-                // cursor::MoveTo(x2, y),
             )?;
         }
 
+        let key_buffer = self.parser.buffer();
         let (n, m) = self.center.panel().index_vs_total();
         let n_files_string = format!("{n}/{m} ");
 
         queue!(
             self.stdout,
+            cursor::MoveTo(self.layout.width() / 3, self.layout.footer()),
+            style::PrintStyledContent(key_buffer.red()),
             cursor::MoveTo(
                 self.layout
                     .width()
@@ -142,6 +145,7 @@ impl PanelManager {
     }
 
     fn draw(&mut self) -> Result<()> {
+        self.print_footer()?;
         self.draw_panels()?;
         if self.show_console {
             self.draw_console()?;
@@ -152,7 +156,7 @@ impl PanelManager {
     fn draw_panels(&mut self) -> Result<()> {
         self.stdout.queue(cursor::Hide)?;
         self.print_header()?;
-        self.print_footer()?;
+        // self.print_footer()?;
         self.left.panel().draw(
             &mut self.stdout,
             self.layout.left_x_range.clone(),
@@ -347,8 +351,8 @@ impl PanelManager {
     }
 
     pub async fn run(mut self) -> Result<()> {
-        // Initialize panels
-        self.draw_panels()?;
+        // Initial draw
+        self.draw()?;
 
         loop {
             let event_reader = self.event_reader.next().fuse();
@@ -415,7 +419,18 @@ impl PanelManager {
                             Command::ShowConsole => {
                                 self.show_console = true;
                                 self.parser.set_console_mode(true);
+                                self.console.open(self.center.panel().path());
                                 self.draw_console()?;
+                            }
+                            Command::Esc => {
+                                // Stop whatever we are doing.
+                                if self.show_console {
+                                    self.show_console = false;
+                                    self.parser.set_console_mode(false);
+                                    self.console.clear();
+                                    self.draw_panels()?;
+                                }
+                                self.parser.clear_buffer();
                             }
                             Command::Input(input) => {
                                 if self.show_console {
@@ -441,6 +456,8 @@ impl PanelManager {
                             Command::Quit => break,
                             Command::None => (),
                         }
+                        self.print_footer()?;
+                        self.stdout.flush()?;
                     }
                     if let Event::Resize(sx, sy) = event {
                         self.layout = MillerColumns::from_size((sx, sy));

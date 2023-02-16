@@ -3,7 +3,7 @@ use super::*;
 #[derive(Default)]
 pub struct Console {
     text: String,
-    dir: PathBuf,
+    path: PathBuf,
 }
 
 impl Draw for Console {
@@ -14,7 +14,13 @@ impl Draw for Console {
         let x_start = x_range.start;
         let y_center = y_range.end.saturating_add(y_range.start) / 2;
 
-        let offset = width / 3;
+        let offset = if self.text.len() < (width / 2).into() {
+            width / 4
+        } else if self.text.len() < width.into() {
+            ((width as usize - self.text.len()).saturating_sub(1) / 2) as u16
+        } else {
+            0
+        };
 
         // TODO: Make this a box. Or something else.
 
@@ -42,7 +48,14 @@ impl Draw for Console {
 }
 
 impl Console {
-    pub fn open<P: AsRef<Path>>(path: P) {}
+    pub fn open<P: AsRef<Path>>(&mut self, path: P) {
+        self.path = path
+            .as_ref()
+            .to_path_buf()
+            .canonicalize()
+            .unwrap_or_default();
+        self.text = format!("{}", self.path.display());
+    }
 
     pub fn insert(&mut self, character: char) {
         self.text.push(character);
