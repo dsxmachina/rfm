@@ -452,6 +452,9 @@ impl PanelManager {
         self.redraw_everything();
         self.draw()?;
 
+        // Remember path before we jumped into console
+        let mut pre_console_path: PathBuf = self.center.panel().path().to_path_buf();
+
         loop {
             let event_reader = self.event_reader.next().fuse();
             tokio::select! {
@@ -514,6 +517,7 @@ impl PanelManager {
                                 self.toggle_hidden();
                             }
                             Command::ShowConsole => {
+                                pre_console_path = self.center.panel().path().to_path_buf();
                                 self.show.console = true;
                                 self.parser.set_console_mode(true);
                                 self.console.open(self.center.panel().path());
@@ -551,12 +555,20 @@ impl PanelManager {
                                             }
                                             self.redraw_console();
                                         }
-                                        Keyboard::Enter | Keyboard::Esc=> {
+                                        Keyboard::Enter => {
                                             self.show.console = false;
                                             self.parser.set_console_mode(false);
                                             self.console.clear();
                                             self.redraw_panels();
                                         }
+                                        Keyboard::Esc => {
+                                            self.show.console = false;
+                                            self.parser.set_console_mode(false);
+                                            self.console.clear();
+                                            self.jump(pre_console_path.clone());
+                                            self.redraw_panels();
+                                        }
+
                                     }
                                 }
                             }
