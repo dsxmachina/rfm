@@ -110,6 +110,10 @@ impl DirConsole {
                 self.recommendations.insert(item.name());
             }
         }
+        Notification::new()
+            .summary(&format!("N={}", self.recommendations.len()))
+            .show()
+            .unwrap();
         // clear input and recommendations
         self.input.clear();
         self.tmp_input.clear();
@@ -198,19 +202,45 @@ impl DirConsole {
     }
 
     pub fn up(&mut self) {
+        self.input = self.recommendation();
+        let joined_path = self.path.join(&self.input);
+        if joined_path.is_dir() {
+            if self.rec_total <= 1 {
+                self.change_dir(joined_path.clone());
+            }
+        }
         self.rec_idx = self.rec_idx.saturating_sub(1);
         self.input = self.recommendation();
     }
 
     pub fn down(&mut self) {
+        self.input = self.recommendation();
+        let joined_path = self.path.join(&self.input);
+        if joined_path.is_dir() {
+            if self.rec_total <= 1 {
+                self.change_dir(joined_path.clone());
+            }
+        }
         self.rec_idx = self.rec_idx.saturating_add(1);
         self.input = self.recommendation();
     }
 
-    // pub fn set_to(&mut self, input: String) {
-    //     self.input = input.clone();
-    //     self.tmp_input = input;
-    // }
+    pub fn set_to(&mut self, input: String) {
+        let mut all_keys: Vec<String> = self
+            .recommendations
+            .iter()
+            .map(|bytes| String::from_utf8(bytes))
+            .flatten()
+            .collect();
+        all_keys.sort_by_cached_key(|name| name.to_lowercase());
+        self.rec_idx = 0;
+        for key in all_keys {
+            if key == input {
+                break;
+            }
+            self.rec_idx += 1;
+        }
+    }
 
     pub fn del(&mut self) -> Option<&Path> {
         if self.input.is_empty() {

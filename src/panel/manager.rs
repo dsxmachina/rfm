@@ -535,6 +535,15 @@ impl PanelManager {
                                 self.show.console = true;
                                 self.parser.set_console_mode(true);
                                 self.console.open(self.center.panel().path());
+                                let selected = self
+                                    .center
+                                    .panel()
+                                    .selected_path()
+                                    .and_then(|p| p.file_name())
+                                    .and_then(|f| f.to_str())
+                                    .and_then(|s| Some(s.to_string()))
+                                    .unwrap_or_default();
+                                self.console.set_to(selected);
                                 self.redraw_console();
                             }
                             Command::Esc => {
