@@ -22,7 +22,11 @@ impl Draw for Console {
         let x_start = x_range.start;
         let y_center = y_range.end.saturating_add(y_range.start) / 2;
 
-        let text = format!("{}/{}", self.path.display(), self.input);
+        let mut path = format!("{}", self.path.display());
+        if path.ends_with('/') {
+            path.pop();
+        }
+        let text = format!("{}/{}", path, self.input);
 
         let offset = if self.input.len() < (width / 2).into() {
             width / 4
@@ -172,6 +176,9 @@ impl Console {
         //     .show()
         //     .unwrap();
         if joined_path.is_dir() {
+            if self.rec_total <= 1 {
+                self.change_dir(joined_path.clone());
+            }
             Some(joined_path)
         } else {
             None
