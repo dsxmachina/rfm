@@ -40,44 +40,46 @@ impl Draw for Console {
         let rec_text = self
             .recommendation()
             .strip_prefix(&self.input)
-            .unwrap_or_default()
+            .unwrap_or_else(|| "/")
             .to_string();
 
         // TODO: Make this a box. Or something else.
 
-        if height >= 5 {
+        if height >= 3 {
             for x in x_range {
                 queue!(
                     stdout,
                     cursor::MoveTo(x, y_center.saturating_sub(1)),
                     PrintStyledContent("―".dark_green().bold()),
-                    cursor::MoveTo(x, y_center.saturating_add(4)),
+                    cursor::MoveTo(x, y_center.saturating_add(1)),
                     PrintStyledContent("―".dark_green().bold()),
                 )?;
             }
         }
+        let x_text = x_start.saturating_add(offset);
+        let x_rec = x_start.saturating_add(rec_offset);
         queue!(
             stdout,
             // Clear line and print main text
-            cursor::MoveTo(x_start + offset, y_center),
+            cursor::MoveTo(x_text, y_center),
             Clear(ClearType::CurrentLine),
             Print(text),
-            // Clear line and print main input
-            cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(1)),
-            Clear(ClearType::CurrentLine),
-            Print(&format!("input: {}", self.input)),
-            // Clear line and print tmp-input
-            cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(2)),
-            Clear(ClearType::CurrentLine),
-            Print(&format!("tmp  : {}", self.tmp_input)),
-            // Clear line and print path
-            cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(3)),
-            Clear(ClearType::CurrentLine),
-            Print(&format!("path : {}", self.path.display())),
+            // // Clear line and print main input
+            // cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(1)),
+            // Clear(ClearType::CurrentLine),
+            // Print(&format!("input: {}", self.input)),
+            // // Clear line and print tmp-input
+            // cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(2)),
+            // Clear(ClearType::CurrentLine),
+            // Print(&format!("tmp  : {}", self.tmp_input)),
+            // // Clear line and print path
+            // cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(1)),
+            // Clear(ClearType::CurrentLine),
+            // Print(&format!("path : {}", self.path.display())),
             // Print recommendation
-            cursor::MoveTo(x_start + rec_offset, y_center),
+            cursor::MoveTo(x_rec, y_center),
             PrintStyledContent(rec_text.dark_grey()),
-            cursor::MoveTo(x_start + rec_offset, y_center),
+            cursor::MoveTo(x_rec, y_center),
             cursor::Show,
             cursor::SetCursorStyle::DefaultUserShape,
             cursor::EnableBlinking,
