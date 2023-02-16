@@ -5,12 +5,15 @@ use std::{
     io,
     path::PathBuf,
     sync::Arc,
+    time::Duration,
 };
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, task::spawn_blocking, time::timeout};
 
 use crate::panel::{
     DirElem, DirPanel, FilePreview, PanelContent, PanelState, PanelUpdate, PreviewPanel,
 };
+
+const PREVIEW_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Cache that is shared by the content-manager and the panel-manager.
 #[derive(Clone)]
@@ -130,7 +133,7 @@ impl Manager {
                     }
                     // Notification::new().summary("recv update-request").body(&format!("{:?}", update.state)).show().unwrap();
                     let dir_path = update.path.clone();
-                    let result = tokio::task::spawn_blocking(move || dir_content(dir_path)).await;
+                    let result = spawn_blocking(move || dir_content(dir_path)).await;
                     if let Ok(Ok(content)) = result {
                         // Only update when the hash has changed
                         let panel = DirPanel::new(content, update.path.clone());
@@ -154,8 +157,8 @@ impl Manager {
                         //     .show()
                         //     .unwrap();
                         let dir_path = update.path.clone();
-                        let result = tokio::task::spawn_blocking(move || dir_content_preview(dir_path, 16538)).await;
-                        if let Ok(Ok(content)) = result {
+                        let result = timeout(PREVIEW_TIMEOUT, spawn_blocking(move || dir_content_preview(dir_path, 16538))).await;
+                        if let Ok(Ok(Ok(content))) = result {
                             let panel = PreviewPanel::Dir(DirPanel::new(content, update.path.clone()));
                             if update.hash != panel.content_hash() {
                                 self.prev_tx.send((panel.clone(), update.state.increased())).await.expect("Receiver dropped or closed");
@@ -164,11 +167,15 @@ impl Manager {
                         }
                     } else {
                         // Create preview
-                        let panel = PreviewPanel::File(get_file_preview(update.path.clone()));
-                        if update.hash != panel.content_hash() {
-                            self.prev_tx.send((panel.clone(), update.state.increased())).await.expect("Receiver dropped or closed");
+                        let file_path = update.path.clone();
+                        let result = timeout(PREVIEW_TIMEOUT, spawn_blocking(move || get_file_preview(file_path))).await;
+                        if let Ok(Ok(preview)) = result {
+                            let panel = PreviewPanel::File(preview);
+                            if update.hash != panel.content_hash() {
+                                self.prev_tx.send((panel.clone(), update.state.increased())).await.expect("Receiver dropped or closed");
+                            }
+                            self.preview_cache.insert(update.path, panel);
                         }
-                        self.preview_cache.insert(update.path, panel);
                     }
                 }
             }
