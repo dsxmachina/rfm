@@ -57,7 +57,7 @@ cached_result! {
             out.push(DirElem::from(item?.path()))
         }
         // out.sort();
-        out.sort_by_cached_key(|a| a.name().to_lowercase());
+        out.sort_by_cached_key(|a| a.name_lowercase().clone());
         out.sort_by_cached_key(|a| !a.path().is_dir());
         Ok(out)
     }
@@ -183,6 +183,7 @@ impl Manager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use patricia_tree::{PatriciaMap, PatriciaSet};
     use std::time::Instant;
 
     #[test]
@@ -192,13 +193,54 @@ mod tests {
         let content = dir_content(path).unwrap();
         let now = Instant::now();
         let hash = hash_elements(&content);
-        println!(
-            "hashing {} elements took: {}ms",
-            content.len(),
-            now.elapsed().as_millis()
-        );
+        let elapsed = now.elapsed().as_millis();
+        println!("hashing {} elements took: {elapsed}ms", content.len(),);
         println!("hash={hash}");
         assert!(true);
+    }
+
+    #[test]
+    fn test_dir_parsing_speed() {
+        let path: PathBuf = "/home/someone/Bilder/ground_images/-3000_-2000_3000_2000_0".into();
+        // read directory
+        let now = Instant::now();
+        let content = dir_content(path).unwrap();
+        let elapsed = now.elapsed().as_millis();
+        println!("parsing {} elements took: {elapsed}ms", content.len(),);
+        assert!(false);
+    }
+
+    #[test]
+    fn test_patricia_tree_speed() {
+        let path: PathBuf = "/home/someone/Bilder/ground_images/-3000_-2000_3000_2000_0".into();
+        // read directory
+        let content = dir_content(path).unwrap();
+        let mut set = PatriciaSet::new();
+        let now = Instant::now();
+        for item in content {
+            set.insert(&item.name_lowercase());
+        }
+        let elapsed = now.elapsed().as_millis();
+        println!(
+            "building tree from {} elements took: {elapsed}ms",
+            set.len(),
+        );
+        assert!(false);
+    }
+
+    #[test]
+    fn test_patricia_map_speed() {
+        let path: PathBuf = "/home/someone/Bilder/ground_images/-3000_-2000_3000_2000_0".into();
+        // read directory
+        let content = dir_content(path).unwrap();
+        let mut map = PatriciaMap::new();
+        let now = Instant::now();
+        for (idx, item) in content.iter().enumerate() {
+            map.insert(item.name_lowercase(), idx);
+        }
+        let elapsed = now.elapsed().as_millis();
+        println!("building map from {} elements took: {elapsed}ms", map.len(),);
+        assert!(false);
     }
 
     #[test]
@@ -211,7 +253,7 @@ mod tests {
         let _small_img = img.thumbnail_exact(400, 300).into_rgb8();
         let elapsed = now.elapsed().as_millis();
         println!("processing image took {elapsed}ms");
-        assert!(false);
+        assert!(true);
     }
 
     // #[test]

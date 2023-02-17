@@ -6,14 +6,25 @@ use super::*;
 /// displayed as `something.txt`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirElem {
+    /// Name of the element.
     name: String,
+    /// Lowercase name of the element.
+    ///
+    /// Is saved to save some computation time (and instead increase memory usage).
+    lowercase: String,
+    /// Full (canonicalized) path of the element
     path: PathBuf,
+    /// True if element is a hidden file or directory.
     is_hidden: bool,
 }
 
 impl DirElem {
     pub fn name(&self) -> &String {
         &self.name
+    }
+
+    pub fn name_lowercase(&self) -> &String {
+        &self.lowercase
     }
 
     pub fn path(&self) -> &Path {
@@ -54,7 +65,9 @@ impl<P: AsRef<Path>> From<P> for DirElem {
             .map(|s| s.to_string())
             .unwrap_or_default();
 
-        let is_hidden = name.starts_with('.');
+        let lowercase = name.to_lowercase();
+
+        let is_hidden = name.starts_with('.') || name.starts_with("__") || name.ends_with(".swp");
 
         // Always use an absolute path here
         let path: PathBuf = canonicalize(path.as_ref()).unwrap_or_else(|_| path.as_ref().into());
@@ -62,6 +75,7 @@ impl<P: AsRef<Path>> From<P> for DirElem {
         DirElem {
             path,
             name,
+            lowercase,
             is_hidden,
         }
     }
