@@ -88,22 +88,33 @@ impl Draw for DirConsole {
 }
 
 impl DirConsole {
-    pub fn new<P: AsRef<Path>>(path: P) -> Self {
-        let mut console = Self::default();
-        console.open(path);
-        console
+    pub fn from_panel(panel: &DirPanel) -> Self {
+        let path = panel.path().to_path_buf();
+        let mut recommendations = PatriciaSet::new();
+        for item in panel.elements() {
+            if item.path().is_dir() && !item.is_hidden() {
+                recommendations.insert(item.name());
+            }
+        }
+        let rec_total = recommendations.len();
+        DirConsole {
+            path,
+            recommendations,
+            rec_total,
+            ..Default::default()
+        }
     }
 
-    pub fn open<P: AsRef<Path>>(&mut self, path: P) {
-        self.path = path
-            .as_ref()
-            .to_path_buf()
-            .canonicalize()
-            .unwrap_or_default();
+    // pub fn open<P: AsRef<Path>>(&mut self, path: P) {
+    //     self.path = path
+    //         .as_ref()
+    //         .to_path_buf()
+    //         .canonicalize()
+    //         .unwrap_or_default();
 
-        // Delete existing recommendations
-        self.change_dir(self.path.clone());
-    }
+    //     // Delete existing recommendations
+    //     self.change_dir(self.path.clone());
+    // }
 
     fn change_dir(&mut self, path: PathBuf) {
         // remember path
@@ -116,10 +127,6 @@ impl DirConsole {
                 self.recommendations.insert(item.name());
             }
         }
-        // Notification::new()
-        //     .summary(&format!("N={}", self.recommendations.len()))
-        //     .show()
-        //     .unwrap();
         // clear input and recommendations
         self.input.clear();
         self.tmp_input.clear();
