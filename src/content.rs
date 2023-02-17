@@ -218,7 +218,7 @@ mod tests {
         let mut set = PatriciaSet::new();
         let now = Instant::now();
         for item in content {
-            set.insert(&item.name_lowercase());
+            set.insert(item.name_lowercase());
         }
         let elapsed = now.elapsed().as_millis();
         println!(

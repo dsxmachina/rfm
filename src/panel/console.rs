@@ -39,7 +39,7 @@ impl Draw for DirConsole {
         let rec_text = self
             .recommendation()
             .strip_prefix(&self.input)
-            .unwrap_or_else(|| "/")
+            .unwrap_or("/")
             .to_string();
 
         // TODO: Make this a box. Or something else.
@@ -132,15 +132,13 @@ impl DirConsole {
         let mut all_keys: Vec<String> = self
             .recommendations
             .iter_prefix(self.tmp_input.as_bytes())
-            .map(|bytes| String::from_utf8(bytes))
-            .flatten()
+            .flat_map(String::from_utf8)
             .collect();
         all_keys.sort_by_cached_key(|name| name.to_lowercase());
         all_keys
             .into_iter()
             .cycle()
-            .skip(self.rec_idx)
-            .next()
+            .nth(self.rec_idx)
             .unwrap_or_default()
     }
 
@@ -204,10 +202,8 @@ impl DirConsole {
     pub fn up(&mut self) {
         self.input = self.recommendation();
         let joined_path = self.path.join(&self.input);
-        if joined_path.is_dir() {
-            if self.rec_total <= 1 {
-                self.change_dir(joined_path.clone());
-            }
+        if joined_path.is_dir() && self.rec_total <= 1 {
+            self.change_dir(joined_path);
         }
         self.rec_idx = self.rec_idx.saturating_sub(1);
         self.input = self.recommendation();
@@ -216,10 +212,8 @@ impl DirConsole {
     pub fn down(&mut self) {
         self.input = self.recommendation();
         let joined_path = self.path.join(&self.input);
-        if joined_path.is_dir() {
-            if self.rec_total <= 1 {
-                self.change_dir(joined_path.clone());
-            }
+        if joined_path.is_dir() && self.rec_total <= 1 {
+            self.change_dir(joined_path);
         }
         self.rec_idx = self.rec_idx.saturating_add(1);
         self.input = self.recommendation();
@@ -229,8 +223,7 @@ impl DirConsole {
         let mut all_keys: Vec<String> = self
             .recommendations
             .iter()
-            .map(|bytes| String::from_utf8(bytes))
-            .flatten()
+            .flat_map(String::from_utf8)
             .collect();
         all_keys.sort_by_cached_key(|name| name.to_lowercase());
         self.rec_idx = 0;
@@ -251,29 +244,28 @@ impl DirConsole {
             } else {
                 None
             }
-        } else {
-            if self.rec_total == 0 {
-                loop {
-                    self.input.pop();
-                    self.tmp_input.pop();
-                    if let Some(_) = self
-                        .recommendations
-                        .iter_prefix(self.tmp_input.as_bytes())
-                        .next()
-                    {
-                        break;
-                    }
-                    if self.tmp_input.is_empty() {
-                        break;
-                    }
+        } else if self.rec_total == 0 {
+            loop {
+                self.input.pop();
+                self.tmp_input.pop();
+                if self
+                    .recommendations
+                    .iter_prefix(self.tmp_input.as_bytes())
+                    .next()
+                    .is_some()
+                {
+                    break;
                 }
-                None
-            } else {
-                self.input.clear();
-                self.tmp_input.clear();
-                self.change_dir(self.path.clone());
-                Some(self.path.as_path())
+                if self.tmp_input.is_empty() {
+                    break;
+                }
             }
+            None
+        } else {
+            self.input.clear();
+            self.tmp_input.clear();
+            self.change_dir(self.path.clone());
+            Some(self.path.as_path())
         }
     }
 }

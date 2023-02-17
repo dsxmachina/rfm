@@ -540,8 +540,7 @@ impl PanelManager {
                                     .panel()
                                     .selected_path()
                                     .and_then(|p| p.file_name())
-                                    .and_then(|f| f.to_str())
-                                    .and_then(|s| Some(s.to_string()))
+                                    .and_then(|f| f.to_str()).map(|s| s.to_string())
                                     .unwrap_or_default();
                                 self.console.set_to(selected);
                                 self.redraw_console();
