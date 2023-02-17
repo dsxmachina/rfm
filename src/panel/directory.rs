@@ -145,7 +145,7 @@ pub struct DirPanel {
     non_hidden: Vec<usize>,
 
     /// Selected element
-    selected: usize,
+    selected_idx: usize,
 
     /// Index in the `non_hidden` vector that is our current selection
     non_hidden_idx: usize,
@@ -175,7 +175,7 @@ impl Draw for DirPanel {
             // scroll = min(0, bot - (height + 1))
             let h = (height.saturating_add(1)) as usize / 2;
             let bot = if self.show_hidden {
-                self.elements.len().min(self.selected.saturating_add(h))
+                self.elements.len().min(self.selected_idx.saturating_add(h))
             } else {
                 self.non_hidden
                     .len()
@@ -201,7 +201,7 @@ impl Draw for DirPanel {
                 stdout,
                 cursor::MoveTo(x_range.start, y),
                 PrintStyledContent("│".dark_green().bold()),
-                entry.print_styled(self.selected == idx, width),
+                entry.print_styled(self.selected_idx == idx, width),
                 // cursor::MoveTo(x_range.start.saturating_add(1), y),
                 // PrintStyledContent("asdf".dark_red().bold()),
             )?;
@@ -293,7 +293,7 @@ impl DirPanel {
             elem_map,
             search_prefix: "".to_string(),
             non_hidden,
-            selected,
+            selected_idx: selected,
             non_hidden_idx: 0,
             path,
             loading: false,
@@ -311,7 +311,7 @@ impl DirPanel {
     }
 
     pub fn mark_selected_item(&mut self) {
-        if let Some(elem) = self.elements.get_mut(self.selected) {
+        if let Some(elem) = self.elements.get_mut(self.selected_idx) {
             elem.is_marked = !elem.is_marked;
         }
     }
@@ -324,14 +324,14 @@ impl DirPanel {
         if self.selected_path() == Some(selection) {
             return;
         }
-        self.selected = self
+        self.selected_idx = self
             .elements
             .iter()
             .enumerate()
             .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
             .find(|(_, elem)| elem.path() == selection)
             .map(|(idx, _)| idx)
-            .unwrap_or(self.selected);
+            .unwrap_or(self.selected_idx);
         if !self.show_hidden {
             self.set_non_hidden_idx();
         }
@@ -341,7 +341,7 @@ impl DirPanel {
     fn set_non_hidden_idx(&mut self) {
         for (idx, elem_idx) in self.non_hidden.iter().enumerate() {
             self.non_hidden_idx = idx;
-            if *elem_idx >= self.selected {
+            if *elem_idx >= self.selected_idx {
                 break;
             }
         }
@@ -357,7 +357,7 @@ impl DirPanel {
             // -> non-hidden-idx needs to be updated to the value closest to selection
             self.set_non_hidden_idx();
             // Update selection accordingly for the next time we toggle hidden files
-            self.selected = *self.non_hidden.get(self.non_hidden_idx).unwrap_or(&0);
+            self.selected_idx = *self.non_hidden.get(self.non_hidden_idx).unwrap_or(&0);
         }
         // Save value and change selection accordingly
         self.show_hidden = show_hidden;
@@ -369,7 +369,7 @@ impl DirPanel {
             elem_map: PatriciaMap::new(),
             search_prefix: "".to_string(),
             non_hidden: Vec::new(),
-            selected: 0,
+            selected_idx: 0,
             non_hidden_idx: 0,
             path,
             loading: true,
@@ -387,7 +387,7 @@ impl DirPanel {
             elem_map: PatriciaMap::new(),
             search_prefix: "".to_string(),
             non_hidden: Vec::new(),
-            selected: 0,
+            selected_idx: 0,
             non_hidden_idx: 0,
             path: "path-of-empty-panel".into(),
             loading: false,
@@ -402,16 +402,16 @@ impl DirPanel {
     /// requires a redraw.
     pub fn up(&mut self, step: usize) -> bool {
         if self.show_hidden {
-            if self.selected == 0 {
+            if self.selected_idx == 0 {
                 return false;
             }
-            self.selected = self.selected.saturating_sub(step);
+            self.selected_idx = self.selected_idx.saturating_sub(step);
         } else {
             if self.non_hidden_idx == 0 {
                 return false;
             }
             self.non_hidden_idx = self.non_hidden_idx.saturating_sub(step);
-            self.selected = *self.non_hidden.get(self.non_hidden_idx).unwrap_or(&0);
+            self.selected_idx = *self.non_hidden.get(self.non_hidden_idx).unwrap_or(&0);
         }
         true
     }
@@ -423,16 +423,16 @@ impl DirPanel {
     pub fn down(&mut self, step: usize) -> bool {
         if self.show_hidden {
             // If we are already at the end, do nothing and return
-            if self.selected.saturating_add(1) == self.elements.len() {
+            if self.selected_idx.saturating_add(1) == self.elements.len() {
                 return false;
             }
             // If step is too big, just jump to the end
-            if self.selected.saturating_add(step) >= self.elements.len() {
+            if self.selected_idx.saturating_add(step) >= self.elements.len() {
                 // selected = len(elements) - 1
-                self.selected = self.elements.len().saturating_sub(1);
+                self.selected_idx = self.elements.len().saturating_sub(1);
             } else {
                 // Otherwise just increase by step
-                self.selected = self.selected.saturating_add(step);
+                self.selected_idx = self.selected_idx.saturating_add(step);
             }
         } else {
             // If we are already at the end, do nothing and return
@@ -445,7 +445,7 @@ impl DirPanel {
             } else {
                 self.non_hidden_idx = self.non_hidden_idx.saturating_add(step);
             }
-            self.selected = *self.non_hidden.get(self.non_hidden_idx).unwrap_or(&0);
+            self.selected_idx = *self.non_hidden.get(self.non_hidden_idx).unwrap_or(&0);
         }
         true
     }
@@ -455,6 +455,16 @@ impl DirPanel {
     /// If the panel is empty `None` is returned.
     pub fn selected_path(&self) -> Option<&Path> {
         self.selected().map(|elem| elem.path())
+    }
+
+    /// Returns either the selected-idx or non-hidden-idx,
+    /// depending on weather or not we display hidden files.
+    pub fn index(&self) -> usize {
+        if self.show_hidden {
+            self.selected_idx
+        } else {
+            self.non_hidden_idx
+        }
     }
 
     /// Returns the selcted path of the panel as an owned `PathBuf`.
@@ -468,13 +478,13 @@ impl DirPanel {
     ///
     /// If the panel is empty `None` is returned.
     pub fn selected(&self) -> Option<&DirElem> {
-        self.elements.get(self.selected)
+        self.elements.get(self.selected_idx)
     }
 
     /// Returns the selected index (starting at 1) and the total number of items.
     pub fn index_vs_total(&self) -> (usize, usize) {
         if self.show_hidden {
-            (self.selected.saturating_add(1), self.elements.len())
+            (self.selected_idx.saturating_add(1), self.elements.len())
         } else {
             (self.non_hidden_idx.saturating_add(1), self.non_hidden.len())
         }
