@@ -135,7 +135,7 @@ impl Manager {
                         // Only update when the hash has changed
                         let panel = DirPanel::new(content, update.path.clone());
                         if update.hash != panel.content_hash() {
-                            self.dir_tx.send((panel.clone(), update.state.increased())).await.expect("Receiver dropped or closed");
+                            if self.dir_tx.send((panel.clone(), update.state.increased())).await.is_err() {break;};
                         } else {
                             // Notification::new().summary("unchanged hash").body(&format!("{}", update.hash)).show().unwrap();
                         }
@@ -158,7 +158,7 @@ impl Manager {
                         if let Ok(Ok(content)) = result {
                             let panel = PreviewPanel::Dir(DirPanel::new(content, update.path.clone()));
                             if update.hash != panel.content_hash() {
-                                let _ = self.prev_tx.send((panel.clone(), update.state.increased())).await;
+                                if self.prev_tx.send((panel.clone(), update.state.increased())).await.is_err() { break; };
                             }
                             self.preview_cache.insert(update.path, panel);
                         }
@@ -169,7 +169,7 @@ impl Manager {
                         if let Ok(preview) = result {
                             let panel = PreviewPanel::File(preview);
                             if update.hash != panel.content_hash() {
-                                let _ = self.prev_tx.send((panel.clone(), update.state.increased())).await;
+                                if self.prev_tx.send((panel.clone(), update.state.increased())).await.is_err() { break; };
                             }
                             self.preview_cache.insert(update.path, panel);
                         }
