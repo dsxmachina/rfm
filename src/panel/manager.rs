@@ -547,6 +547,10 @@ impl PanelManager {
                                 self.console.set_to(selected);
                                 self.redraw_console();
                             }
+                            Command::Mark => {
+                                self.center.panel_mut().mark_selected_item();
+                                self.move_cursor(Movement::Down);
+                            }
                             Command::Esc => {
                                 // Stop whatever we are doing.
                                 if self.show.console {

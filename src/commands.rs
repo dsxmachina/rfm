@@ -60,6 +60,7 @@ pub enum Command {
     Move(Movement),
     ToggleHidden,
     ShowConsole,
+    Mark,
     Esc,
     Quit,
     None,
@@ -132,6 +133,9 @@ impl CommandParser {
         // Show console
         key_commands.insert(":", Command::ShowConsole);
         key_commands.insert("cd", Command::ShowConsole);
+
+        // Mark current file
+        key_commands.insert(" ", Command::Mark);
 
         // Quit
         key_commands.insert("q", Command::Quit);

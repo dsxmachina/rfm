@@ -11,12 +11,15 @@ use super::*;
 pub struct DirElem {
     /// Name of the element.
     name: String,
+
     /// Lowercase name of the element.
     ///
     /// Is saved to save some computation time (and instead increase memory usage).
     lowercase: String,
+
     /// Full (canonicalized) path of the element
     path: PathBuf,
+
     /// True if element is a hidden file or directory.
     is_hidden: bool,
 
@@ -53,12 +56,11 @@ impl DirElem {
             style = style.grey();
         }
         if self.is_marked {
-            style = style.yellow();
+            style = style.dark_yellow();
         }
         if selected {
             style = style.negative().bold();
         }
-
         PrintStyledContent(StyledContent::new(style, name))
     }
 
@@ -292,7 +294,7 @@ impl DirPanel {
         }
     }
 
-    pub fn mark_item(&mut self) {
+    pub fn mark_selected_item(&mut self) {
         if let Some(elem) = self.elements.get_mut(self.selected) {
             elem.is_marked = !elem.is_marked;
         }
