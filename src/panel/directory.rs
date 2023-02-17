@@ -1,3 +1,5 @@
+use patricia_tree::PatriciaMap;
+
 use super::*;
 /// An element of a directory.
 ///
@@ -109,12 +111,20 @@ impl PartialOrd for DirElem {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct DirPanel {
     /// Elements of the directory
     elements: Vec<DirElem>,
 
-    /// Number of non-hidden files
+    /// Maps the lowercase names of the elements to their index in the `element` vector.
+    ///
+    /// Used to create queries and search for a specific name.
+    elem_map: PatriciaMap<usize>,
+
+    /// Non-hidden elements (saved by their index)
+    ///
+    /// NOTE: The elements vector *must not change* over the lifetime of the panel.
+    /// Otherwise the indizes in this vector would be invalid
     non_hidden: Vec<usize>,
 
     /// Selected element
@@ -254,9 +264,14 @@ impl DirPanel {
 
         let selected = *non_hidden.first().unwrap_or(&0);
         let hash = hash_elements(&elements);
+        let mut elem_map = PatriciaMap::new();
+        for (idx, elem) in elements.iter().enumerate() {
+            elem_map.insert(elem.lowercase.as_bytes(), idx);
+        }
 
         DirPanel {
             elements,
+            elem_map,
             non_hidden,
             selected,
             non_hidden_idx: 0,
@@ -314,6 +329,7 @@ impl DirPanel {
     pub fn loading(path: PathBuf) -> Self {
         DirPanel {
             elements: Vec::new(),
+            elem_map: PatriciaMap::new(),
             non_hidden: Vec::new(),
             selected: 0,
             non_hidden_idx: 0,
@@ -330,6 +346,7 @@ impl DirPanel {
     pub fn empty() -> Self {
         DirPanel {
             elements: Vec::new(),
+            elem_map: PatriciaMap::new(),
             non_hidden: Vec::new(),
             selected: 0,
             non_hidden_idx: 0,
