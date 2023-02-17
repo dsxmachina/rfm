@@ -175,10 +175,6 @@ impl CommandParser {
         }
     }
 
-    pub fn clear_buffer(&mut self) {
-        self.buffer.clear();
-    }
-
     pub fn buffer(&self) -> String {
         self.buffer.clone()
     }

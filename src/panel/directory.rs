@@ -306,6 +306,10 @@ impl DirPanel {
         self.elements.iter()
     }
 
+    pub fn show_hidden(&self) -> bool {
+        self.show_hidden
+    }
+
     pub fn mark_selected_item(&mut self) {
         if let Some(elem) = self.elements.get_mut(self.selected) {
             elem.is_marked = !elem.is_marked;

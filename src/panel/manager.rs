@@ -1,4 +1,4 @@
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent};
+use crossterm::event::{Event, EventStream, KeyCode};
 use futures::{FutureExt, StreamExt};
 
 use crate::commands::{Command, CommandParser};
