@@ -1,4 +1,3 @@
-use notify_rust::Notification;
 use patricia_tree::{PatriciaMap, PatriciaSet};
 
 use super::*;
@@ -43,8 +42,6 @@ impl Draw for DirConsole {
             .unwrap_or("/")
             .to_string();
 
-        // Notification::new().summary(&rec_text).show().unwrap();
-
         // TODO: Make this a box. Or something else.
 
         if height >= 3 {
@@ -53,7 +50,7 @@ impl Draw for DirConsole {
                     stdout,
                     cursor::MoveTo(x, y_center.saturating_sub(1)),
                     PrintStyledContent("―".dark_green().bold()),
-                    cursor::MoveTo(x, y_center.saturating_add(5)),
+                    cursor::MoveTo(x, y_center.saturating_add(1)),
                     PrintStyledContent("―".dark_green().bold()),
                 )?;
             }
@@ -66,18 +63,18 @@ impl Draw for DirConsole {
             cursor::MoveTo(x_text, y_center),
             Clear(ClearType::CurrentLine),
             Print(text),
-            // Clear line and print main input
-            cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(1)),
-            Clear(ClearType::CurrentLine),
-            Print(&format!("input: {}", self.input)),
-            // Clear line and print tmp-input
-            cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(2)),
-            Clear(ClearType::CurrentLine),
-            Print(&format!("tmp  : {}", self.tmp_input)),
-            // Clear line and print path
-            cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(3)),
-            Clear(ClearType::CurrentLine),
-            Print(&format!("path : {}", self.path.display())),
+            // // Clear line and print main input
+            // cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(1)),
+            // Clear(ClearType::CurrentLine),
+            // Print(&format!("input: {}", self.input)),
+            // // Clear line and print tmp-input
+            // cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(2)),
+            // Clear(ClearType::CurrentLine),
+            // Print(&format!("tmp  : {}", self.tmp_input)),
+            // // Clear line and print path
+            // cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(3)),
+            // Clear(ClearType::CurrentLine),
+            // Print(&format!("path : {}", self.path.display())),
             // Print recommendation
             cursor::MoveTo(x_rec, y_center),
             PrintStyledContent(rec_text.dark_grey()),
@@ -95,17 +92,17 @@ impl DirConsole {
         let path = panel.path().to_path_buf();
         let mut recommendations = PatriciaSet::new();
         for item in panel.elements() {
-            if item.path().is_dir() && (panel.show_hidden() && !item.is_hidden()) {
+            if item.path().is_dir() && (panel.show_hidden() || !item.is_hidden()) {
                 recommendations.insert(item.name());
             }
         }
+        let rec_idx = panel.index();
         let rec_total = recommendations.len();
         DirConsole {
             path,
             recommendations,
             rec_total,
-            tmp_input: "".to_string(),
-            input: "".to_string(),
+            rec_idx,
             ..Default::default()
         }
     }
