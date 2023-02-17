@@ -1,3 +1,5 @@
+use std::slice::Iter;
+
 use crossterm::style::{ContentStyle, StyledContent};
 use patricia_tree::PatriciaMap;
 
@@ -298,6 +300,10 @@ impl DirPanel {
             show_hidden: false,
             hash,
         }
+    }
+
+    pub fn elements(&self) -> Iter<DirElem> {
+        self.elements.iter()
     }
 
     pub fn mark_selected_item(&mut self) {

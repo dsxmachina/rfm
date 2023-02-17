@@ -539,7 +539,7 @@ impl PanelManager {
                                     }
                                     Command::ShowConsole => {
                                         pre_console_path = self.center.panel().path().to_path_buf();
-                                        self.mode = Mode::Console { console: DirConsole::new(self.center.panel().path()) };
+                                        self.mode = Mode::Console { console: DirConsole::from_panel(self.center.panel()) };
                                         self.redraw_console();
                                     }
                                     Command::Mark => {
