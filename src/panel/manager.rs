@@ -299,7 +299,7 @@ impl PanelManager {
         if self.center.panel().selected_path() == Some(path) {
             return;
         }
-        self.center.panel_mut().select(path);
+        self.center.panel_mut().select_path(path);
         self.right.new_panel(self.center.panel().selected_path());
         self.redraw_center();
         self.redraw_right();
@@ -380,7 +380,9 @@ impl PanelManager {
         // | m | l | m |
         // TODO: When we followed some symlink we don't want to take the parent here.
         self.left.new_panel(self.center.panel().path().parent());
-        self.left.panel_mut().select(self.center.panel().path());
+        self.left
+            .panel_mut()
+            .select_path(self.center.panel().path());
 
         // All panels needs to be redrawn
         self.redraw_panels();
@@ -394,7 +396,7 @@ impl PanelManager {
         if path.exists() {
             self.previous = self.center.panel().path().to_path_buf();
             self.left.new_panel(path.parent());
-            self.left.panel_mut().select(&path);
+            self.left.panel_mut().select_path(&path);
             self.center.new_panel(Some(&path));
             self.right.new_panel(self.center.panel().selected_path());
             self.redraw_panels();
@@ -491,7 +493,7 @@ impl PanelManager {
                     } else if self.left.check_update(&state) {
                         // Notification::new().summary("update-left").body(&format!("{:?}", state)).show().unwrap();
                         self.left.update_panel(panel);
-                        self.left.panel_mut().select(self.center.panel().path());
+                        self.left.panel_mut().select_path(self.center.panel().path());
                         self.redraw_left();
                         self.redraw_console();
                     } else {

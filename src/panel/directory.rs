@@ -236,7 +236,7 @@ impl PanelContent for DirPanel {
         if content.path == self.path {
             // Set the selection accordingly
             if let Some(path) = self.selected_path() {
-                content.select(path);
+                content.select_path(path);
             }
         }
         *self = content;
@@ -282,7 +282,7 @@ impl DirPanel {
         }
     }
 
-    pub fn select(&mut self, selection: &Path) {
+    pub fn select_path(&mut self, selection: &Path) {
         // Do nothing if the path is already selected
         if self.selected_path() == Some(selection) {
             return;
