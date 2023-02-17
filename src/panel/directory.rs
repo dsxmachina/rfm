@@ -1,3 +1,4 @@
+use crossterm::style::{ContentStyle, StyledContent};
 use patricia_tree::PatriciaMap;
 
 use super::*;
@@ -18,6 +19,11 @@ pub struct DirElem {
     path: PathBuf,
     /// True if element is a hidden file or directory.
     is_hidden: bool,
+
+    /// True if the element is marked.
+    ///
+    /// Users can mark a selected item to perform operations on them.
+    is_marked: bool,
 }
 
 impl DirElem {
@@ -40,17 +46,20 @@ impl DirElem {
     pub fn print_styled(&self, selected: bool, max_len: u16) -> PrintStyledContent<String> {
         let name =
             format!(" {}", self.name).with_exact_width(usize::from(max_len).saturating_sub(1));
+        let mut style = ContentStyle::new();
         if self.path.is_dir() {
-            if selected {
-                PrintStyledContent(name.dark_green().bold().negative())
-            } else {
-                PrintStyledContent(name.dark_green().bold())
-            }
-        } else if selected {
-            PrintStyledContent(name.grey().negative().bold())
+            style = style.dark_green().bold();
         } else {
-            PrintStyledContent(name.grey())
+            style = style.grey();
         }
+        if self.is_marked {
+            style = style.yellow();
+        }
+        if selected {
+            style = style.negative().bold();
+        }
+
+        PrintStyledContent(StyledContent::new(style, name))
     }
 
     pub fn into_parts(self) -> (String, PathBuf) {
@@ -79,6 +88,7 @@ impl<P: AsRef<Path>> From<P> for DirElem {
             name,
             lowercase,
             is_hidden,
+            is_marked: false,
         }
     }
 }
@@ -282,6 +292,15 @@ impl DirPanel {
         }
     }
 
+    pub fn mark_item(&mut self) {
+        if let Some(elem) = self.elements.get_mut(self.selected) {
+            elem.is_marked = !elem.is_marked;
+        }
+    }
+
+    /// Changes the selection to the given path.
+    ///
+    /// If the path is not found, the selection remains unchanged.
     pub fn select_path(&mut self, selection: &Path) {
         // Do nothing if the path is already selected
         if self.selected_path() == Some(selection) {
