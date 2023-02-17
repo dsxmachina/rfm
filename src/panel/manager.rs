@@ -539,19 +539,7 @@ impl PanelManager {
                                     }
                                     Command::ShowConsole => {
                                         pre_console_path = self.center.panel().path().to_path_buf();
-                                        self.mode = Mode::Search { input: "2".to_string() };
-                                        // self.show.console = true;
-                                        // self.parser.set_console_mode(true);
-                                        // self.console.open(self.center.panel().path());
-                                        // let selected = self
-                                        //     .center
-                                        //     .panel()
-                                        //     .selected_path()
-                                        //     .and_then(|p| p.file_name())
-                                        //     .and_then(|f| f.to_str())
-                                        //     .map(|s| s.to_string())
-                                        //     .unwrap_or_default();
-                                        // self.console.set_to(selected);
+                                        self.mode = Mode::Console { console: DirConsole::new(self.center.panel().path()) };
                                         self.redraw_console();
                                     }
                                     Command::Mark => {
@@ -572,9 +560,6 @@ impl PanelManager {
                                         self.redraw_console();
                                     }
                                     KeyCode::Enter => {
-                                        // self.show.console = false;
-                                        // self.parser.set_console_mode(false);
-                                        // self.console.clear();
                                         self.mode = Mode::Normal;
                                         self.redraw_panels();
                                     }

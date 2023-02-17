@@ -88,6 +88,12 @@ impl Draw for DirConsole {
 }
 
 impl DirConsole {
+    pub fn new<P: AsRef<Path>>(path: P) -> Self {
+        let mut console = Self::default();
+        console.open(path);
+        console
+    }
+
     pub fn open<P: AsRef<Path>>(&mut self, path: P) {
         self.path = path
             .as_ref()
