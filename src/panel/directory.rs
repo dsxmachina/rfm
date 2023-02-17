@@ -108,32 +108,32 @@ impl PartialOrd for DirElem {
         }
     }
 }
-// TODO: Remove "pub"
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirPanel {
     /// Elements of the directory
-    pub elements: Vec<DirElem>,
+    elements: Vec<DirElem>,
 
     /// Number of non-hidden files
-    pub non_hidden: Vec<usize>,
+    non_hidden: Vec<usize>,
 
     /// Selected element
-    pub selected: usize,
+    selected: usize,
 
     /// Index in the `non_hidden` vector that is our current selection
-    pub non_hidden_idx: usize,
+    non_hidden_idx: usize,
 
     /// Path of the directory that the panel is based on
-    pub path: PathBuf,
+    path: PathBuf,
 
     /// Weather or not the panel is still loading some data
-    pub loading: bool,
+    loading: bool,
 
     /// Weather or not to show hidden files
-    pub show_hidden: bool,
+    show_hidden: bool,
 
     /// Hash of the elements
-    pub hash: u64,
+    hash: u64,
 }
 
 impl Draw for DirPanel {
