@@ -133,6 +133,9 @@ pub struct DirPanel {
     /// Used to create queries and search for a specific name.
     elem_map: PatriciaMap<usize>,
 
+    /// Input buffer for searches in the current directory.
+    search_prefix: String,
+
     /// Non-hidden elements (saved by their index)
     ///
     /// NOTE: The elements vector *must not change* over the lifetime of the panel.
@@ -197,6 +200,8 @@ impl Draw for DirPanel {
                 cursor::MoveTo(x_range.start, y),
                 PrintStyledContent("│".dark_green().bold()),
                 entry.print_styled(self.selected == idx, width),
+                // cursor::MoveTo(x_range.start.saturating_add(1), y),
+                // PrintStyledContent("asdf".dark_red().bold()),
             )?;
             y_offset += 1;
         }
@@ -284,6 +289,7 @@ impl DirPanel {
         DirPanel {
             elements,
             elem_map,
+            search_prefix: "".to_string(),
             non_hidden,
             selected,
             non_hidden_idx: 0,
@@ -351,6 +357,7 @@ impl DirPanel {
         DirPanel {
             elements: Vec::new(),
             elem_map: PatriciaMap::new(),
+            search_prefix: "".to_string(),
             non_hidden: Vec::new(),
             selected: 0,
             non_hidden_idx: 0,
@@ -368,6 +375,7 @@ impl DirPanel {
         DirPanel {
             elements: Vec::new(),
             elem_map: PatriciaMap::new(),
+            search_prefix: "".to_string(),
             non_hidden: Vec::new(),
             selected: 0,
             non_hidden_idx: 0,
