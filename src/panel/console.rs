@@ -27,10 +27,10 @@ impl Draw for DirConsole {
         }
         let text = format!("{}/{}", path, self.input);
 
-        let offset = if self.input.len() < (width / 2).into() {
+        let offset = if text.len() < (width / 2).into() {
             width / 4
-        } else if self.input.len() < width.into() {
-            ((width as usize - self.input.len()).saturating_sub(1) / 2) as u16
+        } else if text.len() < width.into() {
+            ((width as usize - text.len()).saturating_sub(1) / 2) as u16
         } else {
             0
         };
@@ -157,8 +157,13 @@ impl DirConsole {
     }
 
     pub fn insert(&mut self, character: char) -> Option<PathBuf> {
+        // If we entered "..", we want to go up by one directory
+        if self.input == ".." {
+            self.clear();
+            return self.del().map(|p| p.to_path_buf());
+        }
         let joined_path = self.path.join(&self.input);
-        if joined_path.is_dir() {
+        if joined_path.is_dir() && self.input != "." {
             self.change_dir(joined_path.clone());
             self.push_char(character);
             return Some(joined_path);
@@ -172,7 +177,7 @@ impl DirConsole {
             .iter_prefix(self.input.as_bytes())
             .count();
         let joined_path = self.path.join(&self.input);
-        if joined_path.is_dir() {
+        if joined_path.is_dir() && self.input != "." {
             self.change_dir(joined_path.clone());
             Some(joined_path)
         } else {
