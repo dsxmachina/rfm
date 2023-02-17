@@ -61,7 +61,6 @@ pub enum Command {
     ToggleHidden,
     ShowConsole,
     Mark,
-    Esc,
     Quit,
     None,
 }
@@ -75,7 +74,6 @@ pub struct CommandParser {
     key_commands: PatriciaMap<Command>,
     mod_commands: HashMap<KeyEvent, Command>,
     buffer: String,
-    console_mode: bool,
 }
 
 // TODO: Make this configurable from a config-file
@@ -144,7 +142,7 @@ impl CommandParser {
         let mut mod_commands = HashMap::new();
 
         // Escape from what you are doing
-        mod_commands.insert(CTRL_C, Command::Esc);
+        // mod_commands.insert(CTRL_C, Command::Esc);
 
         // Advanced movement
         mod_commands.insert(
@@ -174,12 +172,7 @@ impl CommandParser {
             key_commands,
             mod_commands,
             buffer: "".to_string(),
-            console_mode: false,
         }
-    }
-
-    pub fn set_console_mode(&mut self, console_mode: bool) {
-        self.console_mode = console_mode;
     }
 
     pub fn clear_buffer(&mut self) {

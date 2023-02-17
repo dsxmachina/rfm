@@ -1,4 +1,4 @@
-use crossterm::event::{Event, EventStream, KeyCode};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEvent};
 use futures::{FutureExt, StreamExt};
 
 use crate::commands::{Command, CommandParser};
@@ -20,9 +20,10 @@ impl Redraw {
     }
 }
 
-struct Show {
-    hidden: bool,
-    console: bool,
+enum Mode {
+    Normal,
+    Console { console: DirConsole },
+    Search { input: String },
 }
 
 pub struct PanelManager {
@@ -33,14 +34,14 @@ pub struct PanelManager {
     /// Right panel
     right: ManagedPanel<PreviewPanel>,
 
-    /// Console panel
-    console: DirConsole,
+    /// Mode of operation
+    mode: Mode,
 
     /// Miller-Columns layout
     layout: MillerColumns,
 
     /// Indicates what we want to show or hide
-    show: Show,
+    show_hidden: bool,
 
     /// Elements that needs to be redrawn
     redraw: Redraw,
@@ -92,11 +93,8 @@ impl PanelManager {
             center,
             right,
             layout,
-            console: Default::default(),
-            show: Show {
-                hidden: false,
-                console: false,
-            },
+            mode: Mode::Normal,
+            show_hidden: false,
             redraw: Redraw {
                 left: true,
                 center: true,
@@ -239,9 +237,7 @@ impl PanelManager {
         self.draw_footer()?;
         self.draw_header()?;
         self.draw_panels()?;
-        if self.show.console {
-            self.draw_console()?;
-        }
+        self.draw_console()?;
         self.stdout.flush()
     }
 
@@ -275,22 +271,24 @@ impl PanelManager {
 
     fn draw_console(&mut self) -> Result<()> {
         if self.redraw.console {
-            self.console.draw(
-                &mut self.stdout,
-                self.layout.left_x_range.start..self.layout.right_x_range.end,
-                self.layout.y_range.clone(),
-            )?;
+            if let Mode::Console { console } = &mut self.mode {
+                console.draw(
+                    &mut self.stdout,
+                    self.layout.left_x_range.start..self.layout.right_x_range.end,
+                    self.layout.y_range.clone(),
+                )?;
+            }
             self.redraw.console = false;
         }
         Ok(())
     }
 
     fn toggle_hidden(&mut self) {
-        self.show.hidden = !self.show.hidden;
-        self.left.panel_mut().set_hidden(self.show.hidden);
-        self.center.panel_mut().set_hidden(self.show.hidden);
+        self.show_hidden = !self.show_hidden;
+        self.left.panel_mut().set_hidden(self.show_hidden);
+        self.center.panel_mut().set_hidden(self.show_hidden);
         if let PreviewPanel::Dir(panel) = self.right.panel_mut() {
-            panel.set_hidden(self.show.hidden);
+            panel.set_hidden(self.show_hidden);
         };
         self.redraw_everything();
     }
@@ -524,110 +522,108 @@ impl PanelManager {
                     }
                     let event = result.unwrap()?;
                     if let Event::Key(key_event) = event {
-                        if !self.show.console {
-                        match self.parser.add_event(key_event) {
-                            Command::Move(direction) => {
-                                self.move_cursor(direction);
-                            }
-                            Command::ToggleHidden => {
-                                self.toggle_hidden();
-                            }
-                            Command::ShowConsole => {
-                                pre_console_path = self.center.panel().path().to_path_buf();
-                                self.show.console = true;
-                                self.parser.set_console_mode(true);
-                                self.console.open(self.center.panel().path());
-                                let selected = self
-                                    .center
-                                    .panel()
-                                    .selected_path()
-                                    .and_then(|p| p.file_name())
-                                    .and_then(|f| f.to_str()).map(|s| s.to_string())
-                                    .unwrap_or_default();
-                                self.console.set_to(selected);
-                                self.redraw_console();
-                            }
-                            Command::Mark => {
-                                self.center.panel_mut().mark_selected_item();
-                                self.move_cursor(Movement::Down);
-                            }
-                            Command::Esc => {
-                                // Stop whatever we are doing.
-                                if self.show.console {
-                                    self.show.console = false;
-                                    self.parser.set_console_mode(false);
-                                    self.console.clear();
-                                    self.redraw_panels();
-                                }
-                                self.parser.clear_buffer();
-                                self.redraw_footer();
-                            }
-                            Command::Quit => break,
-                            Command::None => (),
+                        // If we hit escape - go back to normal mode.
+                        if let KeyCode::Esc = key_event.code {
+                            self.mode = Mode::Normal;
+                            self.jump(pre_console_path.clone());
+                            self.redraw_panels();
                         }
-                        } else {
-                            match key_event.code {
-                                KeyCode::Backspace => {
-                                    if let Some(path) = self.console.del().map(|p| p.to_path_buf()) {
-                                        self.jump(path);
+                        match &mut self.mode {
+                            Mode::Normal => {
+                                match self.parser.add_event(key_event) {
+                                    Command::Move(direction) => {
+                                        self.move_cursor(direction);
                                     }
-                                    self.redraw_console();
-                                }
-                                KeyCode::Enter => {
-                                    self.show.console = false;
-                                    self.parser.set_console_mode(false);
-                                    self.console.clear();
-                                    self.redraw_panels();
-                                }
-                                // TODO: This is not working correctly, therefore just leave it out
-                                // KeyCode::Down => {
-                                //     self.move_cursor(Movement::Down);
-                                //     self.console.down();
-                                //     // self.console.open(self.center.panel().path());
-                                //     self.redraw_console();
-                                // }
-                                // KeyCode::Up => {
-                                //     self.move_cursor(Movement::Up);
-                                //     self.console.up();
-                                //     // self.console.open(self.center.panel().path());
-                                //     self.redraw_console();
-                                // }
-                                // KeyCode::Left => {
-                                //     self.move_cursor(Movement::Left);
-                                //     self.console.open(self.center.panel().path());
-                                //     self.redraw_console();
-                                // }
-                                // KeyCode::Right => {
-                                //     self.move_cursor(Movement::Right);
-                                //     self.console.open(self.center.panel().path());
-                                //     self.redraw_console();
-                                // }
-                                KeyCode::Tab  => {
-                                    if let Some(path) = self.console.tab() {
-                                        self.jump(path);
+                                    Command::ToggleHidden => {
+                                        self.toggle_hidden();
                                     }
-                                    self.redraw_console();
-                                }
-                                KeyCode::BackTab  => {
-                                    if let Some(path) = self.console.backtab() {
-                                        self.jump(path);
+                                    Command::ShowConsole => {
+                                        pre_console_path = self.center.panel().path().to_path_buf();
+                                        self.mode = Mode::Search { input: "2".to_string() };
+                                        // self.show.console = true;
+                                        // self.parser.set_console_mode(true);
+                                        // self.console.open(self.center.panel().path());
+                                        // let selected = self
+                                        //     .center
+                                        //     .panel()
+                                        //     .selected_path()
+                                        //     .and_then(|p| p.file_name())
+                                        //     .and_then(|f| f.to_str())
+                                        //     .map(|s| s.to_string())
+                                        //     .unwrap_or_default();
+                                        // self.console.set_to(selected);
+                                        self.redraw_console();
                                     }
-                                    self.redraw_console();
-                                }
-                                KeyCode::Char(c) => {
-                                    if let Some(path) = self.console.insert(c) {
-                                        self.jump(path);
+                                    Command::Mark => {
+                                        self.center.panel_mut().mark_selected_item();
+                                        self.move_cursor(Movement::Down);
                                     }
-                                    self.redraw_console();
+                                    Command::Quit => break,
+                                    Command::None => (),
                                 }
-                                KeyCode::Esc => {
-                                    self.show.console = false;
-                                    self.parser.set_console_mode(false);
-                                    self.console.clear();
-                                    self.jump(pre_console_path.clone());
-                                    self.redraw_panels();
+
+                            }
+                            Mode::Console{ console } => {
+                                match key_event.code {
+                                    KeyCode::Backspace => {
+                                        if let Some(path) = console.del().map(|p| p.to_path_buf()) {
+                                            self.jump(path);
+                                        }
+                                        self.redraw_console();
+                                    }
+                                    KeyCode::Enter => {
+                                        // self.show.console = false;
+                                        // self.parser.set_console_mode(false);
+                                        // self.console.clear();
+                                        self.mode = Mode::Normal;
+                                        self.redraw_panels();
+                                    }
+                                    // TODO: This is not working correctly, therefore just leave it out
+                                    // KeyCode::Down => {
+                                    //     self.move_cursor(Movement::Down);
+                                    //     self.console.down();
+                                    //     // self.console.open(self.center.panel().path());
+                                    //     self.redraw_console();
+                                    // }
+                                    // KeyCode::Up => {
+                                    //     self.move_cursor(Movement::Up);
+                                    //     self.console.up();
+                                    //     // self.console.open(self.center.panel().path());
+                                    //     self.redraw_console();
+                                    // }
+                                    // KeyCode::Left => {
+                                    //     self.move_cursor(Movement::Left);
+                                    //     self.console.open(self.center.panel().path());
+                                    //     self.redraw_console();
+                                    // }
+                                    // KeyCode::Right => {
+                                    //     self.move_cursor(Movement::Right);
+                                    //     self.console.open(self.center.panel().path());
+                                    //     self.redraw_console();
+                                    // }
+                                    KeyCode::Tab  => {
+                                        if let Some(path) = console.tab() {
+                                            self.jump(path);
+                                        }
+                                        self.redraw_console();
+                                    }
+                                    KeyCode::BackTab  => {
+                                        if let Some(path) = console.backtab() {
+                                            self.jump(path);
+                                        }
+                                        self.redraw_console();
+                                    }
+                                    KeyCode::Char(c) => {
+                                        if let Some(path) = console.insert(c) {
+                                            self.jump(path);
+                                        }
+                                        self.redraw_console();
+                                    }
+                                    _ => (),
                                 }
-                                _ => (),
+                            }
+                            Mode::Search{ input } => {
+                                todo!()
                             }
                         }
                     }
