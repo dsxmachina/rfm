@@ -460,6 +460,13 @@ impl PanelManager {
         }
     }
 
+    fn marked_items(&self) -> Vec<&DirElem> {
+        let mut out = Vec::new();
+        out.extend(self.left.panel().elements().filter(|e| e.is_marked()));
+        out.extend(self.center.panel().elements().filter(|e| e.is_marked()));
+        out
+    }
+
     pub async fn run(mut self) -> Result<()> {
         // Initial draw
         self.redraw_everything();

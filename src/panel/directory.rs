@@ -48,6 +48,10 @@ impl DirElem {
         self.is_hidden
     }
 
+    pub fn is_marked(&self) -> bool {
+        self.is_marked
+    }
+
     pub fn print_styled(&self, selected: bool, max_len: u16) -> PrintStyledContent<String> {
         let name =
             format!(" {}", self.name).with_exact_width(usize::from(max_len).saturating_sub(1));
