@@ -110,10 +110,10 @@ impl DirConsole {
                 self.recommendations.insert(item.name());
             }
         }
-        Notification::new()
-            .summary(&format!("N={}", self.recommendations.len()))
-            .show()
-            .unwrap();
+        // Notification::new()
+        //     .summary(&format!("N={}", self.recommendations.len()))
+        //     .show()
+        //     .unwrap();
         // clear input and recommendations
         self.input.clear();
         self.tmp_input.clear();

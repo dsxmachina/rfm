@@ -574,28 +574,29 @@ impl PanelManager {
                                     self.console.clear();
                                     self.redraw_panels();
                                 }
-                                KeyCode::Down => {
-                                    self.move_cursor(Movement::Down);
-                                    self.console.down();
-                                    // self.console.open(self.center.panel().path());
-                                    self.redraw_console();
-                                }
-                                KeyCode::Up => {
-                                    self.move_cursor(Movement::Up);
-                                    self.console.up();
-                                    // self.console.open(self.center.panel().path());
-                                    self.redraw_console();
-                                }
-                                KeyCode::Left => {
-                                    self.move_cursor(Movement::Left);
-                                    self.console.open(self.center.panel().path());
-                                    self.redraw_console();
-                                }
-                                KeyCode::Right => {
-                                    self.move_cursor(Movement::Right);
-                                    self.console.open(self.center.panel().path());
-                                    self.redraw_console();
-                                }
+                                // TODO: This is not working correctly, therefore just leave it out
+                                // KeyCode::Down => {
+                                //     self.move_cursor(Movement::Down);
+                                //     self.console.down();
+                                //     // self.console.open(self.center.panel().path());
+                                //     self.redraw_console();
+                                // }
+                                // KeyCode::Up => {
+                                //     self.move_cursor(Movement::Up);
+                                //     self.console.up();
+                                //     // self.console.open(self.center.panel().path());
+                                //     self.redraw_console();
+                                // }
+                                // KeyCode::Left => {
+                                //     self.move_cursor(Movement::Left);
+                                //     self.console.open(self.center.panel().path());
+                                //     self.redraw_console();
+                                // }
+                                // KeyCode::Right => {
+                                //     self.move_cursor(Movement::Right);
+                                //     self.console.open(self.center.panel().path());
+                                //     self.redraw_console();
+                                // }
                                 KeyCode::Tab  => {
                                     if let Some(path) = self.console.tab() {
                                         self.jump(path);
