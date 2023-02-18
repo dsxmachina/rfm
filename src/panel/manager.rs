@@ -337,6 +337,7 @@ impl PanelManager {
         }
     }
 
+    // TODO: Make this more efficient - the swapping was too nice to give it up
     fn move_right(&mut self) {
         if let Some(selected) = self.center.panel().selected_path().map(|p| p.to_path_buf()) {
             // If the selected item is a directory, all panels will shift to the left
@@ -350,21 +351,22 @@ impl PanelManager {
                 //     .unwrap();
 
                 // swap left and mid:
-                mem::swap(&mut self.left, &mut self.center);
-                if let PreviewPanel::Dir(right) = self.right.panel_mut() {
-                    // TODO: Check if this still works with the watchers
-                    mem::swap(right, self.center.panel_mut())
-                }
+                // mem::swap(&mut self.left, &mut self.center);
+                // if let PreviewPanel::Dir(right) = self.right.panel_mut() {
+                // TODO: Check if this still works with the watchers
+                //     mem::swap(right, self.center.panel_mut())
+                // }
 
-                // Recreate mid and right
-                self.center
-                    .content_tx
-                    .send(PanelUpdate {
-                        path: selected,
-                        state: self.center.state.increased(),
-                        hash: self.center.panel.content_hash(),
-                    })
-                    .expect("Receiver dropped or closed");
+                // // Recreate mid and right
+                // self.center
+                //     .content_tx
+                //     .send(PanelUpdate {
+                //         path: selected,
+                //         state: self.center.state.lock().increased(),
+                //     })
+                //     .expect("Receiver dropped or closed");
+                self.left.update_panel(self.center.panel().clone());
+                self.center.new_panel(self.right.panel().path());
                 self.right.new_panel(self.center.panel().selected_path());
 
                 // All panels needs to be redrawn
@@ -385,6 +387,7 @@ impl PanelManager {
         }
     }
 
+    // TODO: Make this more efficient - the swapping was too nice to give it up
     fn move_left(&mut self) {
         // If the left panel is empty, we cannot move left:
         if self.left.panel().selected_path().is_none() {
@@ -398,12 +401,12 @@ impl PanelManager {
         // Create right dir-panel from previous mid
         // | l | m | r |
         self.right
-            .panel_mut()
-            .update_content(PreviewPanel::Dir(self.center.panel().clone()));
+            .update_panel(PreviewPanel::Dir(self.center.panel().clone()));
         // | l | m | m |
 
         // swap left and mid:
-        mem::swap(&mut self.left, &mut self.center);
+        // mem::swap(&mut self.left, &mut self.center);
+        self.center.update_panel(self.left.panel().clone());
         // | m | l | m |
         // TODO: When we followed some symlink we don't want to take the parent here.
         self.left.new_panel(self.center.panel().path().parent());

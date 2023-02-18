@@ -135,7 +135,7 @@ impl Manager {
                     if let Ok(Ok(content)) = result {
                         // Only update when the hash has changed
                         let panel = DirPanel::new(content, update.path.clone());
-                        if update.hash != panel.content_hash() {
+                        if update.state.hash() != panel.content_hash() {
                             if self.dir_tx.send((panel.clone(), update.state.increased())).await.is_err() {break;};
                         } else {
                             // Notification::new().summary("unchanged hash").body(&format!("{}", update.hash)).show().unwrap();
@@ -154,7 +154,7 @@ impl Manager {
                         let result = spawn_blocking(move || dir_content_preview(dir_path, 16538)).await;
                         if let Ok(Ok(content)) = result {
                             let panel = PreviewPanel::Dir(DirPanel::new(content, update.path.clone()));
-                            if update.hash != panel.content_hash() {
+                            if update.state.hash() != panel.content_hash() {
                                 if self.prev_tx.send((panel.clone(), update.state.increased())).await.is_err() { break; };
                             }
                             self.preview_cache.insert(update.path, panel);
@@ -165,7 +165,7 @@ impl Manager {
                         let result = spawn_blocking(move || get_file_preview(file_path)).await;
                         if let Ok(preview) = result {
                             let panel = PreviewPanel::File(preview);
-                            if update.hash != panel.content_hash() {
+                            if update.state.hash() != panel.content_hash() {
                                 if self.prev_tx.send((panel.clone(), update.state.increased())).await.is_err() { break; };
                             }
                             self.preview_cache.insert(update.path, panel);

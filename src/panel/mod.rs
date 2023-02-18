@@ -7,6 +7,7 @@ use crossterm::{
 use notify::{RecommendedWatcher, Watcher};
 use notify_rust::Notification;
 use pad::PadStr;
+use parking_lot::Mutex;
 use std::{
     cmp::Ordering,
     fs::canonicalize,
@@ -16,6 +17,7 @@ use std::{
     os::unix::prelude::PermissionsExt,
     path::{Path, PathBuf},
     process::Stdio,
+    sync::Arc,
     time::SystemTime,
 };
 use tokio::sync::mpsc;
@@ -71,6 +73,7 @@ pub struct PanelState {
     /// When we send an update request to the [`ContentManager`], we attach the ID
     /// to the request, so that the [`PanelManager`] is able to know which panel needs to be updated.
     panel_id: u64,
+
     /// Counter that increases everytime we update the panel.
     ///
     /// This prevents the manager from accidently overwriting the panel with older content
@@ -79,6 +82,9 @@ pub struct PanelState {
     /// because there is no guarantee that requests that were sent earlier,
     /// will also finish earlier.
     cnt: u64,
+
+    /// Hash of the panels content
+    hash: u64,
 }
 
 impl Default for PanelState {
@@ -88,6 +94,7 @@ impl Default for PanelState {
         Self {
             panel_id: rand::random(),
             cnt: 0,
+            hash: 0,
         }
     }
 }
@@ -101,6 +108,7 @@ impl PanelState {
         PanelState {
             panel_id: self.panel_id,
             cnt: self.cnt + 1,
+            hash: self.hash,
         }
     }
 
@@ -120,6 +128,10 @@ impl PanelState {
     pub fn id(&self) -> u64 {
         self.panel_id
     }
+
+    pub fn hash(&self) -> u64 {
+        self.hash
+    }
 }
 
 /// Combines all data that is necessary to update a panel.
@@ -129,7 +141,6 @@ impl PanelState {
 pub struct PanelUpdate {
     pub path: PathBuf,
     pub state: PanelState,
-    pub hash: u64,
 }
 
 pub struct ManagedPanel<PanelType: BasePanel> {
@@ -137,8 +148,12 @@ pub struct ManagedPanel<PanelType: BasePanel> {
     panel: PanelType,
 
     /// State counter and identifier of the managed panel
-    state: PanelState,
+    state: Arc<Mutex<PanelState>>,
 
+    // TODO: Move hash into panel-state
+    // - add content_tx to watch handler
+    // - add state to watch-handler
+    // - watch handler can now send requests on its own :)
     /// File-watcher that sends update requests if the content of the directory changes
     watcher: RecommendedWatcher,
 
@@ -170,7 +185,7 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
         .expect("File-watcher error");
         ManagedPanel {
             panel: PanelType::empty(),
-            state: PanelState::default(),
+            state: Arc::new(Mutex::new(PanelState::default())),
             watcher,
             cache,
             content_tx,
@@ -178,7 +193,7 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
     }
 
     pub fn check_update(&self, new_state: &PanelState) -> bool {
-        self.state.check_update(new_state)
+        self.state.lock().check_update(new_state)
     }
 
     /// Generates a new panel for the given path.
@@ -190,22 +205,20 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
     pub fn new_panel<P: AsRef<Path>>(&mut self, path: Option<P>) {
         match self.watcher.unwatch(self.panel.path()) {
             Ok(_) => {
-                Notification::new()
-                    .summary("unwatching")
-                    .body(&format!("{}", self.panel.path().display()))
-                    .show()
-                    .unwrap();
+                // Notification::new()
+                //     .summary("unwatching")
+                //     .body(&format!("{}", self.panel.path().display()))
+                //     .show()
+                //     .unwrap();
             }
             Err(e) => {
-                Notification::new()
-                    .summary("unwatch-error")
-                    .body(&format!("{:?}", e))
-                    .show()
-                    .unwrap();
+                // Notification::new()
+                //     .summary("unwatch-error")
+                //     .body(&format!("{:?}", e))
+                //     .show()
+                //     .unwrap();
             }
         }
-        // Increase state counter
-        self.state.increase();
         if let Some(path) = path.and_then(|p| canonicalize(p.as_ref()).ok()) {
             // Only create a new panel when the path has changed
             if path == self.panel.path() {
@@ -222,18 +235,18 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                 .watch(path.as_path(), notify::RecursiveMode::NonRecursive)
             {
                 Ok(_) => {
-                    Notification::new()
-                        .summary("watching")
-                        .body(&format!("{}", path.display()))
-                        .show()
-                        .unwrap();
+                    // Notification::new()
+                    //     .summary("watching")
+                    //     .body(&format!("{}", path.display()))
+                    //     .show()
+                    //     .unwrap();
                 }
                 Err(e) => {
-                    Notification::new()
-                        .summary("watch-error")
-                        .body(&format!("{:?}", e))
-                        .show()
-                        .unwrap();
+                    // Notification::new()
+                    //     .summary("watch-error")
+                    //     .body(&format!("{:?}", e))
+                    //     .show()
+                    //     .unwrap();
                 }
             }
 
@@ -243,11 +256,10 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                 .and_then(|m| m.accessed().ok())
                 .unwrap_or_else(|| SystemTime::now());
 
-            // self.panel.update_content(panel);
             if let Some(cached) = self.cache.get(&path) {
                 let cached_access_time = cached.accessed();
                 // Update panel with content from cache
-                self.panel.update_content(cached);
+                self.update(cached);
 
                 // If the access time is has not changed, dont trigger an update
                 // by returning early
@@ -255,7 +267,7 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                     return;
                 }
             } else {
-                self.panel.update_content(PanelType::loading(path.clone()));
+                self.update(PanelType::loading(path.clone()));
             }
             // Send update request for given panel
             // Notification::new()
@@ -266,13 +278,24 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
             self.content_tx
                 .send(PanelUpdate {
                     path,
-                    state: self.state,
-                    hash: self.panel.content_hash(),
+                    state: self.state.lock().clone(),
                 })
                 .expect("Receiver dropped or closed");
         } else {
-            self.panel.update_content(PanelType::empty());
+            self.update(PanelType::empty());
         }
+    }
+
+    // Swap the panel with some other managed panel
+    pub fn swap_panel(&mut self, other: &mut ManagedPanel<PanelType>) {
+        todo!()
+    }
+
+    fn update(&mut self, panel: PanelType) {
+        let mut state = self.state.lock();
+        state.hash = panel.content_hash();
+        state.increase();
+        self.panel.update_content(panel);
     }
 
     /// Updates an existing panel.
@@ -283,18 +306,18 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
         // Watch new panels path
         match self.watcher.unwatch(self.panel.path()) {
             Ok(_) => {
-                Notification::new()
-                    .summary("unwatching")
-                    .body(&format!("{}", self.panel.path().display()))
-                    .show()
-                    .unwrap();
+                // Notification::new()
+                //     .summary("unwatching")
+                //     .body(&format!("{}", self.panel.path().display()))
+                //     .show()
+                //     .unwrap();
             }
             Err(e) => {
-                Notification::new()
-                    .summary("unwatch-error")
-                    .body(&format!("{:?}", e))
-                    .show()
-                    .unwrap();
+                // Notification::new()
+                //     .summary("unwatch-error")
+                //     .body(&format!("{:?}", e))
+                //     .show()
+                //     .unwrap();
             }
         }
         match self
@@ -302,25 +325,24 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
             .watch(panel.path(), notify::RecursiveMode::NonRecursive)
         {
             Ok(_) => {
-                Notification::new()
-                    .summary("watching")
-                    .body(&format!("{}", panel.path().display()))
-                    .show()
-                    .unwrap();
+                // Notification::new()
+                //     .summary("watching")
+                //     .body(&format!("{}", panel.path().display()))
+                //     .show()
+                //     .unwrap();
             }
             Err(e) => {
-                Notification::new()
-                    .summary("watch-error")
-                    .body(&format!("{:?}", e))
-                    .show()
-                    .unwrap();
+                // Notification::new()
+                //     .summary("watch-error")
+                //     .body(&format!("{:?}", e))
+                //     .show()
+                //     .unwrap();
             }
         }
         // let _ = self
         //     .watcher
         //     .watch(panel.path(), notify::RecursiveMode::NonRecursive);
-        self.panel.update_content(panel);
-        self.state.increase();
+        self.update(panel);
     }
 
     /// Returns a mutable reference to the managed panel
