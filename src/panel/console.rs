@@ -400,7 +400,7 @@ impl SearchConsole {
             .unwrap_or_default()
     }
 
-    pub fn insert(&mut self, character: char, panel: &mut DirPanel) {
+    pub fn insert(&mut self, character: char, _panel: &mut DirPanel) {
         self.push_char(character);
         // self.active_rec = self.input.clone();
 

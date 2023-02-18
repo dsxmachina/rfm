@@ -1,5 +1,6 @@
 use crossterm::event::{Event, EventStream, KeyCode};
 use futures::{FutureExt, StreamExt};
+use notify_rust::Notification;
 
 use crate::commands::{Command, CommandParser};
 
@@ -26,6 +27,16 @@ enum Mode {
     Search { input: String },
 }
 
+struct Clipboard {
+    /// Items we put into the clipboard
+    files: Vec<PathBuf>,
+    /// Weather or not we want to cut or copy the items.
+    ///
+    /// `True`  : Cut
+    /// `False` : Copy
+    cut: bool,
+}
+
 pub struct PanelManager {
     /// Left panel
     left: ManagedPanel<DirPanel>,
@@ -36,6 +47,9 @@ pub struct PanelManager {
 
     /// Mode of operation
     mode: Mode,
+
+    /// Clipboard
+    clipboard: Option<Clipboard>,
 
     /// Miller-Columns layout
     layout: MillerColumns,
@@ -92,8 +106,9 @@ impl PanelManager {
             left,
             center,
             right,
-            layout,
             mode: Mode::Normal,
+            clipboard: None,
+            layout,
             show_hidden: false,
             redraw: Redraw {
                 left: true,
@@ -553,6 +568,24 @@ impl PanelManager {
                                         self.center.panel_mut().mark_selected_item();
                                         self.move_cursor(Movement::Down);
                                     }
+                                    Command::Cut => {
+                                        let files: Vec<PathBuf> = self.marked_items().iter().map(|item| item.path().to_path_buf()).collect();
+                                        Notification::new().summary(&format!("Cut {} items", files.len())).show().unwrap();
+                                        self.clipboard = Some(Clipboard { files, cut: true });
+                                    }
+                                    Command::Copy => {
+                                        let files: Vec<PathBuf> = self.marked_items().iter().map(|item| item.path().to_path_buf()).collect();
+                                        Notification::new().summary(&format!("Copy {} items", files.len())).show().unwrap();
+                                        self.clipboard = Some(Clipboard { files, cut: false });
+                                    }
+                                    Command::Delete => {
+
+                                    }
+                                    Command::Paste { overwrite: _ } => {
+                                        if let Some(clipboard) = &self.clipboard {
+                                            Notification::new().summary(&format!("cut={}, n-items={}", clipboard.cut ,clipboard.files.len())).show().unwrap();
+                                        }
+                                    }
                                     Command::Quit => break,
                                     Command::None => (),
                                 }
@@ -614,7 +647,7 @@ impl PanelManager {
                                     _ => (),
                                 }
                             }
-                            Mode::Search{ input } => {
+                            Mode::Search{ input: _ } => {
                                 todo!()
                             }
                         }

@@ -7,6 +7,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use patricia_tree::PatriciaMap;
 
 const CTRL_C: KeyEvent = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+const CTRL_X: KeyEvent = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
+const CTRL_P: KeyEvent = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
 
 #[derive(Debug, Clone)]
 pub struct ExpandedPath(PathBuf);
@@ -60,6 +62,10 @@ pub enum Command {
     Move(Movement),
     ToggleHidden,
     ShowConsole,
+    Cut,
+    Copy,
+    Delete,
+    Paste { overwrite: bool },
     Mark,
     Quit,
     None,
@@ -135,11 +141,22 @@ impl CommandParser {
         // Mark current file
         key_commands.insert(" ", Command::Mark);
 
+        // Copy, Paste, Cut
+        key_commands.insert("yy", Command::Copy);
+        key_commands.insert("dd", Command::Cut);
+        key_commands.insert("pp", Command::Paste { overwrite: false });
+        key_commands.insert("po", Command::Paste { overwrite: true });
+
         // Quit
         key_commands.insert("q", Command::Quit);
 
         // --- Commands for modifier + key:
         let mut mod_commands = HashMap::new();
+
+        // Copy, Paste, Cut
+        mod_commands.insert(CTRL_C, Command::Copy);
+        mod_commands.insert(CTRL_X, Command::Cut);
+        mod_commands.insert(CTRL_P, Command::Paste { overwrite: false });
 
         // Escape from what you are doing
         // mod_commands.insert(CTRL_C, Command::Esc);
