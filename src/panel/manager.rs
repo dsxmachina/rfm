@@ -653,9 +653,8 @@ impl PanelManager {
                                         }
                                     }
                                     Command::Quit => break,
-                                    Command::None => (),
+                                    Command::None => self.redraw_footer(),
                                 }
-
                             }
                             Mode::Console{ console } => {
                                 match key_event.code {
