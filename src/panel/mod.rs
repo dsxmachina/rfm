@@ -12,7 +12,6 @@ use std::{
     cmp::Ordering,
     fs::canonicalize,
     io::{stdout, Stdout, Write},
-    mem,
     ops::Range,
     os::unix::prelude::PermissionsExt,
     path::{Path, PathBuf},
@@ -65,7 +64,7 @@ pub trait BasePanel: PanelContent {
     fn loading(path: PathBuf) -> Self;
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct PanelState {
     /// ID of the panel that is managed by the updater.
     ///
@@ -83,6 +82,9 @@ pub struct PanelState {
     /// will also finish earlier.
     cnt: u64,
 
+    /// Path of the panel
+    path: PathBuf,
+
     /// Hash of the panels content
     hash: u64,
 }
@@ -94,6 +96,7 @@ impl Default for PanelState {
         Self {
             panel_id: rand::random(),
             cnt: 0,
+            path: PathBuf::default(),
             hash: 0,
         }
     }
@@ -108,6 +111,7 @@ impl PanelState {
         PanelState {
             panel_id: self.panel_id,
             cnt: self.cnt + 1,
+            path: self.path.clone(),
             hash: self.hash,
         }
     }
@@ -132,6 +136,10 @@ impl PanelState {
     pub fn hash(&self) -> u64 {
         self.hash
     }
+
+    pub fn path(&self) -> PathBuf {
+        self.path.clone()
+    }
 }
 
 /// Combines all data that is necessary to update a panel.
@@ -139,7 +147,6 @@ impl PanelState {
 /// Will be send as a request to the [`ContentManager`].
 #[derive(Debug)]
 pub struct PanelUpdate {
-    pub path: PathBuf,
     pub state: PanelState,
 }
 
@@ -175,17 +182,24 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
         cache: SharedCache<PanelType>,
         content_tx: mpsc::UnboundedSender<PanelUpdate>,
     ) -> Self {
-        let watcher = notify::recommended_watcher(|res| {
-            Notification::new()
-                .summary(&format!("new-event: {:?}", res))
-                .show()
-                .unwrap();
-            // if let Ok(event) = res {}
+        let state = Arc::new(Mutex::new(PanelState::default()));
+        let watcher_state = state.clone();
+        let watcher_tx = content_tx.clone();
+        let watcher = notify::recommended_watcher(move |res| {
+            // TODO: Parse res and not react on everything
+            // ++ there is a bug; if a panel is inside the cache, it will not be re-parsed (?)
+            // ++ paste does not work as expected when pasting inside a child-directory
+            // Notification::new()
+            //     .summary(&format!("new-event: {:?}", res))
+            //     .show()
+            //     .unwrap();
+            let state = watcher_state.lock().clone();
+            let _ = watcher_tx.send(PanelUpdate { state });
         })
         .expect("File-watcher error");
         ManagedPanel {
             panel: PanelType::empty(),
-            state: Arc::new(Mutex::new(PanelState::default())),
+            state,
             watcher,
             cache,
             content_tx,
@@ -277,7 +291,6 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
             //     .unwrap();
             self.content_tx
                 .send(PanelUpdate {
-                    path,
                     state: self.state.lock().clone(),
                 })
                 .expect("Receiver dropped or closed");
@@ -295,6 +308,7 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
         let mut state = self.state.lock();
         state.hash = panel.content_hash();
         state.increase();
+        state.path = panel.path().to_path_buf();
         self.panel.update_content(panel);
     }
 

@@ -125,23 +125,33 @@ impl Manager {
                         break;
                     }
                     let update = result.unwrap();
-                    if !update.path.is_dir() {
+                    if !update.state.path().is_dir() {
                         continue;
                     }
 
-                    // Notification::new().summary("recv update-request").body(&format!("{:?}", update.state)).show().unwrap();
-                    let dir_path = update.path.clone();
+                    // First create a small preview (fast loading)
+                    let dir_path = update.state.path().clone();
+                    let result = spawn_blocking(move || dir_content_preview(dir_path, 16538)).await;
+                    if let Ok(Ok(content)) = result {
+                        let panel = DirPanel::new(content, update.state.path().clone());
+                        if update.state.hash() != panel.content_hash() {
+                            if self.dir_tx.send((panel, update.state.increased())).await.is_err() { break; };
+                        }
+                    }
+
+                    // Then create the full version
+                    let dir_path = update.state.path().clone();
                     let result = spawn_blocking(move || dir_content(dir_path)).await;
                     if let Ok(Ok(content)) = result {
                         // Only update when the hash has changed
-                        let panel = DirPanel::new(content, update.path.clone());
+                        let panel = DirPanel::new(content, update.state.path().clone());
                         if update.state.hash() != panel.content_hash() {
-                            if self.dir_tx.send((panel.clone(), update.state.increased())).await.is_err() {break;};
+                            if self.dir_tx.send((panel.clone(), update.state.increased().increased())).await.is_err() {break;};
                         } else {
                             // Notification::new().summary("unchanged hash").body(&format!("{}", update.hash)).show().unwrap();
                         }
-                        self.directory_cache.insert(update.path.clone(), panel.clone());
-                        self.preview_cache.insert(update.path, PreviewPanel::Dir(panel));
+                        self.directory_cache.insert(update.state.path().clone(), panel.clone());
+                        self.preview_cache.insert(update.state.path(), PreviewPanel::Dir(panel));
                     }
                 }
                 result = self.preview_rx.recv() => {
@@ -149,26 +159,26 @@ impl Manager {
                         break;
                     }
                     let update = result.unwrap();
-                    if update.path.is_dir() {
-                        let dir_path = update.path.clone();
+                    if update.state.path().is_dir() {
+                        let dir_path = update.state.path().clone();
                         let result = spawn_blocking(move || dir_content_preview(dir_path, 16538)).await;
                         if let Ok(Ok(content)) = result {
-                            let panel = PreviewPanel::Dir(DirPanel::new(content, update.path.clone()));
+                            let panel = PreviewPanel::Dir(DirPanel::new(content, update.state.path().clone()));
                             if update.state.hash() != panel.content_hash() {
                                 if self.prev_tx.send((panel.clone(), update.state.increased())).await.is_err() { break; };
                             }
-                            self.preview_cache.insert(update.path, panel);
+                            self.preview_cache.insert(update.state.path(), panel);
                         }
                     } else {
                         // Create preview
-                        let file_path = update.path.clone();
+                        let file_path = update.state.path().clone();
                         let result = spawn_blocking(move || get_file_preview(file_path)).await;
                         if let Ok(preview) = result {
                             let panel = PreviewPanel::File(preview);
                             if update.state.hash() != panel.content_hash() {
                                 if self.prev_tx.send((panel.clone(), update.state.increased())).await.is_err() { break; };
                             }
-                            self.preview_cache.insert(update.path, panel);
+                            self.preview_cache.insert(update.state.path(), panel);
                         }
                     }
                 }
