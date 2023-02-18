@@ -596,7 +596,9 @@ impl PanelManager {
                         if let KeyCode::Esc = key_event.code {
                             self.mode = Mode::Normal;
                             self.jump(pre_console_path.clone());
+                            self.parser.clear();
                             self.redraw_panels();
+                            self.redraw_footer();
                         }
                         match &mut self.mode {
                             Mode::Normal => {

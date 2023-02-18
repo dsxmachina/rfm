@@ -200,6 +200,10 @@ impl CommandParser {
         self.buffer.clone()
     }
 
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+    }
+
     /// Parse an event and return the command that is assigned to it
     pub fn add_event(&mut self, event: KeyEvent) -> Command {
         if let KeyCode::Backspace = event.code {
