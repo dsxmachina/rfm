@@ -141,11 +141,15 @@ impl CommandParser {
         // Mark current file
         key_commands.insert(" ", Command::Mark);
 
-        // Copy, Paste, Cut
+        // Copy, Paste, Cut, Delete
         key_commands.insert("yy", Command::Copy);
+        key_commands.insert("copy", Command::Copy);
         key_commands.insert("dd", Command::Cut);
+        key_commands.insert("cut", Command::Cut);
         key_commands.insert("pp", Command::Paste { overwrite: false });
+        key_commands.insert("paste", Command::Paste { overwrite: false });
         key_commands.insert("po", Command::Paste { overwrite: true });
+        key_commands.insert("delete", Command::Delete);
 
         // Quit
         key_commands.insert("q", Command::Quit);
@@ -180,10 +184,10 @@ impl CommandParser {
         );
 
         // Toggle hidden (backspace)
-        mod_commands.insert(
-            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-            Command::ToggleHidden,
-        );
+        // mod_commands.insert(
+        //     KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        //     Command::ToggleHidden,
+        // );
 
         CommandParser {
             key_commands,
@@ -198,6 +202,10 @@ impl CommandParser {
 
     /// Parse an event and return the command that is assigned to it
     pub fn add_event(&mut self, event: KeyEvent) -> Command {
+        if let KeyCode::Backspace = event.code {
+            self.buffer.pop();
+            return Command::None;
+        }
         match event.modifiers {
             // First parse for "normal" characters:
             KeyModifiers::NONE | KeyModifiers::SHIFT => {
