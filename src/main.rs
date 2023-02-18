@@ -58,9 +58,20 @@ async fn main() -> Result<()> {
     );
     let panel_handle = tokio::spawn(panel_manager.run());
 
-    panel_handle.await??;
-    content_handle.await?;
+    let panel_result = panel_handle.await;
+    let content_result = content_handle.await;
 
     // Be a good citizen, cleanup
-    disable_raw_mode()
+    disable_raw_mode()?;
+
+    match panel_result {
+        Ok(Err(e)) => println!("{e}"),
+        Err(e) => println!("{e}"),
+        _ => (),
+    }
+    match content_result {
+        Err(e) => println!("{e}"),
+        _ => (),
+    }
+    Ok(())
 }
