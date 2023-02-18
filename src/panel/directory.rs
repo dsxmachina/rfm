@@ -1,4 +1,4 @@
-use std::slice::Iter;
+use std::slice::{Iter, IterMut};
 
 use crossterm::style::{ContentStyle, StyledContent};
 use patricia_tree::PatriciaMap;
@@ -50,6 +50,10 @@ impl DirElem {
 
     pub fn is_marked(&self) -> bool {
         self.is_marked
+    }
+
+    pub fn unmark(&mut self) {
+        self.is_marked = false;
     }
 
     pub fn print_styled(&self, selected: bool, max_len: u16) -> PrintStyledContent<String> {
@@ -308,6 +312,10 @@ impl DirPanel {
 
     pub fn elements(&self) -> Iter<DirElem> {
         self.elements.iter()
+    }
+
+    pub fn elements_mut(&mut self) -> IterMut<DirElem> {
+        self.elements.iter_mut()
     }
 
     pub fn show_hidden(&self) -> bool {

@@ -475,11 +475,56 @@ impl PanelManager {
         }
     }
 
+    /// Returns a reference to all marked items.
     fn marked_items(&self) -> Vec<&DirElem> {
         let mut out = Vec::new();
         out.extend(self.left.panel().elements().filter(|e| e.is_marked()));
         out.extend(self.center.panel().elements().filter(|e| e.is_marked()));
+        if let PreviewPanel::Dir(panel) = self.right.panel() {
+            out.extend(panel.elements().filter(|e| e.is_marked()))
+        }
         out
+    }
+
+    /// Unmarks all items in all panels
+    fn unmark_items(&mut self) {
+        self.left
+            .panel_mut()
+            .elements_mut()
+            .for_each(|item| item.unmark());
+        self.center
+            .panel_mut()
+            .elements_mut()
+            .for_each(|item| item.unmark());
+        if let PreviewPanel::Dir(panel) = self.right.panel_mut() {
+            panel.elements_mut().for_each(|item| item.unmark());
+        }
+        self.redraw_panels();
+    }
+
+    /// Returns all marked paths *or* the selected path.
+    ///
+    /// Note: This is an exclusive or - the selected path is not
+    /// returned, when there are marked paths.
+    /// If there are no marked paths, the selected path is automatically
+    /// marked - and therefore it is returned by this function.
+    fn marked_or_selected(&mut self) -> Vec<PathBuf> {
+        let files: Vec<PathBuf> = self
+            .marked_items()
+            .iter()
+            .map(|item| item.path().to_path_buf())
+            .collect();
+        // If we have nothing marked, take the current selection
+        if files.is_empty() {
+            self.center.panel_mut().mark_selected_item();
+            if let Some(path) = self.center.panel().selected_path() {
+                vec![path.to_path_buf()]
+            } else {
+                Vec::new()
+            }
+        } else {
+            files
+        }
     }
 
     pub async fn run(mut self) -> Result<()> {
@@ -569,19 +614,18 @@ impl PanelManager {
                                         self.move_cursor(Movement::Down);
                                     }
                                     Command::Cut => {
-                                        let files: Vec<PathBuf> = self.marked_items().iter().map(|item| item.path().to_path_buf()).collect();
-                                        Notification::new().summary(&format!("Cut {} items", files.len())).show().unwrap();
-                                        self.clipboard = Some(Clipboard { files, cut: true });
+                                        self.clipboard = Some(Clipboard { files: self.marked_or_selected(), cut: true });
                                     }
                                     Command::Copy => {
-                                        let files: Vec<PathBuf> = self.marked_items().iter().map(|item| item.path().to_path_buf()).collect();
-                                        Notification::new().summary(&format!("Copy {} items", files.len())).show().unwrap();
-                                        self.clipboard = Some(Clipboard { files, cut: false });
+                                        self.clipboard = Some(Clipboard { files: self.marked_or_selected(), cut: false });
                                     }
                                     Command::Delete => {
-
+                                        let files = self.marked_or_selected();
+                                        self.unmark_items();
+                                        Notification::new().summary(&format!("Delete {} items", files.len())).show().unwrap();
                                     }
                                     Command::Paste { overwrite: _ } => {
+                                        self.unmark_items();
                                         if let Some(clipboard) = &self.clipboard {
                                             Notification::new().summary(&format!("cut={}, n-items={}", clipboard.cut ,clipboard.files.len())).show().unwrap();
                                         }
