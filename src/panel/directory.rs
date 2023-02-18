@@ -1,4 +1,7 @@
-use std::slice::{Iter, IterMut};
+use std::{
+    slice::{Iter, IterMut},
+    time::SystemTime,
+};
 
 use crossterm::style::{ContentStyle, StyledContent};
 
@@ -20,6 +23,8 @@ pub struct DirElem {
 
     /// Full (canonicalized) path of the element
     path: PathBuf,
+
+    accessed: SystemTime,
 
     /// True if element is a hidden file or directory.
     is_hidden: bool,
@@ -87,6 +92,13 @@ impl<P: AsRef<Path>> From<P> for DirElem {
             .map(|s| s.to_string())
             .unwrap_or_default();
 
+        let accessed = path
+            .as_ref()
+            .metadata()
+            .ok()
+            .and_then(|m| m.accessed().ok())
+            .unwrap_or_else(|| SystemTime::now());
+
         let lowercase = name.to_lowercase();
 
         let is_hidden = name.starts_with('.') || name.starts_with("__") || name.ends_with(".swp");
@@ -95,9 +107,10 @@ impl<P: AsRef<Path>> From<P> for DirElem {
         let path: PathBuf = canonicalize(path.as_ref()).unwrap_or_else(|_| path.as_ref().into());
 
         DirElem {
-            path,
             name,
             lowercase,
+            path,
+            accessed,
             is_hidden,
             is_marked: false,
         }
@@ -151,6 +164,9 @@ pub struct DirPanel {
 
     /// Path of the directory that the panel is based on
     path: PathBuf,
+
+    /// Last access time of the path
+    accessed: SystemTime,
 
     /// Weather or not the panel is still loading some data
     loading: bool,
@@ -247,6 +263,10 @@ impl PanelContent for DirPanel {
         self.hash
     }
 
+    fn accessed(&self) -> SystemTime {
+        self.accessed
+    }
+
     fn update_content(&mut self, mut content: Self) {
         // Keep "hidden" state
         content.show_hidden = self.show_hidden;
@@ -283,12 +303,19 @@ impl DirPanel {
         let selected = *non_hidden.first().unwrap_or(&0);
         let hash = hash_elements(&elements);
 
+        let accessed = path
+            .metadata()
+            .ok()
+            .and_then(|m| m.accessed().ok())
+            .unwrap_or_else(|| SystemTime::now());
+
         DirPanel {
             elements,
             non_hidden,
             selected_idx: selected,
             non_hidden_idx: 0,
             path,
+            accessed,
             loading: false,
             show_hidden: false,
             hash,
@@ -367,6 +394,7 @@ impl DirPanel {
             selected_idx: 0,
             non_hidden_idx: 0,
             path,
+            accessed: SystemTime::now(),
             loading: true,
             show_hidden: false,
             hash: 0,
@@ -382,6 +410,7 @@ impl DirPanel {
             non_hidden: Vec::new(),
             selected_idx: 0,
             non_hidden_idx: 0,
+            accessed: SystemTime::now(),
             path: "path-of-empty-panel".into(),
             loading: false,
             show_hidden: false,

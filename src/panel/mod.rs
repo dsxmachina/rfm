@@ -14,6 +14,7 @@ use std::{
     os::unix::prelude::PermissionsExt,
     path::{Path, PathBuf},
     process::Stdio,
+    time::SystemTime,
 };
 use tokio::sync::mpsc;
 
@@ -43,6 +44,8 @@ pub trait PanelContent: Draw + Clone + Send {
     /// Hash of the panels content
     fn content_hash(&self) -> u64;
 
+    fn accessed(&self) -> SystemTime;
+
     /// Updates the content of the panel
     fn update_content(&mut self, content: Self);
 }
@@ -57,7 +60,7 @@ pub trait BasePanel: PanelContent {
     fn loading(path: PathBuf) -> Self;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct PanelState {
     /// ID of the panel that is managed by the updater.
     ///
@@ -170,6 +173,8 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
     /// If the cache is empty, a generic "loading..." panel is created.
     /// An empty panel is created if the given path is `None`.
     pub fn new_panel<P: AsRef<Path>>(&mut self, path: Option<P>) {
+        // Increase state counter
+        self.state.increase();
         if let Some(path) = path.and_then(|p| canonicalize(p.as_ref()).ok()) {
             // Only create a new panel when the path has changed
             if path == self.panel.path() {
@@ -179,11 +184,27 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                 //     .unwrap();
                 return;
             }
-            let panel = self
-                .cache
-                .get(&path)
-                .unwrap_or_else(|| PanelType::loading(path.clone()));
-            self.panel.update_content(panel);
+
+            let access_time = path
+                .metadata()
+                .ok()
+                .and_then(|m| m.accessed().ok())
+                .unwrap_or_else(|| SystemTime::now());
+
+            // self.panel.update_content(panel);
+            if let Some(cached) = self.cache.get(&path) {
+                let cached_access_time = cached.accessed();
+                // Update panel with content from cache
+                self.panel.update_content(cached);
+
+                // If the access time is has not changed, dont trigger an update
+                // by returning early
+                if access_time == cached_access_time {
+                    return;
+                }
+            } else {
+                self.panel.update_content(PanelType::loading(path.clone()));
+            }
             // Send update request for given panel
             // Notification::new()
             //     .summary("send update request")
@@ -193,15 +214,13 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
             self.content_tx
                 .send(PanelUpdate {
                     path,
-                    state: self.state.increased(),
+                    state: self.state,
                     hash: self.panel.content_hash(),
                 })
                 .expect("Receiver dropped or closed");
         } else {
             self.panel.update_content(PanelType::empty());
         }
-        // Increase state counter
-        self.state.increase();
     }
 
     /// Updates an existing panel.

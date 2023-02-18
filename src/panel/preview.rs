@@ -3,7 +3,7 @@ use std::{
     io::{self, BufRead, Stdout},
     ops::Range,
     path::{Path, PathBuf},
-    time::UNIX_EPOCH,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use crossterm::{
@@ -25,6 +25,7 @@ pub enum Preview {
 #[derive(Debug, Clone)]
 pub struct FilePreview {
     path: PathBuf,
+    accessed: SystemTime,
     hash: u64,
     preview: Preview,
 }
@@ -130,6 +131,12 @@ impl FilePreview {
             .unwrap_or_default()
             .as_secs();
 
+        let accessed = path
+            .metadata()
+            .ok()
+            .and_then(|m| m.accessed().ok())
+            .unwrap_or_else(|| SystemTime::now());
+
         let preview = match extension {
             "png" | "bmp" | "jpg" | "jpeg" => {
                 if let Ok(img_bytes) = image::io::Reader::open(&path) {
@@ -167,6 +174,7 @@ impl FilePreview {
         FilePreview {
             path,
             hash,
+            accessed,
             preview,
         }
     }
@@ -179,6 +187,10 @@ impl PanelContent for FilePreview {
 
     fn content_hash(&self) -> u64 {
         self.hash
+    }
+
+    fn accessed(&self) -> SystemTime {
+        self.accessed
     }
 
     fn update_content(&mut self, content: Self) {
@@ -214,6 +226,13 @@ impl PanelContent for PreviewPanel {
         match self {
             PreviewPanel::Dir(p) => p.content_hash(),
             PreviewPanel::File(p) => p.content_hash(),
+        }
+    }
+
+    fn accessed(&self) -> SystemTime {
+        match self {
+            PreviewPanel::Dir(p) => p.accessed(),
+            PreviewPanel::File(p) => p.accessed(),
         }
     }
 
