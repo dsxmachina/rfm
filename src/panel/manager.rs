@@ -234,7 +234,7 @@ impl PanelManager {
         queue!(
             self.stdout,
             cursor::MoveTo(self.layout.width() / 3, self.layout.footer()),
-            style::PrintStyledContent(key_buffer.red()),
+            style::PrintStyledContent(key_buffer.dark_grey()),
             cursor::MoveTo(
                 self.layout
                     .width()
