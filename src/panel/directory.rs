@@ -1,7 +1,6 @@
 use std::slice::{Iter, IterMut};
 
 use crossterm::style::{ContentStyle, StyledContent};
-use patricia_tree::PatriciaMap;
 
 use super::*;
 /// An element of a directory.
@@ -137,14 +136,6 @@ impl PartialOrd for DirElem {
 pub struct DirPanel {
     /// Elements of the directory
     elements: Vec<DirElem>,
-
-    /// Maps the lowercase names of the elements to their index in the `element` vector.
-    ///
-    /// Used to create queries and search for a specific name.
-    elem_map: PatriciaMap<usize>,
-
-    /// Input buffer for searches in the current directory.
-    search_prefix: String,
 
     /// Non-hidden elements (saved by their index)
     ///
@@ -291,15 +282,9 @@ impl DirPanel {
 
         let selected = *non_hidden.first().unwrap_or(&0);
         let hash = hash_elements(&elements);
-        let mut elem_map = PatriciaMap::new();
-        for (idx, elem) in elements.iter().enumerate() {
-            elem_map.insert(elem.lowercase.as_bytes(), idx);
-        }
 
         DirPanel {
             elements,
-            elem_map,
-            search_prefix: "".to_string(),
             non_hidden,
             selected_idx: selected,
             non_hidden_idx: 0,
@@ -378,8 +363,6 @@ impl DirPanel {
     pub fn loading(path: PathBuf) -> Self {
         DirPanel {
             elements: Vec::new(),
-            elem_map: PatriciaMap::new(),
-            search_prefix: "".to_string(),
             non_hidden: Vec::new(),
             selected_idx: 0,
             non_hidden_idx: 0,
@@ -396,8 +379,6 @@ impl DirPanel {
     pub fn empty() -> Self {
         DirPanel {
             elements: Vec::new(),
-            elem_map: PatriciaMap::new(),
-            search_prefix: "".to_string(),
             non_hidden: Vec::new(),
             selected_idx: 0,
             non_hidden_idx: 0,
