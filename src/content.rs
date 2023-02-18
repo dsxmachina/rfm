@@ -128,6 +128,7 @@ impl Manager {
                     if !update.path.is_dir() {
                         continue;
                     }
+
                     // Notification::new().summary("recv update-request").body(&format!("{:?}", update.state)).show().unwrap();
                     let dir_path = update.path.clone();
                     let result = spawn_blocking(move || dir_content(dir_path)).await;
@@ -139,7 +140,8 @@ impl Manager {
                         } else {
                             // Notification::new().summary("unchanged hash").body(&format!("{}", update.hash)).show().unwrap();
                         }
-                        self.directory_cache.insert(update.path, panel);
+                        self.directory_cache.insert(update.path.clone(), panel.clone());
+                        self.preview_cache.insert(update.path, PreviewPanel::Dir(panel));
                     }
                 }
                 result = self.preview_rx.recv() => {
@@ -148,11 +150,6 @@ impl Manager {
                     }
                     let update = result.unwrap();
                     if update.path.is_dir() {
-                        // Notification::new()
-                        //     .summary("Request Dir-Preview")
-                        //     .body(&format!("{}", update.path.display()))
-                        //     .show()
-                        //     .unwrap();
                         let dir_path = update.path.clone();
                         let result = spawn_blocking(move || dir_content_preview(dir_path, 16538)).await;
                         if let Ok(Ok(content)) = result {
