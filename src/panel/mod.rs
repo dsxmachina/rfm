@@ -4,6 +4,8 @@ use crossterm::{
     terminal::{self, Clear, ClearType},
     QueueableCommand, Result,
 };
+use notify::{RecommendedWatcher, Watcher};
+use notify_rust::Notification;
 use pad::PadStr;
 use std::{
     cmp::Ordering,
@@ -44,6 +46,7 @@ pub trait PanelContent: Draw + Clone + Send {
     /// Hash of the panels content
     fn content_hash(&self) -> u64;
 
+    /// Access time of the path
     fn accessed(&self) -> SystemTime;
 
     /// Updates the content of the panel
@@ -136,6 +139,9 @@ pub struct ManagedPanel<PanelType: BasePanel> {
     /// State counter and identifier of the managed panel
     state: PanelState,
 
+    /// File-watcher that sends update requests if the content of the directory changes
+    watcher: RecommendedWatcher,
+
     /// Cached panels from previous requests.
     ///
     /// When we want to create a new panel, we first look into the cache,
@@ -154,9 +160,18 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
         cache: SharedCache<PanelType>,
         content_tx: mpsc::UnboundedSender<PanelUpdate>,
     ) -> Self {
+        let watcher = notify::recommended_watcher(|res| {
+            Notification::new()
+                .summary(&format!("new-event: {:?}", res))
+                .show()
+                .unwrap();
+            // if let Ok(event) = res {}
+        })
+        .expect("File-watcher error");
         ManagedPanel {
             panel: PanelType::empty(),
-            state: Default::default(),
+            state: PanelState::default(),
+            watcher,
             cache,
             content_tx,
         }
@@ -173,6 +188,22 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
     /// If the cache is empty, a generic "loading..." panel is created.
     /// An empty panel is created if the given path is `None`.
     pub fn new_panel<P: AsRef<Path>>(&mut self, path: Option<P>) {
+        match self.watcher.unwatch(self.panel.path()) {
+            Ok(_) => {
+                Notification::new()
+                    .summary("unwatching")
+                    .body(&format!("{}", self.panel.path().display()))
+                    .show()
+                    .unwrap();
+            }
+            Err(e) => {
+                Notification::new()
+                    .summary("unwatch-error")
+                    .body(&format!("{:?}", e))
+                    .show()
+                    .unwrap();
+            }
+        }
         // Increase state counter
         self.state.increase();
         if let Some(path) = path.and_then(|p| canonicalize(p.as_ref()).ok()) {
@@ -183,6 +214,27 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                 //     .show()
                 //     .unwrap();
                 return;
+            }
+
+            // Watch new path
+            match self
+                .watcher
+                .watch(path.as_path(), notify::RecursiveMode::NonRecursive)
+            {
+                Ok(_) => {
+                    Notification::new()
+                        .summary("watching")
+                        .body(&format!("{}", path.display()))
+                        .show()
+                        .unwrap();
+                }
+                Err(e) => {
+                    Notification::new()
+                        .summary("watch-error")
+                        .body(&format!("{:?}", e))
+                        .show()
+                        .unwrap();
+                }
             }
 
             let access_time = path
@@ -228,6 +280,45 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
     /// The panel is directly updated without any further checks!
     /// To check if an update is necessary, call [`check_update`] on the new panel state.
     pub fn update_panel(&mut self, panel: PanelType) {
+        // Watch new panels path
+        match self.watcher.unwatch(self.panel.path()) {
+            Ok(_) => {
+                Notification::new()
+                    .summary("unwatching")
+                    .body(&format!("{}", self.panel.path().display()))
+                    .show()
+                    .unwrap();
+            }
+            Err(e) => {
+                Notification::new()
+                    .summary("unwatch-error")
+                    .body(&format!("{:?}", e))
+                    .show()
+                    .unwrap();
+            }
+        }
+        match self
+            .watcher
+            .watch(panel.path(), notify::RecursiveMode::NonRecursive)
+        {
+            Ok(_) => {
+                Notification::new()
+                    .summary("watching")
+                    .body(&format!("{}", panel.path().display()))
+                    .show()
+                    .unwrap();
+            }
+            Err(e) => {
+                Notification::new()
+                    .summary("watch-error")
+                    .body(&format!("{:?}", e))
+                    .show()
+                    .unwrap();
+            }
+        }
+        // let _ = self
+        //     .watcher
+        //     .watch(panel.path(), notify::RecursiveMode::NonRecursive);
         self.panel.update_content(panel);
         self.state.increase();
     }

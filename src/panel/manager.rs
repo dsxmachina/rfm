@@ -352,6 +352,7 @@ impl PanelManager {
                 // swap left and mid:
                 mem::swap(&mut self.left, &mut self.center);
                 if let PreviewPanel::Dir(right) = self.right.panel_mut() {
+                    // TODO: Check if this still works with the watchers
                     mem::swap(right, self.center.panel_mut())
                 }
 
