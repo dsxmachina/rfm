@@ -621,13 +621,32 @@ impl PanelManager {
                                     }
                                     Command::Delete => {
                                         let files = self.marked_or_selected();
-                                        self.unmark_items();
                                         Notification::new().summary(&format!("Delete {} items", files.len())).show().unwrap();
+                                        self.unmark_items();
+                                        for f in files {
+                                            if f.is_dir() {
+                                                // let _ = std::fs::remove_dir_all(f);
+                                            } else {
+                                                // let _ = std::fs::remove_file(f);
+                                            }
+                                        }
                                     }
                                     Command::Paste { overwrite: _ } => {
                                         self.unmark_items();
                                         if let Some(clipboard) = &self.clipboard {
+                                            let current_path = self.center.panel().path();
                                             Notification::new().summary(&format!("cut={}, n-items={}", clipboard.cut ,clipboard.files.len())).show().unwrap();
+                                            let func = if clipboard.cut {
+                                                std::fs::rename
+                                            } else {
+                                                |from, to| { std::fs::copy(from, to).map(|_| ()) }
+                                            };
+                                            for f in clipboard.files.iter() {
+                                                let filename = f.file_name().unwrap_or_default();
+                                                let to = current_path.join(filename);
+                                                let _ = func(f, to);
+                                            }
+                                            self.redraw_panels();
                                         }
                                     }
                                     Command::Quit => break,
