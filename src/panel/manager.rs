@@ -178,12 +178,12 @@ impl PanelManager {
             return Ok(());
         }
         let prompt = format!("{}@{}", whoami::username(), whoami::hostname());
-        let absolute = canonicalize(
-            self.center
-                .panel()
-                .selected_path()
-                .unwrap_or_else(|| self.center.panel().path()),
-        )?;
+        let absolute = self
+            .center
+            .panel()
+            .selected_path()
+            .and_then(|f| f.canonicalize().ok())
+            .unwrap_or_else(|| self.center.panel().path().to_path_buf());
         let file_name = absolute
             .file_name()
             .unwrap_or_default()
@@ -213,8 +213,11 @@ impl PanelManager {
         }
         if let Some(selection) = self.center.panel().selected() {
             let path = selection.path();
-            let metadata = path.metadata()?;
-            let permissions = unix_mode::to_string(metadata.permissions().mode());
+            let permissions = if let Ok(metadata) = path.metadata() {
+                unix_mode::to_string(metadata.permissions().mode())
+            } else {
+                String::from("unknown")
+            };
 
             queue!(
                 self.stdout,
