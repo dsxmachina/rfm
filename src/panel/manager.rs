@@ -351,9 +351,19 @@ impl PanelManager {
 
                 // swap left and mid:
                 mem::swap(&mut self.left, &mut self.center);
+                if let PreviewPanel::Dir(right) = self.right.panel_mut() {
+                    mem::swap(right, self.center.panel_mut())
+                }
 
                 // Recreate mid and right
-                self.center.new_panel(Some(&selected));
+                self.center
+                    .content_tx
+                    .send(PanelUpdate {
+                        path: selected,
+                        state: self.center.state.increased(),
+                        hash: self.center.panel.content_hash(),
+                    })
+                    .expect("Receiver dropped or closed");
                 self.right.new_panel(self.center.panel().selected_path());
 
                 // All panels needs to be redrawn
