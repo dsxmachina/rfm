@@ -107,6 +107,10 @@ impl DirConsole {
         }
     }
 
+    pub fn joined_input(&self) -> PathBuf {
+        self.path.join(&self.input)
+    }
+
     // pub fn open<P: AsRef<Path>>(&mut self, path: P) {
     //     self.path = path
     //         .as_ref()

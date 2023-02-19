@@ -29,6 +29,7 @@ impl Redraw {
 enum Mode {
     Normal,
     Console { console: DirConsole },
+    Mkdir { console: DirConsole },
     Search { input: String },
 }
 
@@ -279,7 +280,10 @@ impl PanelManager {
 
         queue!(
             self.stdout,
-            cursor::MoveTo(self.layout.width() / 3, self.layout.footer()),
+            cursor::MoveTo(
+                (self.layout.width() / 2).saturating_sub(key_buffer.len() as u16 / 2),
+                self.layout.footer()
+            ),
             style::PrintStyledContent(key_buffer.dark_grey()),
             cursor::MoveTo(
                 self.layout
@@ -336,6 +340,13 @@ impl PanelManager {
     fn draw_console(&mut self) -> Result<()> {
         if self.redraw.console {
             if let Mode::Console { console } = &mut self.mode {
+                console.draw(
+                    &mut self.stdout,
+                    self.layout.left_x_range.start..self.layout.right_x_range.end,
+                    self.layout.y_range.clone(),
+                )?;
+            }
+            if let Mode::Mkdir { console } = &mut self.mode {
                 console.draw(
                     &mut self.stdout,
                     self.layout.left_x_range.start..self.layout.right_x_range.end,
@@ -671,9 +682,13 @@ impl PanelManager {
                                     Command::ToggleHidden => {
                                         self.toggle_hidden();
                                     }
-                                    Command::ShowConsole => {
+                                    Command::Cd => {
                                         pre_console_path = self.center.panel().path().to_path_buf();
                                         self.mode = Mode::Console { console: DirConsole::from_panel(self.center.panel()) };
+                                        self.redraw_console();
+                                    }
+                                    Command::Mkdir => {
+                                        self.mode = Mode::Mkdir { console: DirConsole::from_panel(self.center.panel()) };
                                         self.redraw_console();
                                     }
                                     Command::Mark => {
@@ -770,6 +785,35 @@ impl PanelManager {
                                         if let Some(path) = console.insert(c) {
                                             self.jump(path);
                                         }
+                                        self.redraw_console();
+                                    }
+                                    _ => (),
+                                }
+                            }
+                            Mode::Mkdir { console } => {
+                                match key_event.code {
+                                    KeyCode::Backspace => {
+                                        console.del();
+                                        self.redraw_console();
+                                    }
+                                    KeyCode::Enter => {
+                                        let new_dir = console.joined_input();
+                                        if let Err(e) = fs_extra::dir::create(new_dir, false) {
+                                            Notification::new().summary("error").body(&format!("{e}")).show().unwrap();
+                                        }
+                                        self.mode = Mode::Normal;
+                                        self.redraw_panels();
+                                    }
+                                    KeyCode::Tab  => {
+                                        console.tab();
+                                        self.redraw_console();
+                                    }
+                                    KeyCode::BackTab  => {
+                                        console.backtab();
+                                        self.redraw_console();
+                                    }
+                                    KeyCode::Char(c) => {
+                                        console.insert(c);
                                         self.redraw_console();
                                     }
                                     _ => (),

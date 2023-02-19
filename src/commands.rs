@@ -61,7 +61,8 @@ pub enum Movement {
 pub enum Command {
     Move(Movement),
     ToggleHidden,
-    ShowConsole,
+    Cd,
+    Mkdir,
     Cut,
     Copy,
     Delete,
@@ -134,10 +135,6 @@ impl CommandParser {
         // Jump to previous location
         key_commands.insert("\'\'", Command::Move(Movement::JumpPrevious));
 
-        // Show console
-        key_commands.insert(":", Command::ShowConsole);
-        key_commands.insert("cd", Command::ShowConsole);
-
         // Mark current file
         key_commands.insert(" ", Command::Mark);
 
@@ -150,6 +147,10 @@ impl CommandParser {
         key_commands.insert("paste", Command::Paste { overwrite: false });
         key_commands.insert("po", Command::Paste { overwrite: true });
         key_commands.insert("delete", Command::Delete);
+
+        // cd, mkdir
+        key_commands.insert("cd", Command::Cd);
+        key_commands.insert("mkdir", Command::Mkdir);
 
         // Quit
         key_commands.insert("q", Command::Quit);
