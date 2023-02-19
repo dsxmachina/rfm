@@ -80,7 +80,7 @@ pub struct PanelState {
     /// Since the [`ContentManager`] works asynchronously we need this mechanism,
     /// because there is no guarantee that requests that were sent earlier,
     /// will also finish earlier.
-    cnt: u64,
+    pub cnt: u64, // TODO: remove pub
 
     /// Path of the panel
     path: PathBuf,
@@ -185,17 +185,28 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
         let state = Arc::new(Mutex::new(PanelState::default()));
         let watcher_state = state.clone();
         let watcher_tx = content_tx.clone();
-        let watcher = notify::recommended_watcher(move |res| {
-            // TODO: Parse res and not react on everything
-            // ++ there is a bug; if a panel is inside the cache, it will not be re-parsed (?)
-            // ++ paste does not work as expected when pasting inside a child-directory
-            // Notification::new()
-            //     .summary(&format!("new-event: {:?}", res))
-            //     .show()
-            //     .unwrap();
-            let state = watcher_state.lock().clone();
-            let _ = watcher_tx.send(PanelUpdate { state });
-        })
+        let watcher = notify::recommended_watcher(
+            move |res: std::result::Result<notify::Event, notify::Error>| {
+                // TODO: Parse res and not react on everything
+                if let Ok(event) = res {
+                    match event.kind {
+                        notify::EventKind::Any
+                        | notify::EventKind::Create(_)
+                        | notify::EventKind::Modify(_)
+                        | notify::EventKind::Remove(_) => {
+                            let state = watcher_state.lock().clone();
+                            if let Err(e) = watcher_tx.send(PanelUpdate { state }) {
+                                Notification::new()
+                                    .summary(&format!("{:?}", e))
+                                    .show()
+                                    .unwrap();
+                            }
+                        }
+                        _ => (),
+                    }
+                }
+            },
+        )
         .expect("File-watcher error");
         ManagedPanel {
             panel: PanelType::empty(),

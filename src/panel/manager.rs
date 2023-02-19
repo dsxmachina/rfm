@@ -1,6 +1,7 @@
 use std::os::unix::prelude::MetadataExt;
 
 use crossterm::event::{Event, EventStream, KeyCode};
+use fs_extra::dir::CopyOptions;
 use futures::{FutureExt, StreamExt};
 use notify_rust::Notification;
 use time::OffsetDateTime;
@@ -258,7 +259,7 @@ impl PanelManager {
                 };
                 other = format!("{user} {group} {size_str} {modified}");
             } else {
-                permissions = String::from("unknown");
+                permissions = String::from("------------");
                 other = String::from("");
             }
 
@@ -653,8 +654,10 @@ impl PanelManager {
                     if let Event::Key(key_event) = event {
                         // If we hit escape - go back to normal mode.
                         if let KeyCode::Esc = key_event.code {
+                            if let Mode::Console{ .. } = self.mode {
+                                self.jump(pre_console_path.clone());
+                            }
                             self.mode = Mode::Normal;
-                            self.jump(pre_console_path.clone());
                             self.parser.clear();
                             self.redraw_panels();
                             self.redraw_footer();
@@ -695,20 +698,19 @@ impl PanelManager {
                                             }
                                         }
                                     }
-                                    Command::Paste { overwrite: _ } => {
+                                    Command::Paste { overwrite } => {
                                         self.unmark_items();
                                         if let Some(clipboard) = &self.clipboard {
                                             let current_path = self.center.panel().path();
-                                            Notification::new().summary(&format!("cut={}, n-items={}", clipboard.cut ,clipboard.files.len())).show().unwrap();
-                                            let func = if clipboard.cut {
-                                                std::fs::rename
+
+                                            let options = CopyOptions::new().skip_exist(!overwrite).overwrite(overwrite);
+                                            let result = if clipboard.cut {
+                                                fs_extra::move_items(&clipboard.files, current_path, &options)
                                             } else {
-                                                |from, to| { std::fs::copy(from, to).map(|_| ()) }
+                                                fs_extra::copy_items(&clipboard.files, current_path, &options)
                                             };
-                                            for f in clipboard.files.iter() {
-                                                let filename = f.file_name().unwrap_or_default();
-                                                let to = current_path.join(filename);
-                                                let _ = func(f, to);
+                                            if let Err(e) = result {
+                                                Notification::new().summary("error").body(&format!("{e}")).show().unwrap();
                                             }
                                             self.redraw_panels();
                                         }

@@ -1,4 +1,5 @@
 use cached::{cached, cached_result, Cached, SizedCache, TimedSizedCache};
+use notify_rust::Notification;
 use parking_lot::Mutex;
 use std::{
     hash::{Hash, Hasher},
@@ -47,39 +48,39 @@ pub struct Manager {
     preview_cache: SharedCache<PreviewPanel>,
 }
 
-cached_result! {
-    DIR_CONTENT: TimedSizedCache<PathBuf, Vec<DirElem>> = TimedSizedCache::with_size_and_lifespan(10, 2);
-    fn dir_content(path: PathBuf) -> Result<Vec<DirElem>, io::Error> = {
-        // read directory
-        let dir = std::fs::read_dir(path)?;
-        let mut out = Vec::new();
-        for item in dir {
-            out.push(DirElem::from(item?.path()))
-        }
-        // out.sort();
-        out.sort_by_cached_key(|a| a.name_lowercase().clone());
-        out.sort_by_cached_key(|a| !a.path().is_dir());
-        Ok(out)
+// cached_result! {
+//     DIR_CONTENT: TimedSizedCache<PathBuf, Vec<DirElem>> = TimedSizedCache::with_size_and_lifespan(10, 2);
+pub fn dir_content(path: PathBuf) -> Result<Vec<DirElem>, io::Error> {
+    // read directory
+    let dir = std::fs::read_dir(path)?;
+    let mut out = Vec::new();
+    for item in dir {
+        out.push(DirElem::from(item?.path()))
     }
+    // out.sort();
+    out.sort_by_cached_key(|a| a.name_lowercase().clone());
+    out.sort_by_cached_key(|a| !a.path().is_dir());
+    Ok(out)
 }
+// }
 
-cached_result! {
-    DIR_CONTENT_PREVIEW: TimedSizedCache<(PathBuf, usize), Vec<DirElem>> = TimedSizedCache::with_size_and_lifespan(10, 2);
-    fn dir_content_preview(path: PathBuf, max_elem: usize) -> Result<Vec<DirElem>, io::Error> = {
-        // read directory
-        let dir = std::fs::read_dir(path)?;
-        let mut out = Vec::new();
-        for (idx, item) in dir.enumerate() {
-            if idx >= max_elem {
-                break;
-            }
-            out.push(DirElem::from(item?.path()))
+// cached_result! {
+// DIR_CONTENT_PREVIEW: TimedSizedCache<(PathBuf, usize), Vec<DirElem>> = TimedSizedCache::with_size_and_lifespan(10, 2);
+fn dir_content_preview(path: PathBuf, max_elem: usize) -> Result<Vec<DirElem>, io::Error> {
+    // read directory
+    let dir = std::fs::read_dir(path)?;
+    let mut out = Vec::new();
+    for (idx, item) in dir.enumerate() {
+        if idx >= max_elem {
+            break;
         }
-        out.sort_by_cached_key(|a| a.name().to_lowercase());
-        out.sort_by_cached_key(|a| !a.path().is_dir());
-        Ok(out)
+        out.push(DirElem::from(item?.path()))
     }
+    out.sort_by_cached_key(|a| a.name().to_lowercase());
+    out.sort_by_cached_key(|a| !a.path().is_dir());
+    Ok(out)
 }
+// }
 
 cached! {
     FILE_PREVIEW: TimedSizedCache<PathBuf, FilePreview> = TimedSizedCache::with_size_and_lifespan(10, 5);
@@ -128,6 +129,7 @@ impl Manager {
                     if !update.state.path().is_dir() {
                         continue;
                     }
+                    // Notification::new().summary("dir-request").body(&format!("{}", update.state.cnt)).show().unwrap();
 
                     // First create a small preview (fast loading)
                     let dir_path = update.state.path().clone();
@@ -148,7 +150,7 @@ impl Manager {
                         if update.state.hash() != panel.content_hash() {
                             if self.dir_tx.send((panel.clone(), update.state.increased().increased())).await.is_err() {break;};
                         } else {
-                            // Notification::new().summary("unchanged hash").body(&format!("{}", update.hash)).show().unwrap();
+                            // Notification::new().summary("unchanged hash").body(&format!("{}", update.state.hash())).show().unwrap();
                         }
                         self.directory_cache.insert(update.state.path().clone(), panel.clone());
                         self.preview_cache.insert(update.state.path(), PreviewPanel::Dir(panel));
