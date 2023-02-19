@@ -24,7 +24,7 @@ pub struct DirElem {
     /// Full (canonicalized) path of the element
     path: PathBuf,
 
-    accessed: SystemTime,
+    modified: SystemTime,
 
     /// True if element is a hidden file or directory.
     is_hidden: bool,
@@ -92,11 +92,11 @@ impl<P: AsRef<Path>> From<P> for DirElem {
             .map(|s| s.to_string())
             .unwrap_or_default();
 
-        let accessed = path
+        let modified = path
             .as_ref()
             .metadata()
             .ok()
-            .and_then(|m| m.accessed().ok())
+            .and_then(|m| m.modified().ok())
             .unwrap_or_else(|| SystemTime::now());
 
         let lowercase = name.to_lowercase();
@@ -110,7 +110,7 @@ impl<P: AsRef<Path>> From<P> for DirElem {
             name,
             lowercase,
             path,
-            accessed,
+            modified,
             is_hidden,
             is_marked: false,
         }
@@ -165,8 +165,8 @@ pub struct DirPanel {
     /// Path of the directory that the panel is based on
     path: PathBuf,
 
-    /// Last access time of the path
-    accessed: SystemTime,
+    /// Last modification time.
+    modified: SystemTime,
 
     /// Weather or not the panel is still loading some data
     loading: bool,
@@ -263,8 +263,8 @@ impl PanelContent for DirPanel {
         self.hash
     }
 
-    fn accessed(&self) -> SystemTime {
-        self.accessed
+    fn modified(&self) -> SystemTime {
+        self.modified
     }
 
     fn update_content(&mut self, mut content: Self) {
@@ -303,10 +303,10 @@ impl DirPanel {
         let selected = *non_hidden.first().unwrap_or(&0);
         let hash = hash_elements(&elements);
 
-        let accessed = path
+        let modified = path
             .metadata()
             .ok()
-            .and_then(|m| m.accessed().ok())
+            .and_then(|m| m.modified().ok())
             .unwrap_or_else(|| SystemTime::now());
 
         DirPanel {
@@ -315,7 +315,7 @@ impl DirPanel {
             selected_idx: selected,
             non_hidden_idx: 0,
             path,
-            accessed,
+            modified,
             loading: false,
             show_hidden: false,
             hash,
@@ -394,7 +394,7 @@ impl DirPanel {
             selected_idx: 0,
             non_hidden_idx: 0,
             path,
-            accessed: SystemTime::now(),
+            modified: SystemTime::now(),
             loading: true,
             show_hidden: false,
             hash: 0,
@@ -410,7 +410,7 @@ impl DirPanel {
             non_hidden: Vec::new(),
             selected_idx: 0,
             non_hidden_idx: 0,
-            accessed: SystemTime::now(),
+            modified: SystemTime::now(),
             path: "path-of-empty-panel".into(),
             loading: false,
             show_hidden: false,

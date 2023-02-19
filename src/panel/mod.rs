@@ -48,7 +48,7 @@ pub trait PanelContent: Draw + Clone + Send {
     fn content_hash(&self) -> u64;
 
     /// Access time of the path
-    fn accessed(&self) -> SystemTime;
+    fn modified(&self) -> SystemTime;
 
     /// Updates the content of the panel
     fn update_content(&mut self, content: Self);
@@ -271,7 +271,7 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                 .unwrap_or_else(|| SystemTime::now());
 
             if let Some(cached) = self.cache.get(&path) {
-                let cached_access_time = cached.accessed();
+                let cached_access_time = cached.modified();
                 // Update panel with content from cache
                 self.update(cached);
 

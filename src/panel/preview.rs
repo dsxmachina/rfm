@@ -25,7 +25,7 @@ pub enum Preview {
 #[derive(Debug, Clone)]
 pub struct FilePreview {
     path: PathBuf,
-    accessed: SystemTime,
+    modified: SystemTime,
     hash: u64,
     preview: Preview,
 }
@@ -131,10 +131,10 @@ impl FilePreview {
             .unwrap_or_default()
             .as_secs();
 
-        let accessed = path
+        let modified = path
             .metadata()
             .ok()
-            .and_then(|m| m.accessed().ok())
+            .and_then(|m| m.modified().ok())
             .unwrap_or_else(|| SystemTime::now());
 
         let preview = match extension {
@@ -174,7 +174,7 @@ impl FilePreview {
         FilePreview {
             path,
             hash,
-            accessed,
+            modified,
             preview,
         }
     }
@@ -189,8 +189,8 @@ impl PanelContent for FilePreview {
         self.hash
     }
 
-    fn accessed(&self) -> SystemTime {
-        self.accessed
+    fn modified(&self) -> SystemTime {
+        self.modified
     }
 
     fn update_content(&mut self, content: Self) {
@@ -229,10 +229,10 @@ impl PanelContent for PreviewPanel {
         }
     }
 
-    fn accessed(&self) -> SystemTime {
+    fn modified(&self) -> SystemTime {
         match self {
-            PreviewPanel::Dir(p) => p.accessed(),
-            PreviewPanel::File(p) => p.accessed(),
+            PreviewPanel::Dir(p) => p.modified(),
+            PreviewPanel::File(p) => p.modified(),
         }
     }
 

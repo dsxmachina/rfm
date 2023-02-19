@@ -213,11 +213,12 @@ impl PanelManager {
         }
         if let Some(selection) = self.center.panel().selected() {
             let path = selection.path();
-            let permissions = if let Ok(metadata) = path.metadata() {
-                unix_mode::to_string(metadata.permissions().mode())
+            let permissions;
+            if let Ok(metadata) = path.metadata() {
+                permissions = unix_mode::to_string(metadata.permissions().mode());
             } else {
-                String::from("unknown")
-            };
+                permissions = String::from("unknown");
+            }
 
             queue!(
                 self.stdout,
