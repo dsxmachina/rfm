@@ -131,6 +131,10 @@ impl Manager {
                     }
                     // Notification::new().summary("dir-request").body(&format!("{}", update.state.cnt)).show().unwrap();
 
+                    // NOTE: This was a nice idea,
+                    // however - if we have the "real" panel on the right (because dir-panels get also saved in preview buffer),
+                    // and then create a preview with this vvv code, we would downgrade the content of our directory.
+                    //
                     // First create a small preview (fast loading)
                     // let dir_path = update.state.path().clone();
                     // let result = spawn_blocking(move || dir_content_preview(dir_path, 16538)).await;
