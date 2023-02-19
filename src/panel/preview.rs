@@ -203,6 +203,8 @@ pub enum PreviewPanel {
     Dir(DirPanel),
     /// File preview
     File(FilePreview),
+    /// Empty panel
+    Empty,
 }
 
 impl Draw for PreviewPanel {
@@ -210,6 +212,20 @@ impl Draw for PreviewPanel {
         match self {
             PreviewPanel::Dir(panel) => panel.draw(stdout, x_range, y_range),
             PreviewPanel::File(preview) => preview.draw(stdout, x_range, y_range),
+            PreviewPanel::Empty => {
+                // Draw empty panel
+                for y in y_range {
+                    queue!(
+                        stdout,
+                        cursor::MoveTo(x_range.start, y),
+                        PrintStyledContent("│".dark_green().bold()),
+                    )?;
+                    for x in x_range.start + 1..x_range.end {
+                        queue!(stdout, cursor::MoveTo(x, y), Print(" "),)?;
+                    }
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -219,6 +235,7 @@ impl PanelContent for PreviewPanel {
         match self {
             PreviewPanel::Dir(panel) => panel.path(),
             PreviewPanel::File(preview) => preview.path(),
+            PreviewPanel::Empty => Path::new("path-of-empty-panel"),
         }
     }
 
@@ -226,6 +243,7 @@ impl PanelContent for PreviewPanel {
         match self {
             PreviewPanel::Dir(p) => p.content_hash(),
             PreviewPanel::File(p) => p.content_hash(),
+            PreviewPanel::Empty => 0,
         }
     }
 
@@ -233,6 +251,7 @@ impl PanelContent for PreviewPanel {
         match self {
             PreviewPanel::Dir(p) => p.modified(),
             PreviewPanel::File(p) => p.modified(),
+            PreviewPanel::Empty => UNIX_EPOCH,
         }
     }
 
@@ -243,7 +262,7 @@ impl PanelContent for PreviewPanel {
 
 impl BasePanel for PreviewPanel {
     fn empty() -> Self {
-        PreviewPanel::Dir(DirPanel::empty())
+        PreviewPanel::Empty
     }
 
     fn loading(path: PathBuf) -> Self {
@@ -252,30 +271,11 @@ impl BasePanel for PreviewPanel {
 }
 
 impl PreviewPanel {
-    // pub fn from_path<P: AsRef<Path>>(maybe_path: Option<P>) -> Result<PreviewPanel> {
-    //     if let Some(path) = maybe_path {
-    //         if path.as_ref().is_dir() {
-    //             Ok(PreviewPanel::Dir(DirPanel::empty()))
-    //         } else {
-    //             Ok(PreviewPanel::File(FilePreview::new(path.as_ref().into())))
-    //         }
-    //     } else {
-    //         Ok(PreviewPanel::Dir(DirPanel::empty()))
-    //     }
-    // }
-
-    pub fn empty() -> PreviewPanel {
-        PreviewPanel::Dir(DirPanel::empty())
-    }
-
-    pub fn loading(path: PathBuf) -> PreviewPanel {
-        PreviewPanel::Dir(DirPanel::loading(path))
-    }
-
-    pub fn path(&self) -> Option<PathBuf> {
+    pub fn maybe_path(&self) -> Option<PathBuf> {
         match self {
             PreviewPanel::Dir(panel) => Some(panel.path().to_path_buf()),
             PreviewPanel::File(panel) => Some(panel.path().to_path_buf()),
+            PreviewPanel::Empty => None,
         }
     }
 }

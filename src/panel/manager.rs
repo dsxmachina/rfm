@@ -423,7 +423,7 @@ impl PanelManager {
                 //     })
                 //     .expect("Receiver dropped or closed");
                 self.left.update_panel(self.center.panel().clone());
-                self.center.new_panel(self.right.panel().path());
+                self.center.new_panel(self.right.panel().maybe_path());
                 self.right.new_panel(self.center.panel().selected_path());
 
                 // All panels needs to be redrawn

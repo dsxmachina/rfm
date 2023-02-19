@@ -132,14 +132,14 @@ impl Manager {
                     // Notification::new().summary("dir-request").body(&format!("{}", update.state.cnt)).show().unwrap();
 
                     // First create a small preview (fast loading)
-                    let dir_path = update.state.path().clone();
-                    let result = spawn_blocking(move || dir_content_preview(dir_path, 16538)).await;
-                    if let Ok(Ok(content)) = result {
-                        let panel = DirPanel::new(content, update.state.path().clone());
-                        if update.state.hash() != panel.content_hash() {
-                            if self.dir_tx.send((panel, update.state.increased())).await.is_err() { break; };
-                        }
-                    }
+                    // let dir_path = update.state.path().clone();
+                    // let result = spawn_blocking(move || dir_content_preview(dir_path, 16538)).await;
+                    // if let Ok(Ok(content)) = result {
+                    //     let panel = DirPanel::new(content, update.state.path().clone());
+                    //     if update.state.hash() != panel.content_hash() {
+                    //         if self.dir_tx.send((panel, update.state.increased())).await.is_err() { break; };
+                    //     }
+                    // }
 
                     // Then create the full version
                     let dir_path = update.state.path().clone();
