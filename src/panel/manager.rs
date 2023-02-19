@@ -1,9 +1,10 @@
 use std::os::unix::prelude::MetadataExt;
 
-use chrono::{DateTime, Local};
 use crossterm::event::{Event, EventStream, KeyCode};
 use futures::{FutureExt, StreamExt};
 use notify_rust::Notification;
+use time::OffsetDateTime;
+use users::{get_group_by_gid, get_user_by_uid};
 
 use crate::commands::{Command, CommandParser};
 
@@ -217,21 +218,48 @@ impl PanelManager {
         if let Some(selection) = self.center.panel().selected() {
             let path = selection.path();
             let permissions;
-            let modified;
+            let other;
             if let Ok(metadata) = path.metadata() {
                 permissions = unix_mode::to_string(metadata.permissions().mode());
-                modified = metadata
+                let modified = metadata
                     .modified()
+                    .map(|t| OffsetDateTime::from(t))
                     .map(|t| {
-                        DateTime::<Local>::from(t)
-                            .format("%Y-%0m-%0d %0H:%0M:%0S")
-                            .to_string()
+                        format!(
+                            "{}-{:02}-{:02} {:02}:{:02}:{:02}",
+                            t.year(),
+                            u8::from(t.month()),
+                            t.day(),
+                            t.hour(),
+                            t.minute(),
+                            t.second()
+                        )
                     })
                     .unwrap_or_else(|_| String::from("cannot read timestamp"));
-                metadata.uid()
+                let user = get_user_by_uid(metadata.uid())
+                    .and_then(|u| u.name().to_str().map(String::from))
+                    .unwrap_or_default();
+                let group = get_group_by_gid(metadata.gid())
+                    .and_then(|g| g.name().to_str().map(String::from))
+                    .unwrap_or_default();
+                let size = metadata.size();
+                let size_str = match size {
+                    0..=1023 => format!("{}B", size),
+                    1024..=1048575 => format!("{:.1}K", (size as f64) / 1024.),
+                    1048576..=1073741823 => format!("{:.1}M", (size as f64) / 1048576.),
+                    1073741824..=1099511627775 => format!("{:.2}G", (size as f64) / 1073741824.),
+                    1099511627776..=1125899906842623 => {
+                        format!("{:.3}T", (size as f64) / 1099511627776.)
+                    }
+                    1125899906842624..=1152921504606846976 => {
+                        format!("{:4}P", (size as f64) / 1125899906842624.)
+                    }
+                    _ => format!("too big"),
+                };
+                other = format!("{user} {group} {size_str} {modified}");
             } else {
                 permissions = String::from("unknown");
-                modified = String::from("unknown")
+                other = String::from("");
             }
 
             queue!(
@@ -240,7 +268,7 @@ impl PanelManager {
                 Clear(ClearType::CurrentLine),
                 style::PrintStyledContent(permissions.dark_cyan()),
                 Print("   "),
-                Print(modified)
+                Print(other)
             )?;
         }
 
@@ -767,4 +795,3 @@ impl PanelManager {
         Ok(())
     }
 }
- 
