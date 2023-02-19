@@ -1,3 +1,6 @@
+use std::os::unix::prelude::MetadataExt;
+
+use chrono::{DateTime, Local};
 use crossterm::event::{Event, EventStream, KeyCode};
 use futures::{FutureExt, StreamExt};
 use notify_rust::Notification;
@@ -214,10 +217,21 @@ impl PanelManager {
         if let Some(selection) = self.center.panel().selected() {
             let path = selection.path();
             let permissions;
+            let modified;
             if let Ok(metadata) = path.metadata() {
                 permissions = unix_mode::to_string(metadata.permissions().mode());
+                modified = metadata
+                    .modified()
+                    .map(|t| {
+                        DateTime::<Local>::from(t)
+                            .format("%Y-%0m-%0d %0H:%0M:%0S")
+                            .to_string()
+                    })
+                    .unwrap_or_else(|_| String::from("cannot read timestamp"));
+                metadata.uid()
             } else {
                 permissions = String::from("unknown");
+                modified = String::from("unknown")
             }
 
             queue!(
@@ -225,6 +239,8 @@ impl PanelManager {
                 cursor::MoveTo(0, self.layout.footer()),
                 Clear(ClearType::CurrentLine),
                 style::PrintStyledContent(permissions.dark_cyan()),
+                Print("   "),
+                Print(modified)
             )?;
         }
 
@@ -751,3 +767,4 @@ impl PanelManager {
         Ok(())
     }
 }
+ 
