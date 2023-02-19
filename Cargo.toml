@@ -20,6 +20,7 @@ pad = "0.1.6"
 parking_lot = "0.12.1"
 patricia_tree = "0.5.5"
 rand = "0.8.5"
+tempfile = "3.3.0"
 thiserror = "1.0.38"
 time = {version = "0.3.19", features = ["formatting"]}
 tokio = { version = "1.25.0", features = ["full"] }

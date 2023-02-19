@@ -609,6 +609,8 @@ impl PanelManager {
         // Remember path before we jumped into console
         let mut pre_console_path: PathBuf = self.center.panel().path().to_path_buf();
 
+        let trash_dir = tempfile::tempdir()?;
+
         loop {
             let event_reader = self.event_reader.next().fuse();
             tokio::select! {
@@ -703,14 +705,13 @@ impl PanelManager {
                                     }
                                     Command::Delete => {
                                         let files = self.marked_or_selected();
-                                        Notification::new().summary(&format!("Delete {} items", files.len())).show().unwrap();
+                                        Notification::new()
+                                            .summary(&format!("Delete {} items", files.len()))
+                                            .body(&format!("{}", trash_dir.path().display())).show().unwrap();
                                         self.unmark_items();
-                                        for f in files {
-                                            if f.is_dir() {
-                                                // let _ = std::fs::remove_dir_all(f);
-                                            } else {
-                                                // let _ = std::fs::remove_file(f);
-                                            }
+                                        let options = CopyOptions::new().overwrite(true);
+                                        if let Err(e) = fs_extra::move_items(&files, trash_dir.path(), &options) {
+                                                Notification::new().summary("error").body(&format!("{e}")).show().unwrap();
                                         }
                                     }
                                     Command::Paste { overwrite } => {

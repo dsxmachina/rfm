@@ -1428,6 +1428,7 @@ dependencies = [
  "parking_lot",
  "patricia_tree",
  "rand 0.8.5",
+ "tempfile",
  "thiserror",
  "time",
  "tokio",
