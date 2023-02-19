@@ -248,6 +248,12 @@ impl Draw for DirPanel {
                         .italic()
                 ),
             )?;
+        } else if self.elements.is_empty() {
+            queue!(
+                stdout,
+                cursor::MoveTo(x_range.start + 1, y_range.start),
+                PrintStyledContent("empty".white().on_red().bold()),
+            )?;
         }
 
         Ok(())
