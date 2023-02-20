@@ -1,4 +1,5 @@
 use std::{
+    fs::read_dir,
     os::unix::prelude::MetadataExt,
     slice::{Iter, IterMut},
     time::SystemTime,
@@ -31,8 +32,8 @@ pub struct DirElem {
     /// Weather or not the file is an executable
     is_executable: bool,
 
-    /// String to display file-size
-    file_size: String,
+    /// String to display either file-size or number of elements in directory
+    suffix: String,
 
     /// True if element is a hidden file or directory.
     is_hidden: bool,
@@ -69,8 +70,13 @@ impl DirElem {
     }
 
     pub fn print_styled(&self, selected: bool, max_len: u16) -> PrintStyledContent<String> {
-        let name =
-            format!(" {}", self.name).with_exact_width(usize::from(max_len).saturating_sub(1));
+        let name_len = usize::from(max_len)
+            .saturating_sub(self.suffix.len())
+            .saturating_sub(4);
+        let name = self.name.with_exact_width(name_len);
+
+        let string = format!(" {name} {} ", self.suffix);
+
         let mut style = ContentStyle::new();
         if self.path.is_dir() {
             style = style.dark_green().bold();
@@ -85,7 +91,7 @@ impl DirElem {
         if selected {
             style = style.negative().bold();
         }
-        PrintStyledContent(StyledContent::new(style, name))
+        PrintStyledContent(StyledContent::new(style, string))
     }
 
     pub fn into_parts(self) -> (String, PathBuf) {
@@ -118,14 +124,20 @@ impl<P: AsRef<Path>> From<P> for DirElem {
             | is_allowed(unix_mode::Accessor::Group, unix_mode::Access::Execute, mode)
             | is_allowed(unix_mode::Accessor::Other, unix_mode::Access::Execute, mode);
 
-        let file_size = file_size_str(size);
+        let suffix = if path.is_dir() {
+            read_dir(&path)
+                .map(|res| res.into_iter().count().to_string())
+                .unwrap_or_default()
+        } else {
+            file_size_str(size)
+        };
 
         DirElem {
             name,
             lowercase,
             path,
             is_hidden,
-            file_size,
+            suffix,
             is_executable,
             is_marked: false,
         }
