@@ -649,7 +649,7 @@ impl PanelManager {
         }
     }
 
-    pub async fn run(mut self) -> Result<()> {
+    pub async fn run(mut self) -> Result<PathBuf> {
         // Initial draw
         self.redraw_everything();
         self.draw()?;
@@ -871,6 +871,6 @@ impl PanelManager {
             .queue(cursor::MoveTo(0, 0))?
             .queue(cursor::Show)?
             .flush()?;
-        Ok(())
+        Ok(self.center.panel().path().to_path_buf())
     }
 }

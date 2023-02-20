@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+use clap::Parser;
 use content::SharedCache;
 use crossterm::{
     cursor,
@@ -7,7 +8,11 @@ use crossterm::{
     QueueableCommand, Result,
 };
 use panel::manager::PanelManager;
-use std::io::stdout;
+use std::{
+    fs::OpenOptions,
+    io::{stdout, Write},
+    path::PathBuf,
+};
 use tokio::sync::mpsc;
 
 mod commands;
@@ -15,8 +20,19 @@ mod content;
 // mod manager;
 mod panel;
 
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Makes rfm act like a diretory chooser. Upon quitting
+    /// it will write the full path of the last visited directory to CHOOSEDIR
+    #[arg(long)]
+    choosedir: Option<PathBuf>,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = Args::parse();
+
     enable_raw_mode()?;
 
     // Initialize terminal
@@ -65,12 +81,27 @@ async fn main() -> Result<()> {
     disable_raw_mode()?;
 
     match panel_result {
-        Ok(Err(e)) => println!("{e}"),
-        Err(e) => println!("{e}"),
-        _ => (),
+        Ok(Ok(path)) => {
+            if let Some(choosedir) = args.choosedir {
+                if !choosedir.exists() {
+                    eprintln!("Error: {} does not exist!", choosedir.display());
+                } else if !choosedir.is_file() {
+                    eprintln!("Error: {} is not a file!", choosedir.display());
+                }
+                if choosedir.exists() && choosedir.is_file() {
+                    // Write output to file
+                    let mut file = OpenOptions::new()
+                        .write(true)
+                        .open(choosedir.canonicalize()?)?;
+                    file.write_all(format!("{}", path.display()).as_bytes())?;
+                }
+            }
+        }
+        Ok(Err(e)) => eprintln!("{e}"),
+        Err(e) => eprintln!("{e}"),
     }
     match content_result {
-        Err(e) => println!("{e}"),
+        Err(e) => eprintln!("{e}"),
         _ => (),
     }
     Ok(())
