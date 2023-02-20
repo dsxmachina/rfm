@@ -43,12 +43,12 @@ struct Clipboard {
     cut: bool,
 }
 
-enum Operation {
-    MoveItems { from: Vec<PathBuf>, to: PathBuf },
-    CopyItems { from: Vec<PathBuf>, to: PathBuf },
-    Mkdir { path: PathBuf },
-    Move(Movement),
-}
+// enum Operation {
+//     MoveItems { from: Vec<PathBuf>, to: PathBuf },
+//     CopyItems { from: Vec<PathBuf>, to: PathBuf },
+//     Mkdir { path: PathBuf },
+//     Move(Movement),
+// }
 
 pub struct PanelManager {
     /// Left panel
@@ -64,9 +64,8 @@ pub struct PanelManager {
     /// Clipboard
     clipboard: Option<Clipboard>,
 
-    /// Undo/Redo stack
-    stack: Vec<Operation>,
-
+    // /// Undo/Redo stack
+    // stack: Vec<Operation>,
     /// Miller-Columns layout
     layout: MillerColumns,
 
@@ -125,7 +124,7 @@ impl PanelManager {
             mode: Mode::Normal,
             clipboard: None,
             layout,
-            stack: Vec::new(),
+            // stack: Vec::new(),
             show_hidden: false,
             redraw: Redraw {
                 left: true,
@@ -369,29 +368,39 @@ impl PanelManager {
         Ok(())
     }
 
-    fn undo(&mut self) {
-        let last_operation = self.stack.pop();
-        if last_operation.is_none() {
-            return;
-        }
-        match last_operation.unwrap() {
-            Operation::MoveItems { from, to } => {
-                for item in from {
-                    let current_path = item.components().last().map(|p| to.join(p));
-                }
-                todo!("move items back");
-            }
-            Operation::CopyItems { from, to } => {
-                todo!("delete items");
-            }
-            Operation::Mkdir { path } => {
-                todo!("remove directory");
-            }
-            Operation::Move(_) => {
-                todo!("unmove");
-            }
-        }
-    }
+    // TODO: Think about new concept for this
+    // fn undo(&mut self) {
+    //     let last_operation = self.stack.pop();
+    //     if last_operation.is_none() {
+    //         return;
+    //     }
+    //     match last_operation.unwrap() {
+    //         Operation::MoveItems { from, to } => {
+    //             // This is harder than initially thought;
+    //             // whenever we overwrite something while moving,
+    //             // there is no way of undoing this.
+    //             // In this case, we must forbid that something can be overwritten at all,
+    //             // and instead before writing the new file to the location, we have to move the
+    //             // old one to the trash.
+    //             // But if we then undo this - we would again overwrite the file we want to "un-move".
+    //             //
+    //             // So we need more thoughts on that.
+    //             for item in from {
+    //                 let current_path = item.components().last().map(|p| to.join(p));
+    //             }
+    //             todo!("move items back");
+    //         }
+    //         Operation::CopyItems { from, to } => {
+    //             todo!("delete items");
+    //         }
+    //         Operation::Mkdir { path } => {
+    //             todo!("remove directory");
+    //         }
+    //         Operation::Move(_) => {
+    //             todo!("unmove");
+    //         }
+    //     }
+    // }
 
     fn toggle_hidden(&mut self) {
         self.show_hidden = !self.show_hidden;
@@ -418,7 +427,7 @@ impl PanelManager {
             self.right.new_panel(self.center.panel().selected_path());
             self.redraw_center();
             self.redraw_right();
-            self.stack.push(Operation::Move(Movement::Up));
+            // self.stack.push(Operation::Move(Movement::Up));
         }
     }
 
@@ -427,7 +436,7 @@ impl PanelManager {
             self.right.new_panel(self.center.panel().selected_path());
             self.redraw_center();
             self.redraw_right();
-            self.stack.push(Operation::Move(Movement::Down));
+            // self.stack.push(Operation::Move(Movement::Down));
         }
     }
 
@@ -478,7 +487,7 @@ impl PanelManager {
             } else {
                 self.open(selected);
             }
-            self.stack.push(Operation::Move(Movement::Right));
+            // self.stack.push(Operation::Move(Movement::Right));
         }
     }
 
@@ -511,7 +520,7 @@ impl PanelManager {
 
         // All panels needs to be redrawn
         self.redraw_panels();
-        self.stack.push(Operation::Move(Movement::Left));
+        // self.stack.push(Operation::Move(Movement::Left));
     }
 
     fn jump(&mut self, path: PathBuf) {
@@ -749,7 +758,7 @@ impl PanelManager {
                                             .body(&format!("{}", trash_dir.path().display())).show().unwrap();
                                         self.unmark_items();
                                         let options = CopyOptions::new().overwrite(true);
-                                        self.stack.push(Operation::MoveItems { from: files.clone(), to: trash_dir.path().to_path_buf() });
+                                        // self.stack.push(Operation::MoveItems { from: files.clone(), to: trash_dir.path().to_path_buf() });
                                         if let Err(e) = fs_extra::move_items(&files, trash_dir.path(), &options) {
                                                 Notification::new().summary("error").body(&format!("{e}")).show().unwrap();
                                         }
@@ -761,10 +770,10 @@ impl PanelManager {
 
                                             let options = CopyOptions::new().skip_exist(!overwrite).overwrite(overwrite);
                                             let result = if clipboard.cut {
-                                                self.stack.push(Operation::MoveItems { from: clipboard.files.clone(), to: current_path.to_path_buf() });
+                                                // self.stack.push(Operation::MoveItems { from: clipboard.files.clone(), to: current_path.to_path_buf() });
                                                 fs_extra::move_items(&clipboard.files, current_path, &options)
                                             } else {
-                                                self.stack.push(Operation::CopyItems { from: clipboard.files.clone(), to: current_path.to_path_buf() });
+                                                // self.stack.push(Operation::CopyItems { from: clipboard.files.clone(), to: current_path.to_path_buf() });
                                                 fs_extra::copy_items(&clipboard.files, current_path, &options)
                                             };
                                             if let Err(e) = result {
@@ -818,7 +827,7 @@ impl PanelManager {
                                     }
                                     KeyCode::Enter => {
                                         let new_dir = console.joined_input();
-                                        self.stack.push(Operation::Mkdir { path: new_dir.clone() });
+                                        // self.stack.push(Operation::Mkdir { path: new_dir.clone() });
                                         if let Err(e) = fs_extra::dir::create(new_dir, false) {
                                             Notification::new().summary("error").body(&format!("{e}")).show().unwrap();
                                         }
