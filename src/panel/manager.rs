@@ -756,9 +756,9 @@ impl PanelManager {
                                     }
                                     Command::Delete => {
                                         let files = self.marked_or_selected();
-                                        Notification::new()
-                                            .summary(&format!("Delete {} items", files.len()))
-                                            .body(&format!("{}", trash_dir.path().display())).show().unwrap();
+                                        // Notification::new()
+                                        //     .summary(&format!("Delete {} items", files.len()))
+                                        //     .body(&format!("{}", trash_dir.path().display())).show().unwrap();
                                         self.unmark_items();
                                         let options = CopyOptions::new().overwrite(true);
                                         // self.stack.push(Operation::MoveItems { from: files.clone(), to: trash_dir.path().to_path_buf() });
