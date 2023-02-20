@@ -1,9 +1,13 @@
 use std::{
+    os::unix::prelude::MetadataExt,
     slice::{Iter, IterMut},
     time::SystemTime,
 };
 
 use crossterm::style::{ContentStyle, StyledContent};
+use unix_mode::is_allowed;
+
+use crate::util::file_size_str;
 
 use super::*;
 /// An element of a directory.
@@ -23,6 +27,12 @@ pub struct DirElem {
 
     /// Full (canonicalized) path of the element
     path: PathBuf,
+
+    /// Weather or not the file is an executable
+    is_executable: bool,
+
+    /// String to display file-size
+    file_size: String,
 
     /// True if element is a hidden file or directory.
     is_hidden: bool,
@@ -64,6 +74,8 @@ impl DirElem {
         let mut style = ContentStyle::new();
         if self.path.is_dir() {
             style = style.dark_green().bold();
+        } else if self.is_executable {
+            style = style.green().bold();
         } else {
             style = style.grey();
         }
@@ -97,11 +109,24 @@ impl<P: AsRef<Path>> From<P> for DirElem {
         // Always use an absolute path here
         let path: PathBuf = canonicalize(path.as_ref()).unwrap_or_else(|_| path.as_ref().into());
 
+        let (mode, size) = path
+            .metadata()
+            .map(|m| (m.permissions().mode(), m.size()))
+            .unwrap_or_default();
+
+        let is_executable = is_allowed(unix_mode::Accessor::User, unix_mode::Access::Execute, mode)
+            | is_allowed(unix_mode::Accessor::Group, unix_mode::Access::Execute, mode)
+            | is_allowed(unix_mode::Accessor::Other, unix_mode::Access::Execute, mode);
+
+        let file_size = file_size_str(size);
+
         DirElem {
             name,
             lowercase,
             path,
             is_hidden,
+            file_size,
+            is_executable,
             is_marked: false,
         }
     }

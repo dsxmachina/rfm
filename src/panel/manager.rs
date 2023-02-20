@@ -231,6 +231,7 @@ impl PanelManager {
             let path = selection.path();
             let permissions;
             let other;
+            // TODO: Maybe we can put all of this into the DirElem and be done with it.
             if let Ok(metadata) = path.metadata() {
                 permissions = unix_mode::to_string(metadata.permissions().mode());
                 let modified = metadata

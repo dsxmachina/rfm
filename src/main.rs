@@ -17,8 +17,8 @@ use tokio::sync::mpsc;
 
 mod commands;
 mod content;
-// mod manager;
 mod panel;
+mod util;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
