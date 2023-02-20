@@ -24,8 +24,6 @@ pub struct DirElem {
     /// Full (canonicalized) path of the element
     path: PathBuf,
 
-    modified: SystemTime,
-
     /// True if element is a hidden file or directory.
     is_hidden: bool,
 
@@ -92,13 +90,6 @@ impl<P: AsRef<Path>> From<P> for DirElem {
             .map(|s| s.to_string())
             .unwrap_or_default();
 
-        let modified = path
-            .as_ref()
-            .metadata()
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .unwrap_or_else(|| SystemTime::now());
-
         let lowercase = name.to_lowercase();
 
         let is_hidden = name.starts_with('.') || name.starts_with("__") || name.ends_with(".swp");
@@ -110,7 +101,6 @@ impl<P: AsRef<Path>> From<P> for DirElem {
             name,
             lowercase,
             path,
-            modified,
             is_hidden,
             is_marked: false,
         }
