@@ -729,6 +729,9 @@ impl PanelManager {
                                     Command::Move(direction) => {
                                         self.move_cursor(direction);
                                     }
+                                    Command::ViewTrash => {
+                                        self.jump(trash_dir.path().to_path_buf());
+                                    }
                                     Command::ToggleHidden => {
                                         self.toggle_hidden();
                                     }

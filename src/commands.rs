@@ -61,6 +61,7 @@ pub enum Movement {
 pub enum Command {
     Move(Movement),
     ToggleHidden,
+    ViewTrash,
     Cd,
     Mkdir,
     Cut,
@@ -128,6 +129,7 @@ impl CommandParser {
         );
         key_commands.insert("gm", Command::Move(Movement::JumpTo("~/Musik".into())));
         key_commands.insert("gN", Command::Move(Movement::JumpTo("/nix/store".into())));
+        key_commands.insert("gT", Command::ViewTrash);
 
         // Toggle hidden files
         key_commands.insert("zh", Command::ToggleHidden);
