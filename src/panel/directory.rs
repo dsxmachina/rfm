@@ -295,7 +295,7 @@ impl Draw for DirPanel {
             queue!(
                 stdout,
                 cursor::MoveTo(x_range.start + 1, y_range.start),
-                PrintStyledContent("empty".white().on_red().bold()),
+                PrintStyledContent("(empty)".dark_grey().italic()),
             )?;
         }
         Ok(())
