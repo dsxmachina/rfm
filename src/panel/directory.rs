@@ -86,6 +86,8 @@ impl DirElem {
                     name.pop();
                 }
             }
+            name.pop();
+            name.push('~');
         }
         // let name = self.name.with_exact_width(name_len);
 
