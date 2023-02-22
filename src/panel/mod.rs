@@ -277,11 +277,11 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                         //     .unwrap();
                     }
                     Err(e) => {
-                        Notification::new()
-                            .summary("watch-error")
-                            .body(&format!("{e:?}"))
-                            .show()
-                            .unwrap();
+                        // Notification::new()
+                        //     .summary("watch-error")
+                        //     .body(&format!("{e:?}"))
+                        //     .show()
+                        //     .unwrap();
                     }
                 }
             }
@@ -350,11 +350,11 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                     //     .unwrap();
                 }
                 Err(e) => {
-                    Notification::new()
-                        .summary("unwatch-error")
-                        .body(&format!("{e:?}"))
-                        .show()
-                        .unwrap();
+                    // Notification::new()
+                    //     .summary("unwatch-error")
+                    //     .body(&format!("{e:?}"))
+                    //     .show()
+                    //     .unwrap();
                 }
             }
         }
@@ -371,11 +371,11 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                     //     .unwrap();
                 }
                 Err(e) => {
-                    Notification::new()
-                        .summary("watch-error")
-                        .body(&format!("{e:?}"))
-                        .show()
-                        .unwrap();
+                    // Notification::new()
+                    //     .summary("watch-error")
+                    //     .body(&format!("{e:?}"))
+                    //     .show()
+                    //     .unwrap();
                 }
             }
         }
