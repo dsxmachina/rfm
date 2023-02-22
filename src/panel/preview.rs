@@ -135,7 +135,7 @@ impl FilePreview {
             .metadata()
             .ok()
             .and_then(|m| m.modified().ok())
-            .unwrap_or_else(|| SystemTime::now());
+            .unwrap_or_else(SystemTime::now);
 
         let preview = match extension {
             "png" | "bmp" | "jpg" | "jpeg" => {

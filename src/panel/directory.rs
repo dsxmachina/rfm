@@ -355,7 +355,7 @@ impl DirPanel {
             .metadata()
             .ok()
             .and_then(|m| m.modified().ok())
-            .unwrap_or_else(|| SystemTime::now());
+            .unwrap_or_else(SystemTime::now);
 
         DirPanel {
             elements,

@@ -236,7 +236,7 @@ impl PanelManager {
                 permissions = unix_mode::to_string(metadata.permissions().mode());
                 let modified = metadata
                     .modified()
-                    .map(|t| OffsetDateTime::from(t))
+                    .map(OffsetDateTime::from)
                     .map(|t| {
                         format!(
                             "{}-{:02}-{:02} {:02}:{:02}:{:02}",
@@ -257,7 +257,7 @@ impl PanelManager {
                     .unwrap_or_default();
                 let size = metadata.size();
                 let size_str = match size {
-                    0..=1023 => format!("{}B", size),
+                    0..=1023 => format!("{size}B"),
                     1024..=1048575 => format!("{:.1}K", (size as f64) / 1024.),
                     1048576..=1073741823 => format!("{:.1}M", (size as f64) / 1048576.),
                     1073741824..=1099511627775 => format!("{:.2}G", (size as f64) / 1073741824.),
@@ -267,7 +267,7 @@ impl PanelManager {
                     1125899906842624..=1152921504606846976 => {
                         format!("{:4}P", (size as f64) / 1125899906842624.)
                     }
-                    _ => format!("too big"),
+                    _ => "too big".to_string(),
                 };
                 other = format!("{user} {group} {size_str} {modified}");
             } else {

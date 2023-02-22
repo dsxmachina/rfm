@@ -195,7 +195,7 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                             let state = watcher_state.lock().clone();
                             if let Err(e) = watcher_tx.send(PanelUpdate { state }) {
                                 Notification::new()
-                                    .summary(&format!("{:?}", e))
+                                    .summary(&format!("{e:?}"))
                                     .show()
                                     .unwrap();
                             }
@@ -205,7 +205,7 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                                 let state = watcher_state.lock().clone();
                                 if let Err(e) = watcher_tx.send(PanelUpdate { state }) {
                                     Notification::new()
-                                        .summary(&format!("{:?}", e))
+                                        .summary(&format!("{e:?}"))
                                         .show()
                                         .unwrap();
                                 }
@@ -279,7 +279,7 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                     Err(e) => {
                         Notification::new()
                             .summary("watch-error")
-                            .body(&format!("{:?}", e))
+                            .body(&format!("{e:?}"))
                             .show()
                             .unwrap();
                     }
@@ -290,7 +290,7 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                 .metadata()
                 .ok()
                 .and_then(|m| m.accessed().ok())
-                .unwrap_or_else(|| SystemTime::now());
+                .unwrap_or_else(SystemTime::now);
 
             if let Some(cached) = self.cache.get(&path) {
                 let cached_access_time = cached.modified();
@@ -352,7 +352,7 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                 Err(e) => {
                     Notification::new()
                         .summary("unwatch-error")
-                        .body(&format!("{:?}", e))
+                        .body(&format!("{e:?}"))
                         .show()
                         .unwrap();
                 }
@@ -373,7 +373,7 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                 Err(e) => {
                     Notification::new()
                         .summary("watch-error")
-                        .body(&format!("{:?}", e))
+                        .body(&format!("{e:?}"))
                         .show()
                         .unwrap();
                 }

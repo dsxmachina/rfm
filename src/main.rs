@@ -108,13 +108,11 @@ async fn main() -> Result<()> {
         Ok(Err(e)) => eprintln!("{e}"),
         Err(e) => eprintln!("Error in panel-task: {e}"),
     }
-    match dir_mngr_result {
-        Err(e) => eprintln!("Error in dir-mngr-task: {e}"),
-        _ => (),
+    if let Err(e) = dir_mngr_result {
+        eprintln!("Error in dir-mngr-task: {e}");
     }
-    match prev_mngr_result {
-        Err(e) => eprintln!("Error in preview-mngr-task: {e}"),
-        _ => (),
+    if let Err(e) = prev_mngr_result {
+        eprintln!("Error in preview-mngr-task: {e}");
     }
     Ok(())
 }

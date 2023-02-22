@@ -116,14 +116,15 @@ async fn fill_cache(
                     spawn_blocking(move || dir_content(handle_path)),
                 ));
             }
-        } else if entry.file_type().is_file() {
-            if entry.depth() == 1 && file_handles.len() < file_capacity {
-                let handle_path = entry.into_path();
-                file_handles.push((
-                    handle_path.clone(),
-                    spawn_blocking(move || FilePreview::new(handle_path)),
-                ));
-            }
+        } else if entry.file_type().is_file()
+            && entry.depth() == 1
+            && file_handles.len() < file_capacity
+        {
+            let handle_path = entry.into_path();
+            file_handles.push((
+                handle_path.clone(),
+                spawn_blocking(move || FilePreview::new(handle_path)),
+            ));
         }
         // If we reached the max capacity that we want to fill the cache up with,
         // stop traversing the directory any further.
@@ -224,9 +225,7 @@ impl PreviewManager {
                         let result = spawn_blocking(move || dir_content(dir_path)).await;
                         if let Ok(content) = result {
                             let panel = PreviewPanel::Dir(DirPanel::new(content, update.state.path().clone()));
-                            if update.state.hash() != panel.content_hash() {
-                                if self.tx.send((panel.clone(), update.state.increased())).await.is_err() { break; };
-                            }
+                            if update.state.hash() != panel.content_hash() && self.tx.send((panel.clone(), update.state.increased())).await.is_err() { break; }
                             self.preview_cache.insert(update.state.path(), panel);
                         }
                     } else {
@@ -235,9 +234,7 @@ impl PreviewManager {
                         let result = spawn_blocking(move || FilePreview::new(file_path)).await;
                         if let Ok(preview) = result {
                             let panel = PreviewPanel::File(preview);
-                            if update.state.hash() != panel.content_hash() {
-                                if self.tx.send((panel.clone(), update.state.increased())).await.is_err() { break; };
-                            }
+                            if update.state.hash() != panel.content_hash() && self.tx.send((panel.clone(), update.state.increased())).await.is_err() { break; }
                             self.preview_cache.insert(update.state.path(), panel);
                         }
                     }

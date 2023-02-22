@@ -306,7 +306,7 @@ impl Draw for SearchConsole {
         let x_start = x_range.start;
         let y_center = y_range.end.saturating_add(y_range.start) / 2;
 
-        let text = format!("{}", self.input);
+        let text = self.input.to_string();
 
         let offset = if self.input.len() < (width / 2).into() {
             width / 4
