@@ -48,32 +48,38 @@ pub struct Manager {
     preview_cache: SharedCache<PreviewPanel>,
 }
 
-pub fn dir_content(path: PathBuf) -> Result<Vec<DirElem>, io::Error> {
+pub fn dir_content(path: PathBuf) -> Vec<DirElem> {
     // read directory
-    let dir = std::fs::read_dir(path)?;
-    let mut out = Vec::new();
-    for item in dir {
-        out.push(DirElem::from(item?.path()))
+    match std::fs::read_dir(path) {
+        Ok(dir) => {
+            let mut out = Vec::new();
+            for item in dir.into_iter().flatten() {
+                out.push(DirElem::from(item.path()))
+            }
+            // out.sort();
+            out.sort_by_cached_key(|a| a.name_lowercase().clone());
+            out.sort_by_cached_key(|a| !a.path().is_dir());
+            out
+        }
+        Err(_) => Vec::new(),
     }
-    // out.sort();
-    out.sort_by_cached_key(|a| a.name_lowercase().clone());
-    out.sort_by_cached_key(|a| !a.path().is_dir());
-    Ok(out)
 }
 
-fn dir_content_preview(path: PathBuf, max_elem: usize) -> Result<Vec<DirElem>, io::Error> {
+fn dir_content_preview(path: PathBuf, max_elem: usize) -> Vec<DirElem> {
     // read directory
-    let dir = std::fs::read_dir(path)?;
-    let mut out = Vec::new();
-    for (idx, item) in dir.enumerate() {
-        if idx >= max_elem {
-            break;
+    match std::fs::read_dir(path) {
+        Ok(dir) => {
+            let mut out = Vec::new();
+            for item in dir.into_iter().flatten().take(max_elem) {
+                out.push(DirElem::from(item.path()))
+            }
+            // out.sort();
+            out.sort_by_cached_key(|a| a.name_lowercase().clone());
+            out.sort_by_cached_key(|a| !a.path().is_dir());
+            out
         }
-        out.push(DirElem::from(item?.path()))
+        Err(_) => Vec::new(),
     }
-    out.sort_by_cached_key(|a| a.name().to_lowercase());
-    out.sort_by_cached_key(|a| !a.path().is_dir());
-    Ok(out)
 }
 
 cached! {
@@ -84,9 +90,8 @@ cached! {
 }
 
 pub fn hash_elements(elements: &[DirElem]) -> u64 {
-    // let mut h: MetroHasher = Default::default();
     let mut h: fasthash::XXHasher = Default::default();
-    for elem in elements.iter() {
+    for elem in elements {
         elem.name().hash(&mut h);
     }
     h.finish()
@@ -125,24 +130,10 @@ impl Manager {
                     }
                     // Notification::new().summary("dir-request").body(&format!("{}", update.state.cnt)).show().unwrap();
 
-                    // NOTE: This was a nice idea,
-                    // however - if we have the "real" panel on the right (because dir-panels get also saved in preview buffer),
-                    // and then create a preview with this vvv code, we would downgrade the content of our directory.
-                    //
-                    // First create a small preview (fast loading)
-                    // let dir_path = update.state.path().clone();
-                    // let result = spawn_blocking(move || dir_content_preview(dir_path, 16538)).await;
-                    // if let Ok(Ok(content)) = result {
-                    //     let panel = DirPanel::new(content, update.state.path().clone());
-                    //     if update.state.hash() != panel.content_hash() {
-                    //         if self.dir_tx.send((panel, update.state.increased())).await.is_err() { break; };
-                    //     }
-                    // }
-
                     // Then create the full version
                     let dir_path = update.state.path().clone();
                     let result = spawn_blocking(move || dir_content(dir_path)).await;
-                    if let Ok(Ok(content)) = result {
+                    if let Ok(content) = result {
                         // Only update when the hash has changed
                         let panel = DirPanel::new(content, update.state.path().clone());
                         if update.state.hash() != panel.content_hash() {
@@ -162,7 +153,7 @@ impl Manager {
                     if update.state.path().is_dir() {
                         let dir_path = update.state.path().clone();
                         let result = spawn_blocking(move || dir_content_preview(dir_path, 16538)).await;
-                        if let Ok(Ok(content)) = result {
+                        if let Ok(content) = result {
                             let panel = PreviewPanel::Dir(DirPanel::new(content, update.state.path().clone()));
                             if update.state.hash() != panel.content_hash() {
                                 if self.prev_tx.send((panel.clone(), update.state.increased())).await.is_err() { break; };

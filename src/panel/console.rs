@@ -42,8 +42,6 @@ impl Draw for DirConsole {
             .unwrap_or("/")
             .to_string();
 
-        // TODO: Make this a box. Or something else.
-
         if height >= 3 {
             for x in x_range {
                 queue!(
@@ -127,7 +125,7 @@ impl DirConsole {
         self.path = path;
         self.recommendations.clear();
         // parse directory and create recommendations
-        let content = dir_content(self.path.clone()).unwrap_or_default();
+        let content = dir_content(self.path.clone());
         for item in content {
             if item.path().is_dir() && !item.is_hidden() {
                 self.recommendations.insert(item.name());
