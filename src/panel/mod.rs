@@ -249,7 +249,7 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                 //     .show()
                 //     .unwrap();
             }
-            Err(e) => {
+            Err(_e) => {
                 // Notification::new()
                 //     .summary("unwatch-error")
                 //     .body(&format!("{:?}", e))
@@ -268,23 +268,25 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
             }
 
             // Watch new path
-            match self
-                .watcher
-                .watch(path.as_path(), notify::RecursiveMode::NonRecursive)
-            {
-                Ok(_) => {
-                    // Notification::new()
-                    //     .summary("watching")
-                    //     .body(&format!("{}", path.display()))
-                    //     .show()
-                    //     .unwrap();
-                }
-                Err(e) => {
-                    // Notification::new()
-                    //     .summary("watch-error")
-                    //     .body(&format!("{:?}", e))
-                    //     .show()
-                    //     .unwrap();
+            if path.exists() {
+                match self
+                    .watcher
+                    .watch(path.as_path(), notify::RecursiveMode::NonRecursive)
+                {
+                    Ok(_) => {
+                        // Notification::new()
+                        //     .summary("watching")
+                        //     .body(&format!("{}", path.display()))
+                        //     .show()
+                        //     .unwrap();
+                    }
+                    Err(e) => {
+                        Notification::new()
+                            .summary("watch-error")
+                            .body(&format!("{:?}", e))
+                            .show()
+                            .unwrap();
+                    }
                 }
             }
 
@@ -342,44 +344,45 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
     /// To check if an update is necessary, call [`check_update`] on the new panel state.
     pub fn update_panel(&mut self, panel: PanelType) {
         // Watch new panels path
-        match self.watcher.unwatch(self.panel.path()) {
-            Ok(_) => {
-                // Notification::new()
-                //     .summary("unwatching")
-                //     .body(&format!("{}", self.panel.path().display()))
-                //     .show()
-                //     .unwrap();
-            }
-            Err(e) => {
-                // Notification::new()
-                //     .summary("unwatch-error")
-                //     .body(&format!("{:?}", e))
-                //     .show()
-                //     .unwrap();
-            }
-        }
-        match self
-            .watcher
-            .watch(panel.path(), notify::RecursiveMode::NonRecursive)
-        {
-            Ok(_) => {
-                // Notification::new()
-                //     .summary("watching")
-                //     .body(&format!("{}", panel.path().display()))
-                //     .show()
-                //     .unwrap();
-            }
-            Err(e) => {
-                // Notification::new()
-                //     .summary("watch-error")
-                //     .body(&format!("{:?}", e))
-                //     .show()
-                //     .unwrap();
+        if self.panel.path().exists() {
+            match self.watcher.unwatch(self.panel.path()) {
+                Ok(_) => {
+                    // Notification::new()
+                    //     .summary("unwatching")
+                    //     .body(&format!("{}", self.panel.path().display()))
+                    //     .show()
+                    //     .unwrap();
+                }
+                Err(e) => {
+                    Notification::new()
+                        .summary("unwatch-error")
+                        .body(&format!("{:?}", e))
+                        .show()
+                        .unwrap();
+                }
             }
         }
-        // let _ = self
-        //     .watcher
-        //     .watch(panel.path(), notify::RecursiveMode::NonRecursive);
+        if panel.path().exists() {
+            match self
+                .watcher
+                .watch(panel.path(), notify::RecursiveMode::NonRecursive)
+            {
+                Ok(_) => {
+                    // Notification::new()
+                    //     .summary("watching")
+                    //     .body(&format!("{}", panel.path().display()))
+                    //     .show()
+                    //     .unwrap();
+                }
+                Err(e) => {
+                    Notification::new()
+                        .summary("watch-error")
+                        .body(&format!("{:?}", e))
+                        .show()
+                        .unwrap();
+                }
+            }
+        }
         self.update(panel);
     }
 
