@@ -16,22 +16,22 @@ use crate::panel::{
 /// Cache that is shared by the content-manager and the panel-manager.
 #[derive(Clone)]
 pub struct SharedCache<Item: Clone> {
-    cache: Arc<Mutex<SizedCache<PathBuf, Item>>>,
+    inner: Arc<Mutex<SizedCache<PathBuf, Item>>>,
 }
 
 impl<Item: Clone> SharedCache<Item> {
     pub fn with_size(size: usize) -> Self {
         SharedCache {
-            cache: Arc::new(Mutex::new(SizedCache::with_size(size))),
+            inner: Arc::new(Mutex::new(SizedCache::with_size(size))),
         }
     }
 
     pub fn get(&self, path: &PathBuf) -> Option<Item> {
-        self.cache.lock().cache_get(path).cloned()
+        self.inner.lock().cache_get(path).cloned()
     }
 
     pub fn insert(&self, path: PathBuf, item: Item) -> Option<Item> {
-        self.cache.lock().cache_set(path, item)
+        self.inner.lock().cache_set(path, item)
     }
 }
 
@@ -48,8 +48,6 @@ pub struct Manager {
     preview_cache: SharedCache<PreviewPanel>,
 }
 
-// cached_result! {
-//     DIR_CONTENT: TimedSizedCache<PathBuf, Vec<DirElem>> = TimedSizedCache::with_size_and_lifespan(10, 2);
 pub fn dir_content(path: PathBuf) -> Result<Vec<DirElem>, io::Error> {
     // read directory
     let dir = std::fs::read_dir(path)?;
@@ -62,10 +60,7 @@ pub fn dir_content(path: PathBuf) -> Result<Vec<DirElem>, io::Error> {
     out.sort_by_cached_key(|a| !a.path().is_dir());
     Ok(out)
 }
-// }
 
-// cached_result! {
-// DIR_CONTENT_PREVIEW: TimedSizedCache<(PathBuf, usize), Vec<DirElem>> = TimedSizedCache::with_size_and_lifespan(10, 2);
 fn dir_content_preview(path: PathBuf, max_elem: usize) -> Result<Vec<DirElem>, io::Error> {
     // read directory
     let dir = std::fs::read_dir(path)?;
@@ -80,7 +75,6 @@ fn dir_content_preview(path: PathBuf, max_elem: usize) -> Result<Vec<DirElem>, i
     out.sort_by_cached_key(|a| !a.path().is_dir());
     Ok(out)
 }
-// }
 
 cached! {
     FILE_PREVIEW: TimedSizedCache<PathBuf, FilePreview> = TimedSizedCache::with_size_and_lifespan(10, 5);
