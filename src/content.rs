@@ -258,7 +258,7 @@ mod tests {
     fn test_dir_hashing_speed() {
         let path: PathBuf = "/home/someone/Bilder/ground_images/-3000_-2000_3000_2000_0".into();
         // read directory
-        let content = dir_content(path).unwrap();
+        let content = dir_content(path);
         let now = Instant::now();
         let hash = hash_elements(&content);
         let elapsed = now.elapsed().as_millis();
@@ -272,7 +272,7 @@ mod tests {
         let path: PathBuf = "/home/someone/Bilder/ground_images/-3000_-2000_3000_2000_0".into();
         // read directory
         let now = Instant::now();
-        let content = dir_content(path).unwrap();
+        let content = dir_content(path);
         let elapsed = now.elapsed().as_millis();
         println!("parsing {} elements took: {elapsed}ms", content.len(),);
         assert!(false);
@@ -282,7 +282,7 @@ mod tests {
     fn test_patricia_tree_speed() {
         let path: PathBuf = "/home/someone/Bilder/ground_images/-3000_-2000_3000_2000_0".into();
         // read directory
-        let content = dir_content(path).unwrap();
+        let content = dir_content(path);
         let mut set = PatriciaSet::new();
         let now = Instant::now();
         for item in content {
@@ -300,7 +300,7 @@ mod tests {
     fn test_patricia_map_speed() {
         let path: PathBuf = "/home/someone/Bilder/ground_images/-3000_-2000_3000_2000_0".into();
         // read directory
-        let content = dir_content(path).unwrap();
+        let content = dir_content(path);
         let mut map = PatriciaMap::new();
         let now = Instant::now();
         for (idx, item) in content.iter().enumerate() {
