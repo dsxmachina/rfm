@@ -8,7 +8,7 @@ use std::{
 use crossterm::style::{ContentStyle, StyledContent};
 use unix_mode::is_allowed;
 
-use crate::util::file_size_str;
+use crate::{content::dir_content, util::file_size_str};
 
 use super::*;
 /// An element of a directory.
@@ -73,7 +73,21 @@ impl DirElem {
         let name_len = usize::from(max_len)
             .saturating_sub(self.suffix.len())
             .saturating_sub(4);
-        let name = self.name.with_exact_width(name_len);
+        let mut name = format!("{:name_len$}", self.name);
+        // We have to truncate the name
+        if name.len() > name_len {
+            // FIX: If name_len does not lie on a char boundary,
+            // the truncate function will panic
+            if name.is_char_boundary(name_len) {
+                name.truncate(name_len);
+            } else {
+                // This is stupidly inefficient, but cannot panic.
+                while name.len() > name_len {
+                    name.pop();
+                }
+            }
+        }
+        // let name = self.name.with_exact_width(name_len);
 
         let string = format!(" {name} {} ", self.suffix);
 
@@ -282,7 +296,6 @@ impl Draw for DirPanel {
                 PrintStyledContent("empty".white().on_red().bold()),
             )?;
         }
-
         Ok(())
     }
 }
@@ -544,4 +557,24 @@ impl DirPanel {
             (self.non_hidden_idx.saturating_add(1), self.non_hidden.len())
         }
     }
+}
+
+#[test]
+fn test_panic() {
+    let path: PathBuf = "/home/someone/Downloads".into();
+    let content = dir_content(path.clone());
+    // let panel = DirPanel::new(content, path);
+
+    let mut stdout = stdout();
+
+    for entry in content {
+        assert!(queue!(
+            stdout,
+            cursor::MoveTo(0, 0),
+            PrintStyledContent("│".dark_green().bold()),
+            entry.print_styled(false, 12),
+        )
+        .is_ok());
+    }
+    stdout.flush().unwrap();
 }
