@@ -5,7 +5,7 @@ use crossterm::{
     cursor,
     event::DisableMouseCapture,
     terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType, DisableLineWrap},
-    ExecutableCommand, QueueableCommand, Result,
+    QueueableCommand, Result,
 };
 use panel::manager::PanelManager;
 use std::{

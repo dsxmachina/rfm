@@ -325,8 +325,8 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
         }
     }
 
-    // Swap the panel with some other managed panel
-    pub fn swap_panel(&mut self, other: &mut ManagedPanel<PanelType>) {
+    // TODO Swap the panel with some other managed panel
+    pub fn swap_panel(&mut self, _other: &mut ManagedPanel<PanelType>) {
         todo!()
     }
 

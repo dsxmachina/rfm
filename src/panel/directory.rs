@@ -8,7 +8,7 @@ use std::{
 use crossterm::style::{ContentStyle, StyledContent};
 use unix_mode::is_allowed;
 
-use crate::{content::dir_content, util::file_size_str};
+use crate::util::file_size_str;
 
 use super::*;
 /// An element of a directory.
