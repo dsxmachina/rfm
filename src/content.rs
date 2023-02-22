@@ -1,9 +1,8 @@
-use cached::{cached, cached_result, Cached, SizedCache, TimedSizedCache};
+use cached::{Cached, SizedCache};
 use notify_rust::Notification;
 use parking_lot::Mutex;
 use std::{
     hash::{Hash, Hasher},
-    io,
     path::PathBuf,
     sync::Arc,
 };
@@ -36,15 +35,17 @@ impl<Item: Clone> SharedCache<Item> {
 }
 
 /// Receives commands to parse the directory or generate a new preview.
-pub struct Manager {
-    preview_rx: mpsc::UnboundedReceiver<PanelUpdate>,
-    directory_rx: mpsc::UnboundedReceiver<PanelUpdate>,
-
-    dir_tx: mpsc::Sender<(DirPanel, PanelState)>,
-
-    prev_tx: mpsc::Sender<(PreviewPanel, PanelState)>,
-
+pub struct DirManager {
+    tx: mpsc::Sender<(DirPanel, PanelState)>,
+    rx: mpsc::UnboundedReceiver<PanelUpdate>,
     directory_cache: SharedCache<DirPanel>,
+    preview_cache: SharedCache<PreviewPanel>,
+}
+
+/// Receives commands to parse the directory or generate a new preview.
+pub struct PreviewManager {
+    tx: mpsc::Sender<(PreviewPanel, PanelState)>,
+    rx: mpsc::UnboundedReceiver<PanelUpdate>,
     preview_cache: SharedCache<PreviewPanel>,
 }
 
@@ -82,13 +83,6 @@ fn dir_content_preview(path: PathBuf, max_elem: usize) -> Vec<DirElem> {
     }
 }
 
-cached! {
-    FILE_PREVIEW: TimedSizedCache<PathBuf, FilePreview> = TimedSizedCache::with_size_and_lifespan(10, 5);
-    fn get_file_preview(path: PathBuf) -> FilePreview = {
-        FilePreview::new(path)
-    }
-}
-
 pub fn hash_elements(elements: &[DirElem]) -> u64 {
     let mut h: fasthash::XXHasher = Default::default();
     for elem in elements {
@@ -97,20 +91,16 @@ pub fn hash_elements(elements: &[DirElem]) -> u64 {
     h.finish()
 }
 
-impl Manager {
+impl DirManager {
     pub fn new(
         directory_cache: SharedCache<DirPanel>,
         preview_cache: SharedCache<PreviewPanel>,
-        directory_rx: mpsc::UnboundedReceiver<PanelUpdate>,
-        preview_rx: mpsc::UnboundedReceiver<PanelUpdate>,
-        dir_tx: mpsc::Sender<(DirPanel, PanelState)>,
-        prev_tx: mpsc::Sender<(PreviewPanel, PanelState)>,
+        tx: mpsc::Sender<(DirPanel, PanelState)>,
+        rx: mpsc::UnboundedReceiver<PanelUpdate>,
     ) -> Self {
-        Manager {
-            directory_rx,
-            preview_rx,
-            dir_tx,
-            prev_tx,
+        DirManager {
+            tx,
+            rx,
             directory_cache,
             preview_cache,
         }
@@ -120,7 +110,7 @@ impl Manager {
         loop {
             tokio::select! {
                 biased;
-                result = self.directory_rx.recv() => {
+                result = self.rx.recv() => {
                     if result.is_none() {
                         break;
                     }
@@ -137,7 +127,7 @@ impl Manager {
                         // Only update when the hash has changed
                         let panel = DirPanel::new(content, update.state.path().clone());
                         if update.state.hash() != panel.content_hash() {
-                            if self.dir_tx.send((panel.clone(), update.state.increased().increased())).await.is_err() {break;};
+                            if self.tx.send((panel.clone(), update.state.increased().increased())).await.is_err() {break;};
                         } else {
                             // Notification::new().summary("unchanged hash").body(&format!("{}", update.state.hash())).show().unwrap();
                         }
@@ -145,7 +135,29 @@ impl Manager {
                         self.preview_cache.insert(update.state.path(), PreviewPanel::Dir(panel));
                     }
                 }
-                result = self.preview_rx.recv() => {
+            }
+        }
+    }
+}
+
+impl PreviewManager {
+    pub fn new(
+        preview_cache: SharedCache<PreviewPanel>,
+        tx: mpsc::Sender<(PreviewPanel, PanelState)>,
+        rx: mpsc::UnboundedReceiver<PanelUpdate>,
+    ) -> Self {
+        PreviewManager {
+            tx,
+            rx,
+            preview_cache,
+        }
+    }
+
+    pub async fn run(mut self) {
+        loop {
+            tokio::select! {
+                biased;
+                result = self.rx.recv() => {
                     if result.is_none() {
                         break;
                     }
@@ -156,18 +168,18 @@ impl Manager {
                         if let Ok(content) = result {
                             let panel = PreviewPanel::Dir(DirPanel::new(content, update.state.path().clone()));
                             if update.state.hash() != panel.content_hash() {
-                                if self.prev_tx.send((panel.clone(), update.state.increased())).await.is_err() { break; };
+                                if self.tx.send((panel.clone(), update.state.increased())).await.is_err() { break; };
                             }
                             self.preview_cache.insert(update.state.path(), panel);
                         }
                     } else {
                         // Create preview
                         let file_path = update.state.path().clone();
-                        let result = spawn_blocking(move || get_file_preview(file_path)).await;
+                        let result = spawn_blocking(move || FilePreview::new(file_path)).await;
                         if let Ok(preview) = result {
                             let panel = PreviewPanel::File(preview);
                             if update.state.hash() != panel.content_hash() {
-                                if self.prev_tx.send((panel.clone(), update.state.increased())).await.is_err() { break; };
+                                if self.tx.send((panel.clone(), update.state.increased())).await.is_err() { break; };
                             }
                             self.preview_cache.insert(update.state.path(), panel);
                         }

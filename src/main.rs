@@ -45,8 +45,8 @@ async fn main() -> Result<()> {
         .queue(Clear(ClearType::All))?
         .queue(cursor::MoveTo(0, 0))?;
 
-    let directory_cache = SharedCache::with_size(50);
-    let preview_cache = SharedCache::with_size(50);
+    let directory_cache = SharedCache::with_size(1024);
+    let preview_cache = SharedCache::with_size(1024);
 
     let (dir_tx, dir_rx) = mpsc::channel(32);
     let (prev_tx, prev_rx) = mpsc::channel(32);
@@ -54,16 +54,17 @@ async fn main() -> Result<()> {
     let (preview_tx, preview_rx) = mpsc::unbounded_channel();
     let (directory_tx, directory_rx) = mpsc::unbounded_channel();
 
-    let content_manager = content::Manager::new(
+    let dir_manager = content::DirManager::new(
         directory_cache.clone(),
         preview_cache.clone(),
-        directory_rx,
-        preview_rx,
         dir_tx,
-        prev_tx,
+        directory_rx,
     );
 
-    let content_handle = tokio::spawn(content_manager.run());
+    let preview_manager = content::PreviewManager::new(preview_cache.clone(), prev_tx, preview_rx);
+
+    let dir_mngr_handle = tokio::spawn(dir_manager.run());
+    let prev_mngr_handle = tokio::spawn(preview_manager.run());
 
     let panel_manager = PanelManager::new(
         directory_cache,
@@ -76,14 +77,15 @@ async fn main() -> Result<()> {
     let panel_handle = tokio::spawn(panel_manager.run());
 
     let panel_result = panel_handle.await;
-    let content_result = content_handle.await;
+    let dir_mngr_result = dir_mngr_handle.await;
+    let prev_mngr_result = prev_mngr_handle.await;
 
     // Be a good citizen, cleanup
     stdout
-        .queue(Clear(ClearType::All))?
-        .queue(cursor::RestorePosition)?
+        .queue(Clear(ClearType::Purge))?
+        .queue(cursor::MoveTo(0, 0))?
         .queue(cursor::Show)?
-        .flush();
+        .flush()?;
     disable_raw_mode()?;
 
     match panel_result {
@@ -106,8 +108,12 @@ async fn main() -> Result<()> {
         Ok(Err(e)) => eprintln!("{e}"),
         Err(e) => eprintln!("Error in panel-task: {e}"),
     }
-    match content_result {
-        Err(e) => eprintln!("Error in content-task: {e}"),
+    match dir_mngr_result {
+        Err(e) => eprintln!("Error in dir-mngr-task: {e}"),
+        _ => (),
+    }
+    match prev_mngr_result {
+        Err(e) => eprintln!("Error in preview-mngr-task: {e}"),
         _ => (),
     }
     Ok(())
