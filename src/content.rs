@@ -250,79 +250,79 @@ impl PreviewManager {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use patricia_tree::{PatriciaMap, PatriciaSet};
-    use std::time::Instant;
+    // use super::*;
+    // use patricia_tree::{PatriciaMap, PatriciaSet};
+    // use std::time::Instant;
 
-    #[test]
-    fn test_dir_hashing_speed() {
-        let path: PathBuf = "/home/someone/Bilder/ground_images/-3000_-2000_3000_2000_0".into();
-        // read directory
-        let content = dir_content(path);
-        let now = Instant::now();
-        let hash = hash_elements(&content);
-        let elapsed = now.elapsed().as_millis();
-        println!("hashing {} elements took: {elapsed}ms", content.len(),);
-        println!("hash={hash}");
-        assert!(true);
-    }
+    // #[test]
+    // fn test_dir_hashing_speed() {
+    //     let path: PathBuf = "/home/someone/Bilder/ground_images/-3000_-2000_3000_2000_0".into();
+    //     // read directory
+    //     let content = dir_content(path);
+    //     let now = Instant::now();
+    //     let hash = hash_elements(&content);
+    //     let elapsed = now.elapsed().as_millis();
+    //     println!("hashing {} elements took: {elapsed}ms", content.len(),);
+    //     println!("hash={hash}");
+    //     assert!(true);
+    // }
 
-    #[test]
-    fn test_dir_parsing_speed() {
-        let path: PathBuf = "/home/someone/Bilder/ground_images/-3000_-2000_3000_2000_0".into();
-        // read directory
-        let now = Instant::now();
-        let content = dir_content(path);
-        let elapsed = now.elapsed().as_millis();
-        println!("parsing {} elements took: {elapsed}ms", content.len(),);
-        assert!(false);
-    }
+    // #[test]
+    // fn test_dir_parsing_speed() {
+    //     let path: PathBuf = "/home/someone/Bilder/ground_images/-3000_-2000_3000_2000_0".into();
+    //     // read directory
+    //     let now = Instant::now();
+    //     let content = dir_content(path);
+    //     let elapsed = now.elapsed().as_millis();
+    //     println!("parsing {} elements took: {elapsed}ms", content.len(),);
+    //     assert!(false);
+    // }
 
-    #[test]
-    fn test_patricia_tree_speed() {
-        let path: PathBuf = "/home/someone/Bilder/ground_images/-3000_-2000_3000_2000_0".into();
-        // read directory
-        let content = dir_content(path);
-        let mut set = PatriciaSet::new();
-        let now = Instant::now();
-        for item in content {
-            set.insert(item.name_lowercase());
-        }
-        let elapsed = now.elapsed().as_millis();
-        println!(
-            "building tree from {} elements took: {elapsed}ms",
-            set.len(),
-        );
-        assert!(false);
-    }
+    // #[test]
+    // fn test_patricia_tree_speed() {
+    //     let path: PathBuf = "/home/someone/Bilder/ground_images/-3000_-2000_3000_2000_0".into();
+    //     // read directory
+    //     let content = dir_content(path);
+    //     let mut set = PatriciaSet::new();
+    //     let now = Instant::now();
+    //     for item in content {
+    //         set.insert(item.name_lowercase());
+    //     }
+    //     let elapsed = now.elapsed().as_millis();
+    //     println!(
+    //         "building tree from {} elements took: {elapsed}ms",
+    //         set.len(),
+    //     );
+    //     assert!(false);
+    // }
 
-    #[test]
-    fn test_patricia_map_speed() {
-        let path: PathBuf = "/home/someone/Bilder/ground_images/-3000_-2000_3000_2000_0".into();
-        // read directory
-        let content = dir_content(path);
-        let mut map = PatriciaMap::new();
-        let now = Instant::now();
-        for (idx, item) in content.iter().enumerate() {
-            map.insert(item.name_lowercase(), idx);
-        }
-        let elapsed = now.elapsed().as_millis();
-        println!("building map from {} elements took: {elapsed}ms", map.len(),);
-        assert!(false);
-    }
+    // #[test]
+    // fn test_patricia_map_speed() {
+    //     let path: PathBuf = "/home/someone/Bilder/ground_images/-3000_-2000_3000_2000_0".into();
+    //     // read directory
+    //     let content = dir_content(path);
+    //     let mut map = PatriciaMap::new();
+    //     let now = Instant::now();
+    //     for (idx, item) in content.iter().enumerate() {
+    //         map.insert(item.name_lowercase(), idx);
+    //     }
+    //     let elapsed = now.elapsed().as_millis();
+    //     println!("building map from {} elements took: {elapsed}ms", map.len(),);
+    //     assert!(false);
+    // }
 
-    #[test]
-    fn test_image_load_speed() {
-        let now = Instant::now();
-        let img = image::io::Reader::open("/home/someone/Bilder/wallpaper_source/abstract/hologram_scheme_scifi_139294_1920x1080.jpg").unwrap().decode().unwrap();
-        let elapsed = now.elapsed().as_millis();
-        println!("loading image took {elapsed}ms");
-        let now = Instant::now();
-        let _small_img = img.thumbnail_exact(400, 300).into_rgb8();
-        let elapsed = now.elapsed().as_millis();
-        println!("processing image took {elapsed}ms");
-        assert!(true);
-    }
+    // #[test]
+    // fn test_image_load_speed() {
+    //     let now = Instant::now();
+    //     let img = image::io::Reader::open("/home/someone/Bilder/wallpaper_source/abstract/hologram_scheme_scifi_139294_1920x1080.jpg").unwrap().decode().unwrap();
+    //     let elapsed = now.elapsed().as_millis();
+    //     println!("loading image took {elapsed}ms");
+    //     let now = Instant::now();
+    //     let _small_img = img.thumbnail_exact(400, 300).into_rgb8();
+    //     let elapsed = now.elapsed().as_millis();
+    //     println!("processing image took {elapsed}ms");
+    //     assert!(true);
+    // }
 
     // #[test]
     // fn test_dir_parsing_speed() {

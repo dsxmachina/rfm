@@ -560,23 +560,3 @@ impl DirPanel {
         }
     }
 }
-
-#[test]
-fn test_panic() {
-    let path: PathBuf = "/home/someone/Downloads".into();
-    let content = dir_content(path.clone());
-    // let panel = DirPanel::new(content, path);
-
-    let mut stdout = stdout();
-
-    for entry in content {
-        assert!(queue!(
-            stdout,
-            cursor::MoveTo(0, 0),
-            PrintStyledContent("│".dark_green().bold()),
-            entry.print_styled(false, 12),
-        )
-        .is_ok());
-    }
-    stdout.flush().unwrap();
-}
