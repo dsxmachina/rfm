@@ -7,6 +7,7 @@ use std::{
     sync::Arc,
 };
 use tokio::{sync::mpsc, task::spawn_blocking};
+use walkdir::WalkDir;
 
 use crate::panel::{
     DirElem, DirPanel, FilePreview, PanelContent, PanelState, PanelUpdate, PreviewPanel,
@@ -31,6 +32,10 @@ impl<Item: Clone> SharedCache<Item> {
 
     pub fn insert(&self, path: PathBuf, item: Item) -> Option<Item> {
         self.inner.lock().cache_set(path, item)
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.inner.lock().cache_capacity().unwrap_or_default()
     }
 }
 
@@ -91,6 +96,57 @@ pub fn hash_elements(elements: &[DirElem]) -> u64 {
     h.finish()
 }
 
+async fn fill_cache(
+    path: PathBuf,
+    directory_cache: SharedCache<DirPanel>,
+    preview_cache: SharedCache<PreviewPanel>,
+) {
+    if !path.is_dir() {
+        return;
+    }
+    let file_capacity = preview_cache.capacity() / 4;
+    let dir_capacity = directory_cache.capacity() / 4;
+    let mut dir_handles = Vec::new();
+    let mut file_handles = Vec::new();
+    for entry in WalkDir::new(&path).max_depth(2).into_iter().flatten() {
+        if entry.file_type().is_dir() {
+            let handle_path = entry.into_path();
+            if dir_handles.len() < dir_capacity {
+                dir_handles.push((
+                    handle_path.clone(),
+                    spawn_blocking(move || dir_content(handle_path)),
+                ));
+            }
+        } else if entry.file_type().is_file() {
+            if entry.depth() == 1 && file_handles.len() < file_capacity {
+                let handle_path = entry.into_path();
+                file_handles.push((
+                    handle_path.clone(),
+                    spawn_blocking(move || FilePreview::new(handle_path)),
+                ));
+            }
+        }
+        // If we reached the max capacity that we want to fill the cache up with,
+        // stop traversing the directory any further.
+        if dir_handles.len() >= dir_capacity && file_handles.len() >= file_capacity {
+            break;
+        }
+    }
+    for (handle_path, handle) in file_handles {
+        if let Ok(content) = handle.await {
+            let panel = PreviewPanel::File(content);
+            preview_cache.insert(handle_path, panel);
+        }
+    }
+    for (handle_path, handle) in dir_handles {
+        if let Ok(content) = handle.await {
+            let panel = DirPanel::new(content, handle_path.clone());
+            directory_cache.insert(handle_path.clone(), panel.clone());
+            preview_cache.insert(handle_path, PreviewPanel::Dir(panel));
+        }
+    }
+}
+
 impl DirManager {
     pub fn new(
         directory_cache: SharedCache<DirPanel>,
@@ -107,35 +163,37 @@ impl DirManager {
     }
 
     pub async fn run(mut self) {
-        loop {
-            tokio::select! {
-                biased;
-                result = self.rx.recv() => {
-                    if result.is_none() {
-                        break;
-                    }
-                    let update = result.unwrap();
-                    if !update.state.path().is_dir() {
-                        continue;
-                    }
-                    // Notification::new().summary("dir-request").body(&format!("{}", update.state.cnt)).show().unwrap();
-
-                    // Then create the full version
-                    let dir_path = update.state.path().clone();
-                    let result = spawn_blocking(move || dir_content(dir_path)).await;
-                    if let Ok(content) = result {
-                        // Only update when the hash has changed
-                        let panel = DirPanel::new(content, update.state.path().clone());
-                        if update.state.hash() != panel.content_hash() {
-                            if self.tx.send((panel.clone(), update.state.increased().increased())).await.is_err() {break;};
-                        } else {
-                            // Notification::new().summary("unchanged hash").body(&format!("{}", update.state.hash())).show().unwrap();
-                        }
-                        self.directory_cache.insert(update.state.path().clone(), panel.clone());
-                        self.preview_cache.insert(update.state.path(), PreviewPanel::Dir(panel));
-                    }
-                }
+        while let Some(update) = self.rx.recv().await {
+            if !update.state.path().is_dir() {
+                continue;
             }
+            let dir_path = update.state.path().clone();
+            let result = spawn_blocking(move || dir_content(dir_path)).await;
+            if let Ok(content) = result {
+                // Only update when the hash has changed
+                let panel = DirPanel::new(content, update.state.path().clone());
+                if update.state.hash() != panel.content_hash() {
+                    if self
+                        .tx
+                        .send((panel.clone(), update.state.increased().increased()))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    };
+                } else {
+                    // Notification::new().summary("unchanged hash").body(&format!("{}", update.state.hash())).show().unwrap();
+                }
+                self.directory_cache
+                    .insert(update.state.path().clone(), panel.clone());
+                self.preview_cache
+                    .insert(update.state.path().clone(), PreviewPanel::Dir(panel));
+            }
+            tokio::task::spawn(fill_cache(
+                update.state.path(),
+                self.directory_cache.clone(),
+                self.preview_cache.clone(),
+            ));
         }
     }
 }
@@ -164,7 +222,7 @@ impl PreviewManager {
                     let update = result.unwrap();
                     if update.state.path().is_dir() {
                         let dir_path = update.state.path().clone();
-                        let result = spawn_blocking(move || dir_content_preview(dir_path, 16538)).await;
+                        let result = spawn_blocking(move || dir_content(dir_path)).await;
                         if let Ok(content) = result {
                             let panel = PreviewPanel::Dir(DirPanel::new(content, update.state.path().clone()));
                             if update.state.hash() != panel.content_hash() {

@@ -1563,6 +1563,7 @@ dependencies = [
  "tokio",
  "unix_mode",
  "users",
+ "walkdir",
  "whoami",
 ]
 

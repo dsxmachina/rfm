@@ -181,6 +181,7 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
     pub fn new(
         cache: SharedCache<PanelType>,
         content_tx: mpsc::UnboundedSender<PanelUpdate>,
+        reload_on_modify: bool,
     ) -> Self {
         let state = Arc::new(Mutex::new(PanelState::default()));
         let watcher_state = state.clone();
@@ -190,16 +191,28 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                 // TODO: Parse res and not react on everything
                 if let Ok(event) = res {
                     match event.kind {
-                        notify::EventKind::Any
-                        | notify::EventKind::Create(_)
-                        | notify::EventKind::Modify(_)
-                        | notify::EventKind::Remove(_) => {
+                        notify::EventKind::Create(_) | notify::EventKind::Remove(_) => {
                             let state = watcher_state.lock().clone();
+                            Notification::new()
+                                .summary(&format!("watcher-event {:?}", event.kind))
+                                .show()
+                                .unwrap();
                             if let Err(e) = watcher_tx.send(PanelUpdate { state }) {
                                 Notification::new()
                                     .summary(&format!("{:?}", e))
                                     .show()
                                     .unwrap();
+                            }
+                        }
+                        notify::EventKind::Modify(_) => {
+                            if reload_on_modify {
+                                let state = watcher_state.lock().clone();
+                                if let Err(e) = watcher_tx.send(PanelUpdate { state }) {
+                                    Notification::new()
+                                        .summary(&format!("{:?}", e))
+                                        .show()
+                                        .unwrap();
+                                }
                             }
                         }
                         _ => (),

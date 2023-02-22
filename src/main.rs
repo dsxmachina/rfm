@@ -45,8 +45,8 @@ async fn main() -> Result<()> {
         .queue(Clear(ClearType::All))?
         .queue(cursor::MoveTo(0, 0))?;
 
-    let directory_cache = SharedCache::with_size(1024);
-    let preview_cache = SharedCache::with_size(1024);
+    let directory_cache = SharedCache::with_size(16384);
+    let preview_cache = SharedCache::with_size(4096);
 
     let (dir_tx, dir_rx) = mpsc::channel(32);
     let (prev_tx, prev_rx) = mpsc::channel(32);
