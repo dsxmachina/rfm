@@ -487,6 +487,7 @@ impl PanelManager {
                 // PanelAction::UpdateMidRight((self.mid.path.clone(), self.mid.selected_path_owned()))
             } else {
                 self.open(selected);
+                self.redraw_center();
             }
             // self.stack.push(Operation::Move(Movement::Right));
         }
