@@ -5,7 +5,7 @@ use crossterm::{
     cursor,
     event::DisableMouseCapture,
     terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType, DisableLineWrap},
-    QueueableCommand, Result,
+    ExecutableCommand, QueueableCommand, Result,
 };
 use panel::manager::PanelManager;
 use std::{
@@ -40,6 +40,7 @@ async fn main() -> Result<()> {
     stdout
         .queue(DisableMouseCapture)?
         .queue(DisableLineWrap)?
+        .queue(cursor::SavePosition)?
         .queue(cursor::Hide)?
         .queue(Clear(ClearType::All))?
         .queue(cursor::MoveTo(0, 0))?;
@@ -78,6 +79,11 @@ async fn main() -> Result<()> {
     let content_result = content_handle.await;
 
     // Be a good citizen, cleanup
+    stdout
+        .queue(Clear(ClearType::All))?
+        .queue(cursor::RestorePosition)?
+        .queue(cursor::Show)?
+        .flush();
     disable_raw_mode()?;
 
     match panel_result {
@@ -98,10 +104,10 @@ async fn main() -> Result<()> {
             }
         }
         Ok(Err(e)) => eprintln!("{e}"),
-        Err(e) => eprintln!("{e}"),
+        Err(e) => eprintln!("Error in panel-task: {e}"),
     }
     match content_result {
-        Err(e) => eprintln!("{e}"),
+        Err(e) => eprintln!("Error in content-task: {e}"),
         _ => (),
     }
     Ok(())
