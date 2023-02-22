@@ -193,10 +193,6 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                     match event.kind {
                         notify::EventKind::Create(_) | notify::EventKind::Remove(_) => {
                             let state = watcher_state.lock().clone();
-                            Notification::new()
-                                .summary(&format!("watcher-event {:?}", event.kind))
-                                .show()
-                                .unwrap();
                             if let Err(e) = watcher_tx.send(PanelUpdate { state }) {
                                 Notification::new()
                                     .summary(&format!("{:?}", e))
