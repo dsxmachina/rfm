@@ -1,4 +1,4 @@
-use std::os::unix::prelude::MetadataExt;
+use std::{fs::OpenOptions, os::unix::prelude::MetadataExt};
 
 use crossterm::event::{Event, EventStream, KeyCode};
 use fs_extra::dir::CopyOptions;
@@ -29,7 +29,7 @@ impl Redraw {
 enum Mode {
     Normal,
     Console { console: DirConsole },
-    Mkdir { console: DirConsole },
+    CreateItem { console: DirConsole, is_dir: bool },
     Search { input: String },
 }
 
@@ -357,7 +357,7 @@ impl PanelManager {
                     self.layout.y_range.clone(),
                 )?;
             }
-            if let Mode::Mkdir { console } = &mut self.mode {
+            if let Mode::CreateItem { console, .. } = &mut self.mode {
                 console.draw(
                     &mut self.stdout,
                     self.layout.left_x_range.start..self.layout.right_x_range.end,
@@ -743,7 +743,11 @@ impl PanelManager {
                                         self.redraw_console();
                                     }
                                     Command::Mkdir => {
-                                        self.mode = Mode::Mkdir { console: DirConsole::from_panel(self.center.panel()) };
+                                        self.mode = Mode::CreateItem { console: DirConsole::from_panel(self.center.panel()), is_dir: true };
+                                        self.redraw_console();
+                                    }
+                                    Command::Touch => {
+                                        self.mode = Mode::CreateItem { console: DirConsole::from_panel(self.center.panel()), is_dir: false };
                                         self.redraw_console();
                                     }
                                     Command::Mark => {
@@ -824,18 +828,23 @@ impl PanelManager {
                                     _ => (),
                                 }
                             }
-                            Mode::Mkdir { console } => {
+                            Mode::CreateItem { console, is_dir } => {
                                 match key_event.code {
                                     KeyCode::Backspace => {
                                         console.del();
                                         self.redraw_console();
                                     }
                                     KeyCode::Enter => {
-                                        let new_dir = console.joined_input();
-                                        // self.stack.push(Operation::Mkdir { path: new_dir.clone() });
-                                        if let Err(e) = fs_extra::dir::create(new_dir, false) {
+                                        let new_item = console.joined_input();
+                                        let create_fn = if *is_dir {
+                                            |item| {fs_extra::dir::create(item, false)}
+                                        } else {
+                                            |item| {let _ = OpenOptions::new().read(true).append(true).create(true).open(item)?; Ok(())}
+                                        };
+                                        if let Err(e) = create_fn(new_item) {
                                             Notification::new().summary("error").body(&format!("{e}")).show().unwrap();
                                         }
+                                        // self.stack.push(Operation::Mkdir { path: new_dir.clone() });
                                         self.mode = Mode::Normal;
                                         self.redraw_panels();
                                     }

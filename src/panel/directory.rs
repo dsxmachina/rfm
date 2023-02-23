@@ -73,24 +73,7 @@ impl DirElem {
         let name_len = usize::from(max_len)
             .saturating_sub(self.suffix.len())
             .saturating_sub(4);
-        let mut name = format!("{:name_len$}", self.name);
-        // We have to truncate the name
-        if name.len() > name_len {
-            // FIX: If name_len does not lie on a char boundary,
-            // the truncate function will panic
-            if name.is_char_boundary(name_len) {
-                name.truncate(name_len);
-            } else {
-                // This is stupidly inefficient, but cannot panic.
-                while name.len() > name_len {
-                    name.pop();
-                }
-            }
-            name.pop();
-            name.push('~');
-        }
-        // let name = self.name.with_exact_width(name_len);
-
+        let name = self.name.exact_width(name_len);
         let string = format!(" {name} {} ", self.suffix);
 
         let mut style = ContentStyle::new();

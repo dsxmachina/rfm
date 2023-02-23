@@ -64,6 +64,7 @@ pub enum Command {
     ViewTrash,
     Cd,
     Mkdir,
+    Touch,
     Cut,
     Copy,
     Delete,
@@ -150,9 +151,10 @@ impl CommandParser {
         key_commands.insert("po", Command::Paste { overwrite: true });
         key_commands.insert("delete", Command::Delete);
 
-        // cd, mkdir
+        // cd, mkdir, touch
         key_commands.insert("cd", Command::Cd);
         key_commands.insert("mkdir", Command::Mkdir);
+        key_commands.insert("touch", Command::Touch);
 
         // Quit
         key_commands.insert("q", Command::Quit);
