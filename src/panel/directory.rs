@@ -8,7 +8,10 @@ use std::{
 use crossterm::style::{ContentStyle, StyledContent};
 use unix_mode::is_allowed;
 
-use crate::util::{file_size_str, ExactWidth};
+use crate::{
+    content::dir_content,
+    util::{file_size_str, ExactWidth},
+};
 
 use super::*;
 /// An element of a directory.
@@ -357,6 +360,11 @@ impl BasePanel for DirPanel {
 
     fn loading(path: PathBuf) -> Self {
         DirPanel::loading(path)
+    }
+
+    fn from_path(path: PathBuf) -> Self {
+        let content = dir_content(path.clone());
+        DirPanel::new(content, path)
     }
 }
 

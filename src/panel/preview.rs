@@ -278,6 +278,16 @@ impl BasePanel for PreviewPanel {
     fn loading(path: PathBuf) -> Self {
         PreviewPanel::Dir(DirPanel::loading(path))
     }
+
+    fn from_path(path: PathBuf) -> Self {
+        if path.is_dir() {
+            PreviewPanel::Dir(DirPanel::from_path(path))
+        } else if path.is_file() {
+            PreviewPanel::File(FilePreview::new(path))
+        } else {
+            PreviewPanel::Empty
+        }
+    }
 }
 
 impl PreviewPanel {

@@ -62,6 +62,9 @@ pub trait BasePanel: PanelContent {
     /// Creates a temporary panel to indicate that we are still loading
     /// some data
     fn loading(path: PathBuf) -> Self;
+
+    /// Creates a panel from some path
+    fn from_path(path: PathBuf) -> Self;
 }
 
 #[derive(Debug, Clone)]
