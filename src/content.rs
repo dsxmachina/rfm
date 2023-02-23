@@ -123,14 +123,14 @@ async fn fill_cache(
         return;
     }
     // TODO: Dont start a new thread if the value in the cache is still valid
-    let file_capacity = preview_cache.capacity() / 4;
-    let dir_capacity = directory_cache.capacity() / 4;
+    let file_capacity = preview_cache.capacity() / 16;
+    let dir_capacity = directory_cache.capacity() / 16;
     let mut dir_handles = Vec::new();
     let mut file_handles = Vec::new();
     for entry in WalkDir::new(&path).max_depth(2).into_iter().flatten() {
-        if entry.file_type().is_dir() {
+        if entry.file_type().is_dir() && dir_handles.len() < dir_capacity {
             let handle_path = entry.into_path();
-            if dir_handles.len() < dir_capacity {
+            if directory_cache.requires_update(&handle_path) {
                 dir_handles.push((
                     handle_path.clone(),
                     spawn_blocking(move || dir_content(handle_path)),
@@ -141,10 +141,12 @@ async fn fill_cache(
             && file_handles.len() < file_capacity
         {
             let handle_path = entry.into_path();
-            file_handles.push((
-                handle_path.clone(),
-                spawn_blocking(move || FilePreview::new(handle_path)),
-            ));
+            if preview_cache.requires_update(&handle_path) {
+                file_handles.push((
+                    handle_path.clone(),
+                    spawn_blocking(move || FilePreview::new(handle_path)),
+                ));
+            }
         }
         // If we reached the max capacity that we want to fill the cache up with,
         // stop traversing the directory any further.
