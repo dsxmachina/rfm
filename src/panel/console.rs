@@ -22,11 +22,12 @@ impl Draw for DirConsole {
         let y_center = y_range.end.saturating_add(y_range.start) / 2;
 
         let mut path = format!("{}", self.path.display());
-        if path.ends_with('/') {
-            path.pop();
+        if !path.ends_with('/') {
+            path.push('/');
         }
-        let text = format!("{}/{}", path, self.input);
+        let path_len = path.len() as u16;
 
+        let text = format!("{}{}", path, self.input);
         let offset = if text.len() < (width / 2).into() {
             width / 4
         } else if text.len() < width.into() {
@@ -48,39 +49,41 @@ impl Draw for DirConsole {
                     stdout,
                     cursor::MoveTo(x, y_center.saturating_sub(1)),
                     PrintStyledContent("―".dark_green().bold()),
-                    cursor::MoveTo(x, y_center.saturating_add(5)),
+                    cursor::MoveTo(x, y_center.saturating_add(1)),
                     PrintStyledContent("―".dark_green().bold()),
                 )?;
             }
         }
-        let x_text = x_start.saturating_add(offset);
+        let x_path = x_start.saturating_add(offset);
+        let x_text = x_path.saturating_add(path_len);
         let x_rec = x_start.saturating_add(rec_offset);
+
         queue!(
             stdout,
             // Clear line and print main text
+            cursor::MoveTo(x_path, y_center),
+            Clear(ClearType::CurrentLine),
+            Print(path),
             cursor::MoveTo(x_text, y_center),
-            Clear(ClearType::CurrentLine),
-            Print(text),
-            cursor::MoveTo(
-                x_text.saturating_add(path.len().saturating_add(1) as u16),
-                y_center
-            ),
-            PrintStyledContent(self.tmp_input.clone().green()),
-            // Clear line and print main input
-            cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(1)),
-            Clear(ClearType::CurrentLine),
-            Print(&format!("input: {}", self.input)),
-            // Clear line and print tmp-input
-            cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(2)),
-            Clear(ClearType::CurrentLine),
-            Print(&format!("tmp  : {}", self.tmp_input)),
-            // Clear line and print path
-            cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(3)),
-            Clear(ClearType::CurrentLine),
-            Print(&format!("path : {}", self.path.display())),
-            cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(4)),
-            Clear(ClearType::CurrentLine),
-            Print(&format!("n-rec: {}", self.rec_total)),
+            PrintStyledContent(self.input.clone().green()),
+            cursor::MoveTo(x_text, y_center),
+            Print(self.tmp_input.clone()),
+            // // Clear line and print main input
+            // cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(1)),
+            // Clear(ClearType::CurrentLine),
+            // Print(&format!("input: {}", self.input)),
+
+            // // Clear line and print tmp-input
+            // cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(2)),
+            // Clear(ClearType::CurrentLine),
+            // Print(&format!("tmp  : {}", self.tmp_input)),
+            // // Clear line and print path
+            // cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(3)),
+            // Clear(ClearType::CurrentLine),
+            // Print(&format!("path : {}", self.path.display())),
+            // cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(4)),
+            // Clear(ClearType::CurrentLine),
+            // Print(&format!("n-rec: {}", self.rec_total)),
             // Print recommendation
             cursor::MoveTo(x_rec, y_center),
             PrintStyledContent(rec_text.dark_grey()),
