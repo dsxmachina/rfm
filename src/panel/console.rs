@@ -48,7 +48,7 @@ impl Draw for DirConsole {
                     stdout,
                     cursor::MoveTo(x, y_center.saturating_sub(1)),
                     PrintStyledContent("―".dark_green().bold()),
-                    cursor::MoveTo(x, y_center.saturating_add(1)),
+                    cursor::MoveTo(x, y_center.saturating_add(5)),
                     PrintStyledContent("―".dark_green().bold()),
                 )?;
             }
@@ -61,18 +61,26 @@ impl Draw for DirConsole {
             cursor::MoveTo(x_text, y_center),
             Clear(ClearType::CurrentLine),
             Print(text),
-            // // Clear line and print main input
-            // cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(1)),
-            // Clear(ClearType::CurrentLine),
-            // Print(&format!("input: {}", self.input)),
-            // // Clear line and print tmp-input
-            // cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(2)),
-            // Clear(ClearType::CurrentLine),
-            // Print(&format!("tmp  : {}", self.tmp_input)),
-            // // Clear line and print path
-            // cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(3)),
-            // Clear(ClearType::CurrentLine),
-            // Print(&format!("path : {}", self.path.display())),
+            cursor::MoveTo(
+                x_text.saturating_add(path.len().saturating_add(1) as u16),
+                y_center
+            ),
+            PrintStyledContent(self.tmp_input.clone().green()),
+            // Clear line and print main input
+            cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(1)),
+            Clear(ClearType::CurrentLine),
+            Print(&format!("input: {}", self.input)),
+            // Clear line and print tmp-input
+            cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(2)),
+            Clear(ClearType::CurrentLine),
+            Print(&format!("tmp  : {}", self.tmp_input)),
+            // Clear line and print path
+            cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(3)),
+            Clear(ClearType::CurrentLine),
+            Print(&format!("path : {}", self.path.display())),
+            cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(4)),
+            Clear(ClearType::CurrentLine),
+            Print(&format!("n-rec: {}", self.rec_total)),
             // Print recommendation
             cursor::MoveTo(x_rec, y_center),
             PrintStyledContent(rec_text.dark_grey()),
@@ -164,15 +172,44 @@ impl DirConsole {
             self.clear();
             return self.del().map(|p| p.to_path_buf());
         }
+        // TODO: We have to make a decision, where to insert the new character to.
+        //
+        // If there is an active recommendation (put to self.input),
+        // and self.input + character is a directory -> jump into that directory.
+        //
+        // However, if self.input + character is also the prefix of another recommendation,
+        // then we would like to proceed as normal and go to that recommendation instead.
+        //
+        // The recommendations should always win before changing a directory
+        //
+
+        // Check if self.input + character has at least one recommendation
+        let mut input_and_char = self.input.clone();
+        input_and_char.push(character);
+        let n_possibilities = self
+            .recommendations
+            .iter_prefix(input_and_char.as_bytes())
+            .count();
+
+        // Check if self.path/self.input/ is a directory
         let joined_path = self.path.join(&self.input);
         if joined_path.is_dir() && self.input != "." {
-            self.change_dir(joined_path.clone());
+            // Now we have to make a decision here:
+            if n_possibilities == 0 {
+                // If there are no open recommendations for that character,
+                // we can safely jump into the directory
+                self.change_dir(joined_path.clone());
+                self.push_char(character);
+                return Some(joined_path);
+            } else {
+                // Only push the character to input
+                self.input.push(character);
+                self.tmp_input = self.input.clone();
+            }
+        } else {
             self.push_char(character);
-            return Some(joined_path);
         }
-        self.push_char(character);
         // self.active_rec = self.input.clone();
-
         self.rec_idx = 0; // reset recommendation index
         self.rec_total = self
             .recommendations
@@ -281,6 +318,10 @@ impl DirConsole {
                 }
             }
             None
+        } else if self.tmp_input != self.input {
+            // Just return to what the user gave us
+            self.input = self.tmp_input.clone();
+            Some(self.path.as_path())
         } else {
             self.clear();
             self.change_dir(self.path.clone());
