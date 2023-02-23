@@ -27,16 +27,16 @@ impl Draw for DirConsole {
         }
         let path_len = path.len() as u16;
 
-        let text = format!("{}{}", path, self.input);
-        let offset = if text.len() < (width / 2).into() {
+        let text_len = path_len + self.input.len() as u16;
+        let offset = if text_len < (width / 2).into() {
             width / 4
-        } else if text.len() < width.into() {
-            ((width as usize - text.len()).saturating_sub(1) / 2) as u16
+        } else if text_len < width {
+            ((width - text_len).saturating_sub(1) / 2) as u16
         } else {
             0
         };
 
-        let rec_offset = offset.saturating_add(text.len() as u16);
+        let rec_offset = offset.saturating_add(text_len);
         let rec_text = self
             .recommendation()
             .strip_prefix(&self.input)
