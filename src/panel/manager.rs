@@ -97,8 +97,8 @@ pub struct PanelManager {
 
 impl PanelManager {
     pub fn new(
-        directory_cache: SharedCache<DirPanel>,
-        preview_cache: SharedCache<PreviewPanel>,
+        directory_cache: PanelCache<DirPanel>,
+        preview_cache: PanelCache<PreviewPanel>,
         dir_rx: mpsc::Receiver<(DirPanel, PanelState)>,
         prev_rx: mpsc::Receiver<(PreviewPanel, PanelState)>,
         directory_tx: mpsc::UnboundedSender<PanelUpdate>,

@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     commands::Movement,
-    content::{hash_elements, SharedCache},
+    content::{hash_elements, PanelCache},
 };
 
 mod console;
@@ -156,10 +156,6 @@ pub struct ManagedPanel<PanelType: BasePanel> {
     /// State counter and identifier of the managed panel
     state: Arc<Mutex<PanelState>>,
 
-    // TODO: Move hash into panel-state
-    // - add content_tx to watch handler
-    // - add state to watch-handler
-    // - watch handler can now send requests on its own :)
     /// File-watcher that sends update requests if the content of the directory changes
     watcher: RecommendedWatcher,
 
@@ -170,7 +166,7 @@ pub struct ManagedPanel<PanelType: BasePanel> {
     /// If so, we still send an update request to the [`ContentManager`],
     /// to avoid working with outdated information.
     /// If the cache is empty, we generate a `loading`-panel (see [`DirPanel::loading`]).
-    cache: SharedCache<PanelType>,
+    cache: PanelCache<PanelType>,
 
     /// Sends request for new panel content.
     content_tx: mpsc::UnboundedSender<PanelUpdate>,
@@ -178,7 +174,7 @@ pub struct ManagedPanel<PanelType: BasePanel> {
 
 impl<PanelType: BasePanel> ManagedPanel<PanelType> {
     pub fn new(
-        cache: SharedCache<PanelType>,
+        cache: PanelCache<PanelType>,
         content_tx: mpsc::UnboundedSender<PanelUpdate>,
         reload_on_modify: bool,
     ) -> Self {
@@ -187,7 +183,6 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
         let watcher_tx = content_tx.clone();
         let watcher = notify::recommended_watcher(
             move |res: std::result::Result<notify::Event, notify::Error>| {
-                // TODO: Parse res and not react on everything
                 if let Ok(event) = res {
                     match event.kind {
                         notify::EventKind::Create(_) | notify::EventKind::Remove(_) => {

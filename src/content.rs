@@ -4,6 +4,7 @@ use std::{
     hash::{Hash, Hasher},
     path::PathBuf,
     sync::Arc,
+    time::SystemTime,
 };
 use tokio::{sync::mpsc, task::spawn_blocking};
 use walkdir::WalkDir;
@@ -14,27 +15,45 @@ use crate::panel::{
 
 /// Cache that is shared by the content-manager and the panel-manager.
 #[derive(Clone)]
-pub struct SharedCache<Item: Clone> {
+pub struct PanelCache<Item: Clone> {
     inner: Arc<Mutex<SizedCache<PathBuf, Item>>>,
 }
 
-impl<Item: Clone> SharedCache<Item> {
+impl<Item: PanelContent> PanelCache<Item> {
+    /// Creates a new cache with given size
     pub fn with_size(size: usize) -> Self {
-        SharedCache {
+        PanelCache {
             inner: Arc::new(Mutex::new(SizedCache::with_size(size))),
         }
     }
 
+    /// Attempt to retrieve a cached value
     pub fn get(&self, path: &PathBuf) -> Option<Item> {
         self.inner.lock().cache_get(path).cloned()
     }
 
+    /// Inserts a new key-value pair
     pub fn insert(&self, path: PathBuf, item: Item) -> Option<Item> {
         self.inner.lock().cache_set(path, item)
     }
 
+    /// Returns the cache capacity
     pub fn capacity(&self) -> usize {
         self.inner.lock().cache_capacity().unwrap_or_default()
+    }
+
+    /// Checks if the modification time of the path differs from the
+    /// modification time of the cached value.
+    pub fn requires_update(&self, path: &PathBuf) -> bool {
+        let path_modification = path
+            .metadata()
+            .and_then(|p| p.modified())
+            .unwrap_or_else(|_| SystemTime::now());
+        self.inner
+            .lock()
+            .cache_get(path)
+            .map(|item| item.modified() < path_modification)
+            .unwrap_or(true)
     }
 }
 
@@ -42,15 +61,15 @@ impl<Item: Clone> SharedCache<Item> {
 pub struct DirManager {
     tx: mpsc::Sender<(DirPanel, PanelState)>,
     rx: mpsc::UnboundedReceiver<PanelUpdate>,
-    directory_cache: SharedCache<DirPanel>,
-    preview_cache: SharedCache<PreviewPanel>,
+    directory_cache: PanelCache<DirPanel>,
+    preview_cache: PanelCache<PreviewPanel>,
 }
 
 /// Receives commands to parse the directory or generate a new preview.
 pub struct PreviewManager {
     tx: mpsc::Sender<(PreviewPanel, PanelState)>,
     rx: mpsc::UnboundedReceiver<PanelUpdate>,
-    preview_cache: SharedCache<PreviewPanel>,
+    preview_cache: PanelCache<PreviewPanel>,
 }
 
 pub fn dir_content(path: PathBuf) -> Vec<DirElem> {
@@ -97,12 +116,13 @@ pub fn hash_elements(elements: &[DirElem]) -> u64 {
 
 async fn fill_cache(
     path: PathBuf,
-    directory_cache: SharedCache<DirPanel>,
-    preview_cache: SharedCache<PreviewPanel>,
+    directory_cache: PanelCache<DirPanel>,
+    preview_cache: PanelCache<PreviewPanel>,
 ) {
     if !path.is_dir() {
         return;
     }
+    // TODO: Dont start a new thread if the value in the cache is still valid
     let file_capacity = preview_cache.capacity() / 4;
     let dir_capacity = directory_cache.capacity() / 4;
     let mut dir_handles = Vec::new();
@@ -149,8 +169,8 @@ async fn fill_cache(
 
 impl DirManager {
     pub fn new(
-        directory_cache: SharedCache<DirPanel>,
-        preview_cache: SharedCache<PreviewPanel>,
+        directory_cache: PanelCache<DirPanel>,
+        preview_cache: PanelCache<PreviewPanel>,
         tx: mpsc::Sender<(DirPanel, PanelState)>,
         rx: mpsc::UnboundedReceiver<PanelUpdate>,
     ) -> Self {
@@ -200,7 +220,7 @@ impl DirManager {
 
 impl PreviewManager {
     pub fn new(
-        preview_cache: SharedCache<PreviewPanel>,
+        preview_cache: PanelCache<PreviewPanel>,
         tx: mpsc::Sender<(PreviewPanel, PanelState)>,
         rx: mpsc::UnboundedReceiver<PanelUpdate>,
     ) -> Self {
@@ -246,9 +266,26 @@ impl PreviewManager {
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
+    use super::*;
     // use patricia_tree::{PatriciaMap, PatriciaSet};
-    // use std::time::Instant;
+    use std::time::Instant;
+    #[test]
+    fn test_dir_parsing_speed() {
+        let path: PathBuf = "/home/someone/Bilder/ground_images/-3000_-2000_3000_2000_0".into();
+        // read directory
+        let now = Instant::now();
+        let content = dir_content(path);
+        let elapsed = now.elapsed().as_millis();
+        println!("parsing {} elements took: {elapsed}ms", content.len(),);
+
+        let path: PathBuf = "/nix/store".into();
+        // read directory
+        let now = Instant::now();
+        let content = dir_content(path);
+        let elapsed = now.elapsed().as_millis();
+        println!("parsing {} elements took: {elapsed}ms", content.len(),);
+        assert!(false);
+    }
 
     // #[test]
     // fn test_dir_hashing_speed() {
