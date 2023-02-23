@@ -114,8 +114,8 @@ impl PanelManager {
         let mut center = ManagedPanel::new(directory_cache, directory_tx, false);
         let right = ManagedPanel::new(preview_cache, preview_tx, true);
 
-        left.new_panel(Some(".."));
-        center.new_panel(Some("."));
+        left.new_panel_instant(Some(".."));
+        center.new_panel_instant(Some("."));
 
         PanelManager {
             left,
@@ -418,14 +418,16 @@ impl PanelManager {
             return;
         }
         self.center.panel_mut().select_path(path);
-        self.right.new_panel(self.center.panel().selected_path());
+        self.right
+            .new_panel_delayed(self.center.panel().selected_path());
         self.redraw_center();
         self.redraw_right();
     }
 
     fn move_up(&mut self, step: usize) {
         if self.center.panel_mut().up(step) {
-            self.right.new_panel(self.center.panel().selected_path());
+            self.right
+                .new_panel_delayed(self.center.panel().selected_path());
             self.redraw_center();
             self.redraw_right();
             // self.stack.push(Operation::Move(Movement::Up));
@@ -434,7 +436,8 @@ impl PanelManager {
 
     fn move_down(&mut self, step: usize) {
         if self.center.panel_mut().down(step) {
-            self.right.new_panel(self.center.panel().selected_path());
+            self.right
+                .new_panel_delayed(self.center.panel().selected_path());
             self.redraw_center();
             self.redraw_right();
             // self.stack.push(Operation::Move(Movement::Down));
@@ -470,8 +473,10 @@ impl PanelManager {
                 //     })
                 //     .expect("Receiver dropped or closed");
                 self.left.update_panel(self.center.panel().clone());
-                self.center.new_panel(self.right.panel().maybe_path());
-                self.right.new_panel(self.center.panel().selected_path());
+                self.center
+                    .new_panel_instant(self.right.panel().maybe_path());
+                self.right
+                    .new_panel_delayed(self.center.panel().selected_path());
 
                 // All panels needs to be redrawn
                 self.redraw_panels();
@@ -515,7 +520,8 @@ impl PanelManager {
         self.center.update_panel(self.left.panel().clone());
         // | m | l | m |
         // TODO: When we followed some symlink we don't want to take the parent here.
-        self.left.new_panel(self.center.panel().path().parent());
+        self.left
+            .new_panel_instant(self.center.panel().path().parent());
         self.left
             .panel_mut()
             .select_path(self.center.panel().path());
@@ -532,10 +538,11 @@ impl PanelManager {
         }
         if path.exists() {
             self.previous = self.center.panel().path().to_path_buf();
-            self.left.new_panel(path.parent());
+            self.left.new_panel_instant(path.parent());
             self.left.panel_mut().select_path(&path);
-            self.center.new_panel(Some(&path));
-            self.right.new_panel(self.center.panel().selected_path());
+            self.center.new_panel_instant(Some(&path));
+            self.right
+                .new_panel_delayed(self.center.panel().selected_path());
             self.redraw_panels();
         }
     }
@@ -677,7 +684,7 @@ impl PanelManager {
                         // Notification::new().summary("update-center").body(&format!("{:?}", state)).show().unwrap();
                         self.center.update_panel(panel);
                         // update preview (if necessary)
-                        self.right.new_panel(self.center.panel().selected_path());
+                        self.right.new_panel_delayed(self.center.panel().selected_path());
                         self.redraw_center();
                         self.redraw_right();
                         self.redraw_console();

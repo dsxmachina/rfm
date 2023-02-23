@@ -230,70 +230,25 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
 
     /// Generates a new panel for the given path.
     ///
-    /// Uses cached values to instantly display something, while in the background
-    /// the [`ContentManager`] is triggered to load new data.
-    /// If the cache is empty, a generic "loading..." panel is created.
-    /// An empty panel is created if the given path is `None`.
-    pub fn new_panel<P: AsRef<Path>>(&mut self, path: Option<P>) {
-        match self.watcher.unwatch(self.panel.path()) {
-            Ok(_) => {
-                // Notification::new()
-                //     .summary("unwatching")
-                //     .body(&format!("{}", self.panel.path().display()))
-                //     .show()
-                //     .unwrap();
-            }
-            Err(_e) => {
-                // Notification::new()
-                //     .summary("unwatch-error")
-                //     .body(&format!("{:?}", e))
-                //     .show()
-                //     .unwrap();
-            }
-        }
+    /// The panel is created instantly, so there is no "loading..." or
+    /// waiting for the content manager to fetch some data in the background.
+    pub fn new_panel_instant<P: AsRef<Path>>(&mut self, path: Option<P>) {
         if let Some(path) = path.and_then(|p| canonicalize(p.as_ref()).ok()) {
             // Only create a new panel when the path has changed
             if path == self.panel.path() {
-                // Notification::new()
-                //     .summary("No change for panel")
-                //     .show()
-                //     .unwrap();
                 return;
             }
-
-            // Watch new path
-            if path.exists() {
-                match self
-                    .watcher
-                    .watch(path.as_path(), notify::RecursiveMode::NonRecursive)
-                {
-                    Ok(_) => {
-                        // Notification::new()
-                        //     .summary("watching")
-                        //     .body(&format!("{}", path.display()))
-                        //     .show()
-                        //     .unwrap();
-                    }
-                    Err(e) => {
-                        // Notification::new()
-                        //     .summary("watch-error")
-                        //     .body(&format!("{e:?}"))
-                        //     .show()
-                        //     .unwrap();
-                    }
-                }
-            }
-
-            let access_time = path
-                .metadata()
-                .ok()
-                .and_then(|m| m.accessed().ok())
-                .unwrap_or_else(SystemTime::now);
 
             if let Some(cached) = self.cache.get(&path) {
                 let cached_access_time = cached.modified();
                 // Update panel with content from cache
-                self.update(cached);
+                self.update_panel(cached);
+
+                let access_time = path
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.accessed().ok())
+                    .unwrap_or_else(SystemTime::now);
 
                 // If the access time is has not changed, dont trigger an update
                 // by returning early
@@ -301,14 +256,51 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                     return;
                 }
             } else {
-                self.update(PanelType::loading(path.clone()));
+                self.update_panel(PanelType::from_path(path.clone()));
             }
-            // Send update request for given panel
-            // Notification::new()
-            //     .summary("send update request")
-            //     .body(&format!("{:?}", self.state.increased()))
-            //     .show()
-            //     .unwrap();
+            // Send an update request anyway, so that the content manager starts filling the cache
+            self.content_tx
+                .send(PanelUpdate {
+                    state: self.state.lock().clone(),
+                })
+                .expect("Receiver dropped or closed");
+        } else {
+            self.update(PanelType::empty());
+        }
+    }
+
+    /// Generates a new panel for the given path.
+    ///
+    /// Uses cached values to instantly display something, while in the background
+    /// the [`ContentManager`] is triggered to load new data.
+    /// If the cache is empty, a generic "loading..." panel is created.
+    /// An empty panel is created if the given path is `None`.
+    pub fn new_panel_delayed<P: AsRef<Path>>(&mut self, path: Option<P>) {
+        if let Some(path) = path.and_then(|p| canonicalize(p.as_ref()).ok()) {
+            // Only create a new panel when the path has changed
+            if path == self.panel.path() {
+                return;
+            }
+
+            if let Some(cached) = self.cache.get(&path) {
+                let cached_access_time = cached.modified();
+                // Update panel with content from cache
+                self.update_panel(cached);
+
+                let access_time = path
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.accessed().ok())
+                    .unwrap_or_else(SystemTime::now);
+
+                // If the access time is has not changed, dont trigger an update
+                // by returning early
+                if access_time == cached_access_time {
+                    return;
+                }
+            } else {
+                self.update_panel(PanelType::loading(path.clone()));
+            }
             self.content_tx
                 .send(PanelUpdate {
                     state: self.state.lock().clone(),
@@ -347,7 +339,7 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                     //     .show()
                     //     .unwrap();
                 }
-                Err(e) => {
+                Err(_e) => {
                     // Notification::new()
                     //     .summary("unwatch-error")
                     //     .body(&format!("{e:?}"))
@@ -368,7 +360,7 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                     //     .show()
                     //     .unwrap();
                 }
-                Err(e) => {
+                Err(_e) => {
                     // Notification::new()
                     //     .summary("watch-error")
                     //     .body(&format!("{e:?}"))
