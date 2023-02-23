@@ -13,3 +13,27 @@ pub fn file_size_str(file_size: u64) -> String {
         _ => "too big".to_string(),
     }
 }
+
+pub trait ExactWidth: std::fmt::Display {
+    fn exact_width(&self, len: usize) -> String {
+        let mut out = format!("{:len$}", self);
+        // We have to truncate the name
+        if out.len() > len {
+            // FIX: If name_len does not lie on a char boundary,
+            // the truncate function will panic
+            if out.is_char_boundary(len) {
+                out.truncate(len);
+            } else {
+                // This is stupidly inefficient, but cannot panic.
+                while out.len() > len {
+                    out.pop();
+                }
+            }
+            out.pop();
+            out.push('~');
+        }
+        out
+    }
+}
+
+impl<T: std::fmt::Display> ExactWidth for T {}

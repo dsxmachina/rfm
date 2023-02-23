@@ -6,7 +6,6 @@ use crossterm::{
 };
 use notify::{RecommendedWatcher, Watcher};
 use notify_rust::Notification;
-use pad::PadStr;
 use parking_lot::Mutex;
 use std::{
     cmp::Ordering,

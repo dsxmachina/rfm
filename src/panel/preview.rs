@@ -6,15 +6,15 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use crate::util::ExactWidth;
+
+use super::{BasePanel, DirPanel, Draw, PanelContent};
 use crossterm::{
     cursor, queue,
     style::{self, Colors, Print, PrintStyledContent, ResetColor, SetColors, Stylize},
     Result,
 };
 use image::DynamicImage;
-use pad::PadStr;
-
-use super::{BasePanel, DirPanel, Draw, PanelContent};
 
 #[derive(Debug, Clone)]
 pub enum Preview {
@@ -101,7 +101,7 @@ impl Draw for FilePreview {
                 let mut idx = 0;
                 for line in lines.iter().take(height as usize) {
                     let cy = idx + y_range.start;
-                    let line = line.replace('\r', "").with_exact_width(width as usize);
+                    let line = line.replace('\r', "").exact_width(width as usize);
                     queue!(stdout, cursor::MoveTo(x_range.start + 1, cy), Print(line),)?;
                     idx += 1;
                 }

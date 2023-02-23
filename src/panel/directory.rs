@@ -8,7 +8,7 @@ use std::{
 use crossterm::style::{ContentStyle, StyledContent};
 use unix_mode::is_allowed;
 
-use crate::util::file_size_str;
+use crate::util::{file_size_str, ExactWidth};
 
 use super::*;
 /// An element of a directory.
@@ -286,7 +286,7 @@ impl Draw for DirPanel {
                 cursor::MoveTo(x_range.start + 2, y_range.start + 2),
                 PrintStyledContent(
                     format!("{}", self.path.display())
-                        .with_exact_width(width.saturating_sub(2) as usize)
+                        .exact_width(width.saturating_sub(2) as usize)
                         .dark_green()
                         .italic()
                 ),

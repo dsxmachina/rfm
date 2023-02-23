@@ -17,7 +17,6 @@ futures-timer = "3.0.2"
 image = "0.24.5"
 notify = {version = "5.1.0", default-features = false, features = ["macos_fsevent"]}
 notify-rust = "4.7.1"
-pad = "0.1.6"
 parking_lot = "0.12.1"
 patricia_tree = "0.5.5"
 rand = "0.8.5"
