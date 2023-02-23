@@ -81,8 +81,8 @@ pub fn dir_content(path: PathBuf) -> Vec<DirElem> {
                 out.push(DirElem::from(item.path()))
             }
             // out.sort();
-            out.sort_by_cached_key(|a| a.name_lowercase().clone());
-            out.sort_by_cached_key(|a| !a.path().is_dir());
+            // out.sort_by_cached_key(|a| a.name_lowercase().clone());
+            // out.sort_by_cached_key(|a| !a.path().is_dir());
             out
         }
         Err(_) => Vec::new(),
@@ -114,6 +114,7 @@ pub fn hash_elements(elements: &[DirElem]) -> u64 {
     h.finish()
 }
 
+// TODO: Benchmark this guy
 async fn fill_cache(
     path: PathBuf,
     directory_cache: PanelCache<DirPanel>,
@@ -122,7 +123,6 @@ async fn fill_cache(
     if !path.is_dir() {
         return;
     }
-    // TODO: Dont start a new thread if the value in the cache is still valid
     let file_capacity = preview_cache.capacity() / 16;
     let dir_capacity = directory_cache.capacity() / 16;
     let mut dir_handles = Vec::new();
@@ -276,16 +276,38 @@ mod tests {
         let path: PathBuf = "/home/someone/Bilder/ground_images/-3000_-2000_3000_2000_0".into();
         // read directory
         let now = Instant::now();
-        let content = dir_content(path);
+        let mut content = dir_content(path);
         let elapsed = now.elapsed().as_millis();
         println!("parsing {} elements took: {elapsed}ms", content.len(),);
+
+        let now = Instant::now();
+        content.sort_by_cached_key(|a| a.name_lowercase().clone());
+        content.sort_by_cached_key(|a| !a.path().is_dir());
+        let elapsed = now.elapsed().as_millis();
+        println!("sorting {} elements took: {elapsed}ms", content.len(),);
+
+        let now = Instant::now();
+        content.iter_mut().for_each(|e| e.normalize());
+        let elapsed = now.elapsed().as_millis();
+        println!("normalizing {} elements took: {elapsed}ms", content.len(),);
 
         let path: PathBuf = "/nix/store".into();
         // read directory
         let now = Instant::now();
-        let content = dir_content(path);
+        let mut content = dir_content(path);
         let elapsed = now.elapsed().as_millis();
         println!("parsing {} elements took: {elapsed}ms", content.len(),);
+
+        let now = Instant::now();
+        content.sort_by_cached_key(|a| a.name_lowercase().clone());
+        content.sort_by_cached_key(|a| !a.path().is_dir());
+        let elapsed = now.elapsed().as_millis();
+        println!("sorting {} elements took: {elapsed}ms", content.len(),);
+
+        let now = Instant::now();
+        content.iter_mut().for_each(|e| e.normalize());
+        let elapsed = now.elapsed().as_millis();
+        println!("normalizing {} elements took: {elapsed}ms", content.len(),);
         assert!(false);
     }
 

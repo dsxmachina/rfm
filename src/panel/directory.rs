@@ -42,6 +42,9 @@ pub struct DirElem {
     ///
     /// Users can mark a selected item to perform operations on them.
     is_marked: bool,
+
+    /// Weather or not we have calculated all values for that panel
+    is_normalized: bool,
 }
 
 impl DirElem {
@@ -69,7 +72,13 @@ impl DirElem {
         self.is_marked = false;
     }
 
-    pub fn print_styled(&self, selected: bool, max_len: u16) -> PrintStyledContent<String> {
+    /// Creates a [`PrintStyledContent`] from the `DirElem` itself.
+    ///
+    /// If the element has not been normalized yet, we do so before we create the styled content.
+    pub fn print_styled(&mut self, selected: bool, max_len: u16) -> PrintStyledContent<String> {
+        // Only print normalized items
+        self.normalize();
+        // Prepare output
         let name_len = usize::from(max_len)
             .saturating_sub(self.suffix.len())
             .saturating_sub(4);
@@ -93,8 +102,45 @@ impl DirElem {
         PrintStyledContent(StyledContent::new(style, string))
     }
 
-    pub fn into_parts(self) -> (String, PathBuf) {
-        (self.name, self.path)
+    /// Normalizes the `DirElem` to make it viewable by the user.
+    ///
+    /// Normalization means that:
+    /// - the path is canonicalized
+    /// - the metadata was parsed
+    /// - the file-size or directory-size is parsed
+    ///
+    /// All of these functions are rather expensive,
+    /// so if we would do this directly when we parse a really large directory,
+    /// it will eat up a lot of time.
+    /// To work with the `DirElem` itself however, all of this is not necessary.
+    /// It only becomes mandatory, once we want to display it.
+    pub fn normalize(&mut self) {
+        if self.is_normalized {
+            return;
+        }
+        // Always use an absolute pathhere
+        self.path.canonicalize().unwrap_or_default();
+
+        let (mode, size) = self
+            .path
+            .metadata()
+            .map(|m| (m.permissions().mode(), m.size()))
+            .unwrap_or_default();
+
+        self.is_executable =
+            is_allowed(unix_mode::Accessor::User, unix_mode::Access::Execute, mode)
+                | is_allowed(unix_mode::Accessor::Group, unix_mode::Access::Execute, mode)
+                | is_allowed(unix_mode::Accessor::Other, unix_mode::Access::Execute, mode);
+
+        self.suffix = if self.path.is_dir() {
+            read_dir(&self.path)
+                .map(|res| res.into_iter().count().to_string())
+                .unwrap_or_default()
+        } else {
+            file_size_str(size)
+        };
+
+        self.is_normalized = true;
     }
 }
 
@@ -108,28 +154,14 @@ impl<P: AsRef<Path>> From<P> for DirElem {
             .unwrap_or_default();
 
         let lowercase = name.to_lowercase();
-
         let is_hidden = name.starts_with('.') || name.starts_with("__") || name.ends_with(".swp");
 
-        // Always use an absolute path here
-        let path: PathBuf = canonicalize(path.as_ref()).unwrap_or_else(|_| path.as_ref().into());
-
-        let (mode, size) = path
-            .metadata()
-            .map(|m| (m.permissions().mode(), m.size()))
-            .unwrap_or_default();
-
-        let is_executable = is_allowed(unix_mode::Accessor::User, unix_mode::Access::Execute, mode)
-            | is_allowed(unix_mode::Accessor::Group, unix_mode::Access::Execute, mode)
-            | is_allowed(unix_mode::Accessor::Other, unix_mode::Access::Execute, mode);
-
-        let suffix = if path.is_dir() {
-            read_dir(&path)
-                .map(|res| res.into_iter().count().to_string())
-                .unwrap_or_default()
-        } else {
-            file_size_str(size)
-        };
+        // NOTE: We don't fully create the DirElem here with all of its information,
+        // as this would take too much time.
+        // We delay this until we call "normalize"
+        let suffix = "".into();
+        let is_executable = false;
+        let path = path.as_ref().to_path_buf();
 
         DirElem {
             name,
@@ -139,6 +171,7 @@ impl<P: AsRef<Path>> From<P> for DirElem {
             suffix,
             is_executable,
             is_marked: false,
+            is_normalized: false,
         }
     }
 }
@@ -205,7 +238,12 @@ pub struct DirPanel {
 }
 
 impl Draw for DirPanel {
-    fn draw(&self, stdout: &mut Stdout, x_range: Range<u16>, y_range: Range<u16>) -> Result<()> {
+    fn draw(
+        &mut self,
+        stdout: &mut Stdout,
+        x_range: Range<u16>,
+        y_range: Range<u16>,
+    ) -> Result<()> {
         let width = x_range.end.saturating_sub(x_range.start);
         let height = y_range.end.saturating_sub(y_range.start);
 
@@ -231,7 +269,7 @@ impl Draw for DirPanel {
         // Write "height" items to the screen
         for (idx, entry) in self
             .elements
-            .iter()
+            .iter_mut()
             .enumerate()
             .skip(scroll)
             .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
@@ -323,7 +361,13 @@ impl BasePanel for DirPanel {
 }
 
 impl DirPanel {
-    pub fn new(elements: Vec<DirElem>, path: PathBuf) -> Self {
+    pub fn new(mut elements: Vec<DirElem>, path: PathBuf) -> Self {
+        // Sort the elements before you use them
+        elements.sort_by_cached_key(|a| a.name_lowercase().clone());
+        elements.sort_by_cached_key(|a| !a.path().is_dir());
+        // Normalize the first elements, so the first drawing is still really quick
+        elements.iter_mut().take(128).for_each(|e| e.normalize());
+
         let non_hidden = elements
             .iter()
             .enumerate()

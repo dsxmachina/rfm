@@ -31,7 +31,12 @@ pub struct FilePreview {
 }
 
 impl Draw for FilePreview {
-    fn draw(&self, stdout: &mut Stdout, x_range: Range<u16>, y_range: Range<u16>) -> Result<()> {
+    fn draw(
+        &mut self,
+        stdout: &mut Stdout,
+        x_range: Range<u16>,
+        y_range: Range<u16>,
+    ) -> Result<()> {
         let width = x_range.end.saturating_sub(x_range.start.saturating_add(1));
         let height = y_range.end.saturating_sub(y_range.start);
 
@@ -208,7 +213,12 @@ pub enum PreviewPanel {
 }
 
 impl Draw for PreviewPanel {
-    fn draw(&self, stdout: &mut Stdout, x_range: Range<u16>, y_range: Range<u16>) -> Result<()> {
+    fn draw(
+        &mut self,
+        stdout: &mut Stdout,
+        x_range: Range<u16>,
+        y_range: Range<u16>,
+    ) -> Result<()> {
         match self {
             PreviewPanel::Dir(panel) => panel.draw(stdout, x_range, y_range),
             PreviewPanel::File(preview) => preview.draw(stdout, x_range, y_range),

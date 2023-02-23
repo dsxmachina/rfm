@@ -14,7 +14,12 @@ pub struct DirConsole {
 }
 
 impl Draw for DirConsole {
-    fn draw(&self, stdout: &mut Stdout, x_range: Range<u16>, y_range: Range<u16>) -> Result<()> {
+    fn draw(
+        &mut self,
+        stdout: &mut Stdout,
+        x_range: Range<u16>,
+        y_range: Range<u16>,
+    ) -> Result<()> {
         let width = x_range.end.saturating_sub(x_range.start);
         let height = y_range.end.saturating_sub(y_range.start);
 
@@ -343,7 +348,12 @@ pub struct SearchConsole {
 }
 
 impl Draw for SearchConsole {
-    fn draw(&self, stdout: &mut Stdout, x_range: Range<u16>, y_range: Range<u16>) -> Result<()> {
+    fn draw(
+        &mut self,
+        stdout: &mut Stdout,
+        x_range: Range<u16>,
+        y_range: Range<u16>,
+    ) -> Result<()> {
         let width = x_range.end.saturating_sub(x_range.start);
         let height = y_range.end.saturating_sub(y_range.start);
 

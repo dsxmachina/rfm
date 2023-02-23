@@ -35,7 +35,8 @@ pub use preview::{FilePreview, Preview, PreviewPanel};
 
 /// Basic trait that lets us draw something on the terminal in a specified range.
 pub trait Draw {
-    fn draw(&self, stdout: &mut Stdout, x_range: Range<u16>, y_range: Range<u16>) -> Result<()>;
+    fn draw(&mut self, stdout: &mut Stdout, x_range: Range<u16>, y_range: Range<u16>)
+        -> Result<()>;
 }
 
 /// Basic trait for managing the content of a panel

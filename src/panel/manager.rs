@@ -322,7 +322,7 @@ impl PanelManager {
 
     fn draw_panels(&mut self) -> Result<()> {
         if self.redraw.left {
-            self.left.panel().draw(
+            self.left.panel_mut().draw(
                 &mut self.stdout,
                 self.layout.left_x_range.clone(),
                 self.layout.y_range.clone(),
@@ -330,7 +330,7 @@ impl PanelManager {
             self.redraw.left = false;
         }
         if self.redraw.center {
-            self.center.panel().draw(
+            self.center.panel_mut().draw(
                 &mut self.stdout,
                 self.layout.center_x_range.clone(),
                 self.layout.y_range.clone(),
@@ -338,7 +338,7 @@ impl PanelManager {
             self.redraw.center = false;
         }
         if self.redraw.right {
-            self.right.panel().draw(
+            self.right.panel_mut().draw(
                 &mut self.stdout,
                 self.layout.right_x_range.clone(),
                 self.layout.y_range.clone(),
