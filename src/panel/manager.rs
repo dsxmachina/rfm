@@ -799,7 +799,7 @@ impl PanelManager {
                                     self.redraw_center();
                                 } else {
                                     if let KeyCode::Char(c) = key_event.code {
-                                        input.push(c);
+                                        input.push(c.to_ascii_lowercase());
                                     }
                                     if let KeyCode::Backspace = key_event.code {
                                         input.pop();

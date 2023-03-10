@@ -278,13 +278,13 @@ impl Draw for DirPanel {
                 .elements
                 .iter_mut()
                 .filter(|elem| self.show_hidden || !elem.is_hidden)
-                .filter(|elem| elem.name().contains(pattern))
+                .filter(|elem| elem.name_lowercase().contains(pattern))
             {
                 let y = y_range.start + y_offset;
                 if y > height {
                     break;
                 }
-                if let Some(offset) = entry.name().find(pattern) {
+                if let Some(offset) = entry.name_lowercase().find(pattern) {
                     queue!(
                         stdout,
                         cursor::MoveTo(x_range.start, y),
@@ -442,13 +442,14 @@ impl DirPanel {
     }
 
     pub fn update_search(&mut self, pattern: String) {
-        self.search = Some(pattern);
+        self.search = Some(pattern.to_lowercase());
     }
 
     /// Mark all items that contain the search pattern and clear the search afterwards.
     pub fn finish_search(&mut self, pattern: &str) {
+        let pat = pattern.to_lowercase();
         for elem in self.elements.iter_mut() {
-            if elem.name().contains(pattern) {
+            if elem.name_lowercase().contains(&pat) {
                 elem.is_marked = true;
             } else {
                 elem.is_marked = false;
