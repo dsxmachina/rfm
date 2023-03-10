@@ -7,7 +7,11 @@ use notify_rust::Notification;
 use time::OffsetDateTime;
 use users::{get_group_by_gid, get_user_by_uid};
 
-use crate::commands::{Command, CommandParser};
+use crate::{
+    commands::{Command, CommandParser},
+    opener::OpenEngine,
+    util::file_size_str,
+};
 
 use super::{console::DirConsole, *};
 
@@ -60,6 +64,8 @@ pub struct PanelManager {
 
     /// Mode of operation
     mode: Mode,
+
+    opener: OpenEngine,
 
     /// Clipboard
     clipboard: Option<Clipboard>,
@@ -124,6 +130,7 @@ impl PanelManager {
             mode: Mode::Normal,
             clipboard: None,
             layout,
+            opener: OpenEngine::default(),
             // stack: Vec::new(),
             show_hidden: false,
             redraw: Redraw {
@@ -255,20 +262,7 @@ impl PanelManager {
                 let group = get_group_by_gid(metadata.gid())
                     .and_then(|g| g.name().to_str().map(String::from))
                     .unwrap_or_default();
-                let size = metadata.size();
-                let size_str = match size {
-                    0..=1023 => format!("{size}B"),
-                    1024..=1048575 => format!("{:.1}K", (size as f64) / 1024.),
-                    1048576..=1073741823 => format!("{:.1}M", (size as f64) / 1048576.),
-                    1073741824..=1099511627775 => format!("{:.2}G", (size as f64) / 1073741824.),
-                    1099511627776..=1125899906842623 => {
-                        format!("{:.3}T", (size as f64) / 1099511627776.)
-                    }
-                    1125899906842624..=1152921504606846976 => {
-                        format!("{:4}P", (size as f64) / 1125899906842624.)
-                    }
-                    _ => "too big".to_string(),
-                };
+                let size_str = file_size_str(metadata.size());
                 other = format!("{user} {group} {size_str} {modified}");
             } else {
                 permissions = String::from("------------");
@@ -450,49 +444,15 @@ impl PanelManager {
             // If the selected item is a directory, all panels will shift to the left
             if selected.is_dir() {
                 self.previous = self.center.panel().path().to_path_buf();
-
-                // Notification::new()
-                //     .summary("move-right")
-                //     .body(&format!("dir={}", selected.display()))
-                //     .show()
-                //     .unwrap();
-
-                // swap left and mid:
-                // mem::swap(&mut self.left, &mut self.center);
-                // if let PreviewPanel::Dir(right) = self.right.panel_mut() {
-                // TODO: Check if this still works with the watchers
-                //     mem::swap(right, self.center.panel_mut())
-                // }
-
-                // // Recreate mid and right
-                // self.center
-                //     .content_tx
-                //     .send(PanelUpdate {
-                //         path: selected,
-                //         state: self.center.state.lock().increased(),
-                //     })
-                //     .expect("Receiver dropped or closed");
                 self.left.update_panel(self.center.panel().clone());
                 self.center
                     .new_panel_instant(self.right.panel().maybe_path());
                 self.right
                     .new_panel_delayed(self.center.panel().selected_path());
-
-                // All panels needs to be redrawn
                 self.redraw_panels();
-                // if let PreviewPanel::Dir(panel) = &mut self.right.panel_mut() {
-                //     mem::swap(&mut self.center, panel);
-                // } else {
-                //     // This should not be possible!
-                //     panic!(
-                //         "selected item cannot be a directory while right panel is not a dir-panel"
-                //     );
-                // }
-                // // Recreate right panel
-                // PanelAction::UpdateMidRight((self.mid.path.clone(), self.mid.selected_path_owned()))
             } else {
-                self.open(selected);
-                self.redraw_center();
+                if let Err(_e) = self.opener.open(selected) { /* failed to open selected */ }
+                self.redraw_everything();
             }
             // self.stack.push(Operation::Move(Movement::Right));
         }
@@ -505,18 +465,8 @@ impl PanelManager {
             return;
         }
         self.previous = self.center.panel().path().to_path_buf();
-
-        // All panels will shift to the right
-        // and the left panel needs to be recreated:
-
-        // Create right dir-panel from previous mid
-        // | l | m | r |
         self.right
             .update_panel(PreviewPanel::Dir(self.center.panel().clone()));
-        // | l | m | m |
-
-        // swap left and mid:
-        // mem::swap(&mut self.left, &mut self.center);
         self.center.update_panel(self.left.panel().clone());
         // | m | l | m |
         // TODO: When we followed some symlink we don't want to take the parent here.
@@ -563,47 +513,6 @@ impl PanelManager {
             Movement::JumpTo(path) => self.jump(path.into()),
             Movement::JumpPrevious => self.jump(self.previous.clone()),
         };
-    }
-
-    fn open(&self, path: PathBuf) {
-        let absolute = if path.is_absolute() {
-            path
-        } else {
-            path.canonicalize().unwrap_or_default()
-        };
-        // Image
-        // If the selected item is a file,
-        // we need to open it
-        if let Some(ext) = absolute.extension().and_then(|ext| ext.to_str()) {
-            match ext {
-                "png" | "bmp" | "jpg" | "jpeg" | "svg" => {
-                    std::process::Command::new("sxiv")
-                        .stderr(Stdio::null())
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::null())
-                        .arg(absolute.clone())
-                        .spawn()
-                        .expect("failed to run sxiv");
-                }
-                _ => {
-                    // Everything else with vim
-                    std::process::Command::new("nvim")
-                        .arg(absolute)
-                        .spawn()
-                        .expect("failed to run neovim")
-                        .wait()
-                        .expect("error");
-                }
-            }
-        } else {
-            // Try to open things without extensions with vim
-            std::process::Command::new("nvim")
-                .arg(absolute)
-                .spawn()
-                .expect("failed to run neovim")
-                .wait()
-                .expect("error");
-        }
     }
 
     /// Returns a reference to all marked items.

@@ -17,6 +17,7 @@ use tokio::sync::mpsc;
 
 mod commands;
 mod content;
+mod opener;
 mod panel;
 mod util;
 
