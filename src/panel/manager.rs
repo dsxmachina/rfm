@@ -638,6 +638,7 @@ impl PanelManager {
                             }
                             self.mode = Mode::Normal;
                             self.parser.clear();
+                            self.center.panel_mut().clear_search();
                             self.redraw_panels();
                             self.redraw_footer();
                         }
@@ -657,6 +658,9 @@ impl PanelManager {
                                         pre_console_path = self.center.panel().path().to_path_buf();
                                         self.mode = Mode::Console { console: DirConsole::from_panel(self.center.panel()) };
                                         self.redraw_console();
+                                    }
+                                    Command::Search => {
+                                        self.mode = Mode::Search { input: "".into() };
                                     }
                                     Command::Mkdir => {
                                         self.mode = Mode::CreateItem { console: DirConsole::from_panel(self.center.panel()), is_dir: true };
@@ -779,8 +783,19 @@ impl PanelManager {
                                     _ => (),
                                 }
                             }
-                            Mode::Search{ input: _ } => {
-                                todo!()
+                            Mode::Search{ input } => {
+                                if let KeyCode::Enter = key_event.code {
+
+                                } else {
+                                    if let KeyCode::Char(c) = key_event.code {
+                                        input.push(c);
+                                    }
+                                    if let KeyCode::Backspace = key_event.code {
+                                        input.pop();
+                                    }
+                                    self.center.panel_mut().update_search(input.clone());
+                                    self.redraw_center();
+                                }
                             }
                         }
                     }

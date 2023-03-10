@@ -218,6 +218,9 @@ pub struct DirPanel {
     /// Otherwise the indizes in this vector would be invalid
     non_hidden: Vec<usize>,
 
+    /// Active search term
+    search: Option<String>,
+
     /// Selected element
     selected_idx: usize,
 
@@ -269,25 +272,57 @@ impl Draw for DirPanel {
 
         // Then print new buffer
         let mut y_offset = 0_u16;
-        // Write "height" items to the screen
-        for (idx, entry) in self
-            .elements
-            .iter_mut()
-            .enumerate()
-            .skip(scroll)
-            .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
-            .take(height as usize)
-        {
-            let y = y_range.start + y_offset;
-            queue!(
-                stdout,
-                cursor::MoveTo(x_range.start, y),
-                PrintStyledContent("│".dark_green().bold()),
-                entry.print_styled(self.selected_idx == idx, width),
-                // cursor::MoveTo(x_range.start.saturating_add(1), y),
-                // PrintStyledContent("asdf".dark_red().bold()),
-            )?;
-            y_offset += 1;
+
+        if let Some(pattern) = &self.search {
+            for entry in self
+                .elements
+                .iter_mut()
+                .filter(|elem| self.show_hidden || !elem.is_hidden)
+                .filter(|elem| elem.name().contains(pattern))
+            {
+                let y = y_range.start + y_offset;
+                if y > height {
+                    break;
+                }
+                if let Some(offset) = entry.name().find(pattern) {
+                    queue!(
+                        stdout,
+                        cursor::MoveTo(x_range.start, y),
+                        PrintStyledContent("│".dark_green().bold()),
+                        entry.print_styled(false, width),
+                    )?;
+                    let pattern_x = x_range.start + 2 + offset as u16;
+                    if pattern_x <= width {
+                        queue!(
+                            stdout,
+                            cursor::MoveTo(pattern_x, y),
+                            PrintStyledContent(pattern.clone().red().bold())
+                        )?;
+                    }
+                } else {
+                    continue;
+                }
+                y_offset += 1;
+            }
+        } else {
+            // Write "height" items to the screen
+            for (idx, entry) in self
+                .elements
+                .iter_mut()
+                .enumerate()
+                .skip(scroll)
+                .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
+                .take(height as usize)
+            {
+                let y = y_range.start + y_offset;
+                queue!(
+                    stdout,
+                    cursor::MoveTo(x_range.start, y),
+                    PrintStyledContent("│".dark_green().bold()),
+                    entry.print_styled(self.selected_idx == idx, width),
+                )?;
+                y_offset += 1;
+            }
         }
 
         for y in (y_range.start + y_offset)..y_range.end {
@@ -397,12 +432,21 @@ impl DirPanel {
             non_hidden,
             selected_idx: selected,
             non_hidden_idx: 0,
+            search: None,
             path,
             modified,
             loading: false,
             show_hidden: false,
             hash,
         }
+    }
+
+    pub fn update_search(&mut self, pattern: String) {
+        self.search = Some(pattern);
+    }
+
+    pub fn clear_search(&mut self) {
+        self.search = None;
     }
 
     pub fn elements(&self) -> Iter<DirElem> {
@@ -476,6 +520,7 @@ impl DirPanel {
             non_hidden: Vec::new(),
             selected_idx: 0,
             non_hidden_idx: 0,
+            search: None,
             path,
             modified: SystemTime::now(),
             loading: true,
@@ -493,6 +538,7 @@ impl DirPanel {
             non_hidden: Vec::new(),
             selected_idx: 0,
             non_hidden_idx: 0,
+            search: None,
             modified: SystemTime::now(),
             path: "path-of-empty-panel".into(),
             loading: false,
@@ -594,4 +640,18 @@ impl DirPanel {
             (self.non_hidden_idx.saturating_add(1), self.non_hidden.len())
         }
     }
+}
+
+#[test]
+fn test_search() {
+    let panel = DirPanel::from_path("/home/someone/Musik".into());
+
+    let pattern = "minimal";
+
+    for item in panel.elements.iter() {
+        if item.name().contains(pattern) {
+            println!("{}", item.name());
+        }
+    }
+    assert!(false);
 }

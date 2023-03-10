@@ -9,6 +9,7 @@ use patricia_tree::PatriciaMap;
 const CTRL_C: KeyEvent = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
 const CTRL_X: KeyEvent = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
 const CTRL_P: KeyEvent = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
+const CTRL_F: KeyEvent = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL);
 
 #[derive(Debug, Clone)]
 pub struct ExpandedPath(PathBuf);
@@ -63,6 +64,7 @@ pub enum Command {
     ToggleHidden,
     ViewTrash,
     Cd,
+    Search,
     Mkdir,
     Touch,
     Cut,
@@ -151,6 +153,9 @@ impl CommandParser {
         key_commands.insert("po", Command::Paste { overwrite: true });
         key_commands.insert("delete", Command::Delete);
 
+        // Search
+        key_commands.insert("/", Command::Search);
+
         // cd, mkdir, touch
         key_commands.insert("cd", Command::Cd);
         key_commands.insert("mkdir", Command::Mkdir);
@@ -161,6 +166,9 @@ impl CommandParser {
 
         // --- Commands for modifier + key:
         let mut mod_commands = HashMap::new();
+
+        // Search
+        mod_commands.insert(CTRL_F, Command::Search);
 
         // Copy, Paste, Cut
         mod_commands.insert(CTRL_C, Command::Copy);

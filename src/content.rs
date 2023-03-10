@@ -248,54 +248,54 @@ impl PreviewManager {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // use super::*;
     // use patricia_tree::{PatriciaMap, PatriciaSet};
-    use std::time::Instant;
-    #[test]
-    fn test_dir_parsing_speed() {
-        let parse_dir = |path: PathBuf| {
-            // read directory
-            let now = Instant::now();
-            let mut content = dir_content(path);
-            let elapsed = now.elapsed().as_millis();
-            println!("parsing {} elements took: {elapsed}ms", content.len(),);
+    // use std::time::Instant;
+    // #[test]
+    // fn test_dir_parsing_speed() {
+    //     let parse_dir = |path: PathBuf| {
+    //         // read directory
+    //         let now = Instant::now();
+    //         let mut content = dir_content(path);
+    //         let elapsed = now.elapsed().as_millis();
+    //         println!("parsing {} elements took: {elapsed}ms", content.len(),);
 
-            let now = Instant::now();
-            content.sort_by_cached_key(|a| a.name_lowercase().clone());
-            content.sort_by_cached_key(|a| !a.path().is_dir());
-            let elapsed = now.elapsed().as_millis();
-            println!("sorting {} elements took: {elapsed}ms", content.len(),);
+    //         let now = Instant::now();
+    //         content.sort_by_cached_key(|a| a.name_lowercase().clone());
+    //         content.sort_by_cached_key(|a| !a.path().is_dir());
+    //         let elapsed = now.elapsed().as_millis();
+    //         println!("sorting {} elements took: {elapsed}ms", content.len(),);
 
-            let now = Instant::now();
-            content.iter_mut().for_each(|e| e.normalize());
-            let elapsed = now.elapsed().as_millis();
-            println!("normalizing {} elements took: {elapsed}ms", content.len(),);
-        };
+    //         let now = Instant::now();
+    //         content.iter_mut().for_each(|e| e.normalize());
+    //         let elapsed = now.elapsed().as_millis();
+    //         println!("normalizing {} elements took: {elapsed}ms", content.len(),);
+    //     };
 
-        parse_dir("/home/someone/Bilder/ground_images/-3000_-2000_3000_2000_0".into());
-        parse_dir("/nix/store".into());
-        assert!(false);
-    }
+    //     parse_dir("/home/someone/Bilder/ground_images/-3000_-2000_3000_2000_0".into());
+    //     parse_dir("/nix/store".into());
+    //     assert!(false);
+    // }
 
-    #[test]
-    fn test_panel_creation_time() {
-        let create_panel = |path: PathBuf| {
-            // read directory
-            let now = Instant::now();
-            let content = dir_content(path.clone());
-            let panel = DirPanel::new(content, path);
-            let elapsed = now.elapsed().as_millis();
-            println!(
-                "creating panel with {} elements took: {elapsed}ms",
-                panel.elements().len(),
-            );
-        };
+    // #[test]
+    // fn test_panel_creation_time() {
+    //     let create_panel = |path: PathBuf| {
+    //         // read directory
+    //         let now = Instant::now();
+    //         let content = dir_content(path.clone());
+    //         let panel = DirPanel::new(content, path);
+    //         let elapsed = now.elapsed().as_millis();
+    //         println!(
+    //             "creating panel with {} elements took: {elapsed}ms",
+    //             panel.elements().len(),
+    //         );
+    //     };
 
-        create_panel("/home/someone/Bilder/ground_images/-3000_-2000_3000_2000_0".into());
-        create_panel("/nix/store".into());
+    //     create_panel("/home/someone/Bilder/ground_images/-3000_-2000_3000_2000_0".into());
+    //     create_panel("/nix/store".into());
 
-        assert!(false);
-    }
+    //     assert!(false);
+    // }
 
     // #[test]
     // fn test_dir_hashing_speed() {
