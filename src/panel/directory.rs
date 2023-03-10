@@ -445,6 +445,18 @@ impl DirPanel {
         self.search = Some(pattern);
     }
 
+    /// Mark all items that contain the search pattern and clear the search afterwards.
+    pub fn finish_search(&mut self, pattern: &str) {
+        for elem in self.elements.iter_mut() {
+            if elem.name().contains(pattern) {
+                elem.is_marked = true;
+            } else {
+                elem.is_marked = false;
+            }
+        }
+        self.search = None;
+    }
+
     pub fn clear_search(&mut self) {
         self.search = None;
     }

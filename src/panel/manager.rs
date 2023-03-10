@@ -785,7 +785,9 @@ impl PanelManager {
                             }
                             Mode::Search{ input } => {
                                 if let KeyCode::Enter = key_event.code {
-
+                                    self.center.panel_mut().finish_search(&input);
+                                    self.mode = Mode::Normal;
+                                    self.redraw_center();
                                 } else {
                                     if let KeyCode::Char(c) = key_event.code {
                                         input.push(c);
