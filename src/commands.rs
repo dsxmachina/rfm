@@ -61,6 +61,8 @@ pub enum Movement {
 #[derive(Debug, Clone)]
 pub enum Command {
     Move(Movement),
+    Next,
+    Previous,
     ToggleHidden,
     ViewTrash,
     Cd,
@@ -155,6 +157,8 @@ impl CommandParser {
 
         // Search
         key_commands.insert("/", Command::Search);
+        key_commands.insert("n", Command::Next);
+        key_commands.insert("p", Command::Previous);
 
         // cd, mkdir, touch
         key_commands.insert("cd", Command::Cd);

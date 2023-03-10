@@ -662,6 +662,14 @@ impl PanelManager {
                                     Command::Search => {
                                         self.mode = Mode::Search { input: "".into() };
                                     }
+                                    Command::Next => {
+                                        self.center.panel_mut().select_next_marked();
+                                        self.redraw_center();
+                                    }
+                                    Command::Previous => {
+                                        self.center.panel_mut().select_prev_marked();
+                                        self.redraw_center();
+                                    }
                                     Command::Mkdir => {
                                         self.mode = Mode::CreateItem { console: DirConsole::from_panel(self.center.panel()), is_dir: true };
                                         self.redraw_console();

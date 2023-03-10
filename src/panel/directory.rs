@@ -500,6 +500,66 @@ impl DirPanel {
         }
     }
 
+    /// Selects the next marked item
+    pub fn select_next_marked(&mut self) {
+        // Search from selected-idx to end
+        if let Some(idx) = self
+            .elements
+            .iter()
+            .enumerate()
+            .skip(self.selected_idx + 1)
+            .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
+            .find(|(_, elem)| elem.is_marked)
+            .map(|(idx, _)| idx)
+        {
+            self.selected_idx = idx;
+        } else {
+            // Search again from start
+            self.selected_idx = self
+                .elements
+                .iter()
+                .enumerate()
+                .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
+                .find(|(_, elem)| elem.is_marked)
+                .map(|(idx, _)| idx)
+                .unwrap_or(self.selected_idx);
+        }
+        if !self.show_hidden {
+            self.set_non_hidden_idx();
+        }
+    }
+
+    /// Selects the next marked item
+    pub fn select_prev_marked(&mut self) {
+        // Search from selected-idx to end
+        if let Some(idx) = self
+            .elements
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(|(idx, _)| idx < &self.selected_idx)
+            .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
+            .find(|(_, elem)| elem.is_marked)
+            .map(|(idx, _)| idx)
+        {
+            self.selected_idx = idx;
+        } else {
+            // Search again from end
+            self.selected_idx = self
+                .elements
+                .iter()
+                .enumerate()
+                .rev()
+                .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
+                .find(|(_, elem)| elem.is_marked)
+                .map(|(idx, _)| idx)
+                .unwrap_or(self.selected_idx);
+        }
+        if !self.show_hidden {
+            self.set_non_hidden_idx();
+        }
+    }
+
     /// Sets non-hidden-idx to the value closest to selection
     fn set_non_hidden_idx(&mut self) {
         for (idx, elem_idx) in self.non_hidden.iter().enumerate() {
