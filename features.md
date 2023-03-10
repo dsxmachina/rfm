@@ -5,7 +5,11 @@
 - Support for multiple tabs
   - each tab with its own history and set of panels
 
-- Generate preview for whole directory content when idle
+- [x] Generate preview for whole directory content when idle
+
+- [x] Imrove panel creation time
+
+- [ ] Improve drawing speed
 
 ## Search
 

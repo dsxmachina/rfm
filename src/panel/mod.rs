@@ -14,7 +14,6 @@ use std::{
     ops::Range,
     os::unix::prelude::PermissionsExt,
     path::{Path, PathBuf},
-    process::Stdio,
     sync::Arc,
     time::SystemTime,
 };

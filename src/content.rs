@@ -80,31 +80,11 @@ pub fn dir_content(path: PathBuf) -> Vec<DirElem> {
             for item in dir.into_iter().flatten() {
                 out.push(DirElem::from(item.path()))
             }
-            // out.sort();
-            // out.sort_by_cached_key(|a| a.name_lowercase().clone());
-            // out.sort_by_cached_key(|a| !a.path().is_dir());
             out
         }
         Err(_) => Vec::new(),
     }
 }
-
-// fn dir_content_preview(path: PathBuf, max_elem: usize) -> Vec<DirElem> {
-//     // read directory
-//     match std::fs::read_dir(path) {
-//         Ok(dir) => {
-//             let mut out = Vec::new();
-//             for item in dir.into_iter().flatten().take(max_elem) {
-//                 out.push(DirElem::from(item.path()))
-//             }
-//             // out.sort();
-//             out.sort_by_cached_key(|a| a.name_lowercase().clone());
-//             out.sort_by_cached_key(|a| !a.path().is_dir());
-//             out
-//         }
-//         Err(_) => Vec::new(),
-//     }
-// }
 
 pub fn hash_elements(elements: &[DirElem]) -> u64 {
     let mut h: fasthash::XXHasher = Default::default();
