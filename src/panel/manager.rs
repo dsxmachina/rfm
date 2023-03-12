@@ -33,7 +33,7 @@ impl Redraw {
 enum Mode {
     Normal,
     Console { console: DirConsole },
-    CreateItem { console: DirConsole, is_dir: bool },
+    CreateItem { input: String, is_dir: bool },
     Search { input: String },
 }
 
@@ -234,6 +234,31 @@ impl PanelManager {
         if !self.redraw.footer {
             return Ok(());
         }
+        if let Mode::Search { input } = &self.mode {
+            queue!(
+                self.stdout,
+                cursor::MoveTo(0, self.layout.footer()),
+                Clear(ClearType::CurrentLine),
+                style::PrintStyledContent("Search:".bold().dark_green().reverse()),
+                style::PrintStyledContent(format!(" {input}").bold().red()),
+            )?;
+            return Ok(());
+        }
+        if let Mode::CreateItem { input, is_dir } = &self.mode {
+            let (prompt, item) = if *is_dir {
+                ("Make Directory:", format!(" {input}").dark_green().bold())
+            } else {
+                ("Touch:", format!(" {input}").grey())
+            };
+            queue!(
+                self.stdout,
+                cursor::MoveTo(0, self.layout.footer()),
+                Clear(ClearType::CurrentLine),
+                style::PrintStyledContent(prompt.bold().dark_green().reverse()),
+                style::PrintStyledContent(item),
+            )?;
+            return Ok(());
+        }
         if let Some(selection) = self.center.panel().selected() {
             let path = selection.path();
             let permissions;
@@ -345,13 +370,6 @@ impl PanelManager {
     fn draw_console(&mut self) -> Result<()> {
         if self.redraw.console {
             if let Mode::Console { console } = &mut self.mode {
-                console.draw(
-                    &mut self.stdout,
-                    self.layout.left_x_range.start..self.layout.right_x_range.end,
-                    self.layout.y_range.clone(),
-                )?;
-            }
-            if let Mode::CreateItem { console, .. } = &mut self.mode {
                 console.draw(
                     &mut self.stdout,
                     self.layout.left_x_range.start..self.layout.right_x_range.end,
@@ -661,6 +679,7 @@ impl PanelManager {
                                     }
                                     Command::Search => {
                                         self.mode = Mode::Search { input: "".into() };
+                                        self.redraw_footer();
                                     }
                                     Command::Next => {
                                         self.center.panel_mut().select_next_marked();
@@ -671,12 +690,12 @@ impl PanelManager {
                                         self.redraw_center();
                                     }
                                     Command::Mkdir => {
-                                        self.mode = Mode::CreateItem { console: DirConsole::from_panel(self.center.panel()), is_dir: true };
-                                        self.redraw_console();
+                                        self.mode = Mode::CreateItem { input: "".into(), is_dir: true };
+                                        self.redraw_footer();
                                     }
                                     Command::Touch => {
-                                        self.mode = Mode::CreateItem { console: DirConsole::from_panel(self.center.panel()), is_dir: false };
-                                        self.redraw_console();
+                                        self.mode = Mode::CreateItem { input: "".into(), is_dir: false };
+                                        self.redraw_footer();
                                     }
                                     Command::Mark => {
                                         self.center.panel_mut().mark_selected_item();
@@ -756,37 +775,33 @@ impl PanelManager {
                                     _ => (),
                                 }
                             }
-                            Mode::CreateItem { console, is_dir } => {
+                            Mode::CreateItem { input, is_dir } => {
                                 match key_event.code {
                                     KeyCode::Backspace => {
-                                        console.del();
-                                        self.redraw_console();
+                                        input.pop();
+                                        self.redraw_footer();
                                     }
                                     KeyCode::Enter => {
-                                        let new_item = console.joined_input();
+                                        let current_path = self.center.panel().path();
                                         let create_fn = if *is_dir {
                                             |item| {fs_extra::dir::create(item, false)}
                                         } else {
                                             |item| {let _ = OpenOptions::new().read(true).append(true).create(true).open(item)?; Ok(())}
                                         };
-                                        if let Err(e) = create_fn(new_item) {
-                                            Notification::new().summary("error").body(&format!("{e}")).show().unwrap();
+                                        if let Err(e) = create_fn(current_path.join(input.trim())) {
+                                            Notification::new().summary("error").body(&format!("{}", e.to_string())).show().unwrap();
                                         }
                                         // self.stack.push(Operation::Mkdir { path: new_dir.clone() });
                                         self.mode = Mode::Normal;
                                         self.redraw_panels();
                                     }
                                     KeyCode::Tab  => {
-                                        console.tab();
-                                        self.redraw_console();
-                                    }
-                                    KeyCode::BackTab  => {
-                                        console.backtab();
-                                        self.redraw_console();
+                                        /* autocomplete here ? */
+                                        self.redraw_footer();
                                     }
                                     KeyCode::Char(c) => {
-                                        console.insert(c);
-                                        self.redraw_console();
+                                        input.push(c);
+                                        self.redraw_footer();
                                     }
                                     _ => (),
                                 }
