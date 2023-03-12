@@ -308,6 +308,13 @@ impl PanelManager {
                 Print("   "),
                 Print(other)
             )?;
+        } else {
+            queue!(
+                self.stdout,
+                cursor::MoveTo(0, self.layout.footer()),
+                Clear(ClearType::CurrentLine),
+                style::PrintStyledContent("------------".dark_cyan()),
+            )?;
         }
 
         let key_buffer = self.parser.buffer();
