@@ -74,7 +74,7 @@ async fn main() -> Result<()> {
         prev_rx,
         directory_tx,
         preview_tx,
-    );
+    )?;
     let panel_handle = tokio::spawn(panel_manager.run());
 
     let panel_result = panel_handle.await;

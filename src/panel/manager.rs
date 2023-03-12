@@ -4,6 +4,7 @@ use crossterm::event::{Event, EventStream, KeyCode};
 use fs_extra::dir::CopyOptions;
 use futures::{FutureExt, StreamExt};
 use notify_rust::Notification;
+use tempfile::TempDir;
 use time::OffsetDateTime;
 use users::{get_group_by_gid, get_user_by_uid};
 
@@ -87,6 +88,8 @@ pub struct PanelManager {
     // TODO: Implement "history"
     /// Previous path
     previous: PathBuf,
+    pre_console_path: PathBuf,
+    trash_dir: TempDir,
 
     /// command-parser
     parser: CommandParser,
@@ -109,11 +112,11 @@ impl PanelManager {
         prev_rx: mpsc::Receiver<(PreviewPanel, PanelState)>,
         directory_tx: mpsc::UnboundedSender<PanelUpdate>,
         preview_tx: mpsc::UnboundedSender<PanelUpdate>,
-    ) -> Self {
+    ) -> Result<Self> {
         let stdout = stdout();
         let event_reader = EventStream::new();
         let parser = CommandParser::new();
-        let terminal_size = terminal::size().unwrap_or_default();
+        let terminal_size = terminal::size()?;
         let layout = MillerColumns::from_size(terminal_size);
 
         let mut left = ManagedPanel::new(directory_cache.clone(), directory_tx.clone(), false);
@@ -123,7 +126,9 @@ impl PanelManager {
         left.new_panel_instant(Some(".."));
         center.new_panel_instant(Some("."));
 
-        PanelManager {
+        let trash_dir = tempfile::tempdir()?;
+
+        Ok(PanelManager {
             left,
             center,
             right,
@@ -143,11 +148,13 @@ impl PanelManager {
             },
             event_reader,
             previous: ".".into(),
+            pre_console_path: ".".into(),
+            trash_dir,
             parser,
             stdout,
             dir_rx,
             prev_rx,
-        }
+        })
     }
 
     fn redraw_header(&mut self) {
@@ -590,11 +597,6 @@ impl PanelManager {
         self.redraw_everything();
         self.draw()?;
 
-        // Remember path before we jumped into console
-        let mut pre_console_path: PathBuf = self.center.panel().path().to_path_buf();
-
-        let trash_dir = tempfile::tempdir()?;
-
         loop {
             let event_reader = self.event_reader.next().fuse();
             tokio::select! {
@@ -624,7 +626,6 @@ impl PanelManager {
                     } else {
                         // Notification::new().summary("unknown update").body(&format!("{:?}", state)).show().unwrap();
                     }
-                    self.draw()?;
                 }
                 // Check incoming new preview-panels
                 result = self.prev_rx.recv() => {
@@ -639,199 +640,22 @@ impl PanelManager {
                         self.redraw_right();
                         self.redraw_console();
                     }
-                    self.draw()?;
                 }
                 // Check incoming new events
                 result = event_reader => {
                     // Shutdown if reader has been dropped
-                    if result.is_none() {
-                        break;
-                    }
-                    let event = result.unwrap()?;
-                    if let Event::Key(key_event) = event {
-                        // If we hit escape - go back to normal mode.
-                        if let KeyCode::Esc = key_event.code {
-                            if let Mode::Console{ .. } = self.mode {
-                                self.jump(pre_console_path.clone());
-                            }
-                            self.mode = Mode::Normal;
-                            self.parser.clear();
-                            self.center.panel_mut().clear_search();
-                            self.redraw_panels();
-                            self.redraw_footer();
-                        }
-                        match &mut self.mode {
-                            Mode::Normal => {
-                                match self.parser.add_event(key_event) {
-                                    Command::Move(direction) => {
-                                        self.move_cursor(direction);
-                                    }
-                                    Command::ViewTrash => {
-                                        self.jump(trash_dir.path().to_path_buf());
-                                    }
-                                    Command::ToggleHidden => {
-                                        self.toggle_hidden();
-                                    }
-                                    Command::Cd => {
-                                        pre_console_path = self.center.panel().path().to_path_buf();
-                                        self.mode = Mode::Console { console: DirConsole::from_panel(self.center.panel()) };
-                                        self.redraw_console();
-                                    }
-                                    Command::Search => {
-                                        self.mode = Mode::Search { input: "".into() };
-                                        self.redraw_footer();
-                                    }
-                                    Command::Next => {
-                                        self.center.panel_mut().select_next_marked();
-                                        self.redraw_center();
-                                    }
-                                    Command::Previous => {
-                                        self.center.panel_mut().select_prev_marked();
-                                        self.redraw_center();
-                                    }
-                                    Command::Mkdir => {
-                                        self.mode = Mode::CreateItem { input: "".into(), is_dir: true };
-                                        self.redraw_footer();
-                                    }
-                                    Command::Touch => {
-                                        self.mode = Mode::CreateItem { input: "".into(), is_dir: false };
-                                        self.redraw_footer();
-                                    }
-                                    Command::Mark => {
-                                        self.center.panel_mut().mark_selected_item();
-                                        self.move_cursor(Movement::Down);
-                                    }
-                                    Command::Cut => {
-                                        self.clipboard = Some(Clipboard { files: self.marked_or_selected(), cut: true });
-                                    }
-                                    Command::Copy => {
-                                        self.clipboard = Some(Clipboard { files: self.marked_or_selected(), cut: false });
-                                    }
-                                    Command::Delete => {
-                                        let files = self.marked_or_selected();
-                                        // Notification::new()
-                                        //     .summary(&format!("Delete {} items", files.len()))
-                                        //     .body(&format!("{}", trash_dir.path().display())).show().unwrap();
-                                        self.unmark_items();
-                                        let options = CopyOptions::new().overwrite(true);
-                                        // self.stack.push(Operation::MoveItems { from: files.clone(), to: trash_dir.path().to_path_buf() });
-                                        if let Err(e) = fs_extra::move_items(&files, trash_dir.path(), &options) {
-                                                Notification::new().summary("error").body(&format!("{e}")).show().unwrap();
-                                        }
-                                    }
-                                    Command::Paste { overwrite } => {
-                                        self.unmark_items();
-                                        if let Some(clipboard) = &self.clipboard {
-                                            let current_path = self.center.panel().path();
-
-                                            let options = CopyOptions::new().skip_exist(!overwrite).overwrite(overwrite);
-                                            let result = if clipboard.cut {
-                                                // self.stack.push(Operation::MoveItems { from: clipboard.files.clone(), to: current_path.to_path_buf() });
-                                                fs_extra::move_items(&clipboard.files, current_path, &options)
-                                            } else {
-                                                // self.stack.push(Operation::CopyItems { from: clipboard.files.clone(), to: current_path.to_path_buf() });
-                                                fs_extra::copy_items(&clipboard.files, current_path, &options)
-                                            };
-                                            if let Err(e) = result {
-                                                Notification::new().summary("error").body(&format!("{e}")).show().unwrap();
-                                            }
-                                            self.redraw_panels();
-                                        }
-                                    }
-                                    Command::Quit => break,
-                                    Command::None => self.redraw_footer(),
-                                }
-                            }
-                            Mode::Console{ console } => {
-                                match key_event.code {
-                                    KeyCode::Backspace => {
-                                        if let Some(path) = console.del().map(|p| p.to_path_buf()) {
-                                            self.jump(path);
-                                        }
-                                        self.redraw_console();
-                                    }
-                                    KeyCode::Enter => {
-                                        self.mode = Mode::Normal;
-                                        self.redraw_panels();
-                                    }
-                                    KeyCode::Tab  => {
-                                        if let Some(path) = console.tab() {
-                                            self.jump(path);
-                                        }
-                                        self.redraw_console();
-                                    }
-                                    KeyCode::BackTab  => {
-                                        if let Some(path) = console.backtab() {
-                                            self.jump(path);
-                                        }
-                                        self.redraw_console();
-                                    }
-                                    KeyCode::Char(c) => {
-                                        if let Some(path) = console.insert(c) {
-                                            self.jump(path);
-                                        }
-                                        self.redraw_console();
-                                    }
-                                    _ => (),
-                                }
-                            }
-                            Mode::CreateItem { input, is_dir } => {
-                                match key_event.code {
-                                    KeyCode::Backspace => {
-                                        input.pop();
-                                        self.redraw_footer();
-                                    }
-                                    KeyCode::Enter => {
-                                        let current_path = self.center.panel().path();
-                                        let create_fn = if *is_dir {
-                                            |item| {fs_extra::dir::create(item, false)}
-                                        } else {
-                                            |item| {let _ = OpenOptions::new().read(true).append(true).create(true).open(item)?; Ok(())}
-                                        };
-                                        if let Err(e) = create_fn(current_path.join(input.trim())) {
-                                            Notification::new().summary("error").body(&format!("{}", e.to_string())).show().unwrap();
-                                        }
-                                        // self.stack.push(Operation::Mkdir { path: new_dir.clone() });
-                                        self.mode = Mode::Normal;
-                                        self.redraw_panels();
-                                    }
-                                    KeyCode::Tab  => {
-                                        /* autocomplete here ? */
-                                        self.redraw_footer();
-                                    }
-                                    KeyCode::Char(c) => {
-                                        input.push(c);
-                                        self.redraw_footer();
-                                    }
-                                    _ => (),
-                                }
-                            }
-                            Mode::Search{ input } => {
-                                if let KeyCode::Enter = key_event.code {
-                                    self.center.panel_mut().finish_search(&input);
-                                    self.center.panel_mut().select_next_marked();
-                                    self.mode = Mode::Normal;
-                                    self.redraw_center();
-                                } else {
-                                    if let KeyCode::Char(c) = key_event.code {
-                                        input.push(c.to_ascii_lowercase());
-                                    }
-                                    if let KeyCode::Backspace = key_event.code {
-                                        input.pop();
-                                    }
-                                    self.center.panel_mut().update_search(input.clone());
-                                    self.redraw_center();
-                                }
+                    match result {
+                        Some(event) => {
+                            if self.handle_event(event?)? {
+                                break;
                             }
                         }
+                        None => break,
                     }
-                    if let Event::Resize(sx, sy) = event {
-                        self.layout = MillerColumns::from_size((sx, sy));
-                        self.redraw_everything();
-                    }
-                    self.draw()?;
                 }
             }
+            // Always redraw what needs to be redrawn
+            self.draw()?;
         }
         // Cleanup after leaving this function
         self.stdout
@@ -840,5 +664,228 @@ impl PanelManager {
             .queue(cursor::Show)?
             .flush()?;
         Ok(self.center.panel().path().to_path_buf())
+    }
+
+    /// Handles the terminal events.
+    ///
+    /// Returns Ok(true) if the application needs to shut down.
+    fn handle_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key_event) = event {
+            // If we hit escape - go back to normal mode.
+            if let KeyCode::Esc = key_event.code {
+                if let Mode::Console { .. } = self.mode {
+                    self.jump(self.pre_console_path.clone());
+                }
+                self.mode = Mode::Normal;
+                self.parser.clear();
+                self.center.panel_mut().clear_search();
+                self.redraw_panels();
+                self.redraw_footer();
+            }
+            match &mut self.mode {
+                Mode::Normal => {
+                    match self.parser.add_event(key_event) {
+                        Command::Move(direction) => {
+                            self.move_cursor(direction);
+                        }
+                        Command::ViewTrash => {
+                            self.jump(self.trash_dir.path().to_path_buf());
+                        }
+                        Command::ToggleHidden => {
+                            self.toggle_hidden();
+                        }
+                        Command::Cd => {
+                            self.pre_console_path = self.center.panel().path().to_path_buf();
+                            self.mode = Mode::Console {
+                                console: DirConsole::from_panel(self.center.panel()),
+                            };
+                            self.redraw_console();
+                        }
+                        Command::Search => {
+                            self.mode = Mode::Search { input: "".into() };
+                            self.redraw_footer();
+                        }
+                        Command::Next => {
+                            self.center.panel_mut().select_next_marked();
+                            self.redraw_center();
+                        }
+                        Command::Previous => {
+                            self.center.panel_mut().select_prev_marked();
+                            self.redraw_center();
+                        }
+                        Command::Mkdir => {
+                            self.mode = Mode::CreateItem {
+                                input: "".into(),
+                                is_dir: true,
+                            };
+                            self.redraw_footer();
+                        }
+                        Command::Touch => {
+                            self.mode = Mode::CreateItem {
+                                input: "".into(),
+                                is_dir: false,
+                            };
+                            self.redraw_footer();
+                        }
+                        Command::Mark => {
+                            self.center.panel_mut().mark_selected_item();
+                            self.move_cursor(Movement::Down);
+                        }
+                        Command::Cut => {
+                            self.clipboard = Some(Clipboard {
+                                files: self.marked_or_selected(),
+                                cut: true,
+                            });
+                        }
+                        Command::Copy => {
+                            self.clipboard = Some(Clipboard {
+                                files: self.marked_or_selected(),
+                                cut: false,
+                            });
+                        }
+                        Command::Delete => {
+                            let files = self.marked_or_selected();
+                            // Notification::new()
+                            //     .summary(&format!("Delete {} items", files.len()))
+                            //     .body(&format!("{}", trash_dir.path().display())).show().unwrap();
+                            self.unmark_items();
+                            let options = CopyOptions::new().overwrite(true);
+                            // self.stack.push(Operation::MoveItems { from: files.clone(), to: trash_dir.path().to_path_buf() });
+                            if let Err(e) =
+                                fs_extra::move_items(&files, self.trash_dir.path(), &options)
+                            {
+                                Notification::new()
+                                    .summary("error")
+                                    .body(&format!("{e}"))
+                                    .show()
+                                    .unwrap();
+                            }
+                        }
+                        Command::Paste { overwrite } => {
+                            self.unmark_items();
+                            if let Some(clipboard) = &self.clipboard {
+                                let current_path = self.center.panel().path();
+
+                                let options = CopyOptions::new()
+                                    .skip_exist(!overwrite)
+                                    .overwrite(overwrite);
+                                let result = if clipboard.cut {
+                                    // self.stack.push(Operation::MoveItems { from: clipboard.files.clone(), to: current_path.to_path_buf() });
+                                    fs_extra::move_items(&clipboard.files, current_path, &options)
+                                } else {
+                                    // self.stack.push(Operation::CopyItems { from: clipboard.files.clone(), to: current_path.to_path_buf() });
+                                    fs_extra::copy_items(&clipboard.files, current_path, &options)
+                                };
+                                if let Err(e) = result {
+                                    Notification::new()
+                                        .summary("error")
+                                        .body(&format!("{e}"))
+                                        .show()
+                                        .unwrap();
+                                }
+                                self.redraw_panels();
+                            }
+                        }
+                        Command::Quit => return Ok(true),
+                        Command::None => self.redraw_footer(),
+                    }
+                }
+                Mode::Console { console } => match key_event.code {
+                    KeyCode::Backspace => {
+                        if let Some(path) = console.del().map(|p| p.to_path_buf()) {
+                            self.jump(path);
+                        }
+                        self.redraw_console();
+                    }
+                    KeyCode::Enter => {
+                        self.mode = Mode::Normal;
+                        self.redraw_panels();
+                    }
+                    KeyCode::Tab => {
+                        if let Some(path) = console.tab() {
+                            self.jump(path);
+                        }
+                        self.redraw_console();
+                    }
+                    KeyCode::BackTab => {
+                        if let Some(path) = console.backtab() {
+                            self.jump(path);
+                        }
+                        self.redraw_console();
+                    }
+                    KeyCode::Char(c) => {
+                        if let Some(path) = console.insert(c) {
+                            self.jump(path);
+                        }
+                        self.redraw_console();
+                    }
+                    _ => (),
+                },
+                Mode::CreateItem { input, is_dir } => {
+                    match key_event.code {
+                        KeyCode::Backspace => {
+                            input.pop();
+                            self.redraw_footer();
+                        }
+                        KeyCode::Enter => {
+                            let current_path = self.center.panel().path();
+                            let create_fn = if *is_dir {
+                                |item| fs_extra::dir::create(item, false)
+                            } else {
+                                |item| {
+                                    let _ = OpenOptions::new()
+                                        .read(true)
+                                        .append(true)
+                                        .create(true)
+                                        .open(item)?;
+                                    Ok(())
+                                }
+                            };
+                            if let Err(e) = create_fn(current_path.join(input.trim())) {
+                                Notification::new()
+                                    .summary("error")
+                                    .body(&format!("{}", e.to_string()))
+                                    .show()
+                                    .unwrap();
+                            }
+                            // self.stack.push(Operation::Mkdir { path: new_dir.clone() });
+                            self.mode = Mode::Normal;
+                            self.redraw_panels();
+                        }
+                        KeyCode::Tab => {
+                            /* autocomplete here ? */
+                            self.redraw_footer();
+                        }
+                        KeyCode::Char(c) => {
+                            input.push(c);
+                            self.redraw_footer();
+                        }
+                        _ => (),
+                    }
+                }
+                Mode::Search { input } => {
+                    if let KeyCode::Enter = key_event.code {
+                        self.center.panel_mut().finish_search(&input);
+                        self.center.panel_mut().select_next_marked();
+                        self.mode = Mode::Normal;
+                        self.redraw_center();
+                    } else {
+                        if let KeyCode::Char(c) = key_event.code {
+                            input.push(c.to_ascii_lowercase());
+                        }
+                        if let KeyCode::Backspace = key_event.code {
+                            input.pop();
+                        }
+                        self.center.panel_mut().update_search(input.clone());
+                        self.redraw_center();
+                    }
+                }
+            }
+        }
+        if let Event::Resize(sx, sy) = event {
+            self.layout = MillerColumns::from_size((sx, sy));
+            self.redraw_everything();
+        }
+        Ok(false)
     }
 }
