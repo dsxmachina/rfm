@@ -304,6 +304,20 @@ impl Draw for DirPanel {
                 }
                 y_offset += 1;
             }
+            if y_offset == 0 {
+                queue!(
+                    stdout,
+                    cursor::MoveTo(x_range.start, y_range.start),
+                    PrintStyledContent("│".dark_green().bold()),
+                    PrintStyledContent(
+                        " (no match)"
+                            .exact_width(width.saturating_sub(2) as usize)
+                            .red()
+                            .italic()
+                    ),
+                )?;
+                y_offset += 1;
+            }
         } else {
             // Write "height" items to the screen
             for (idx, entry) in self
