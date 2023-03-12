@@ -12,7 +12,6 @@ use super::{BasePanel, DirPanel, Draw, PanelContent};
 use crossterm::{
     cursor, queue,
     style::{self, Colors, Print, PrintStyledContent, ResetColor, SetColors, Stylize},
-    terminal::Clear,
     Result,
 };
 use image::DynamicImage;
