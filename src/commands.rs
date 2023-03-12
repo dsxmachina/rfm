@@ -158,7 +158,7 @@ impl CommandParser {
         // Search
         key_commands.insert("/", Command::Search);
         key_commands.insert("n", Command::Next);
-        key_commands.insert("p", Command::Previous);
+        key_commands.insert("N", Command::Previous);
 
         // cd, mkdir, touch
         key_commands.insert("cd", Command::Cd);

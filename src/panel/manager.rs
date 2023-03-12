@@ -1,7 +1,7 @@
 use std::{fs::OpenOptions, os::unix::prelude::MetadataExt};
 
 use crossterm::event::{Event, EventStream, KeyCode};
-use fs_extra::dir::CopyOptions;
+use fs_extra::{dir::CopyOptions as DirOptions, file::CopyOptions as FileOptions};
 use futures::{FutureExt, StreamExt};
 use notify_rust::Notification;
 use tempfile::TempDir;
@@ -11,7 +11,7 @@ use users::{get_group_by_gid, get_user_by_uid};
 use crate::{
     commands::{Command, CommandParser},
     opener::OpenEngine,
-    util::file_size_str,
+    util::{copy_item, file_size_str, get_destination, move_item},
 };
 
 use super::{console::DirConsole, *};
@@ -749,16 +749,18 @@ impl PanelManager {
                             //     .summary(&format!("Delete {} items", files.len()))
                             //     .body(&format!("{}", trash_dir.path().display())).show().unwrap();
                             self.unmark_items();
-                            let options = CopyOptions::new().overwrite(true);
                             // self.stack.push(Operation::MoveItems { from: files.clone(), to: trash_dir.path().to_path_buf() });
-                            if let Err(e) =
-                                fs_extra::move_items(&files, self.trash_dir.path(), &options)
-                            {
-                                Notification::new()
-                                    .summary("error")
-                                    .body(&format!("{e}"))
-                                    .show()
-                                    .unwrap();
+                            for file in files {
+                                let destination =
+                                    get_destination(&file, self.trash_dir.path()).unwrap();
+                                let result = std::fs::rename(&file, &destination);
+                                if let Err(e) = result {
+                                    Notification::new()
+                                        .summary("error")
+                                        .body(&format!("{e}"))
+                                        .show()
+                                        .unwrap();
+                                }
                             }
                         }
                         Command::Paste { overwrite } => {
@@ -766,22 +768,19 @@ impl PanelManager {
                             if let Some(clipboard) = &self.clipboard {
                                 let current_path = self.center.panel().path();
 
-                                let options = CopyOptions::new()
-                                    .skip_exist(!overwrite)
-                                    .overwrite(overwrite);
-                                let result = if clipboard.cut {
-                                    // self.stack.push(Operation::MoveItems { from: clipboard.files.clone(), to: current_path.to_path_buf() });
-                                    fs_extra::move_items(&clipboard.files, current_path, &options)
-                                } else {
-                                    // self.stack.push(Operation::CopyItems { from: clipboard.files.clone(), to: current_path.to_path_buf() });
-                                    fs_extra::copy_items(&clipboard.files, current_path, &options)
-                                };
-                                if let Err(e) = result {
-                                    Notification::new()
-                                        .summary("error")
-                                        .body(&format!("{e}"))
-                                        .show()
-                                        .unwrap();
+                                for file in clipboard.files.iter() {
+                                    let result = if clipboard.cut {
+                                        move_item(file, &current_path)
+                                    } else {
+                                        copy_item(file, &current_path)
+                                    };
+                                    if let Err(e) = result {
+                                        Notification::new()
+                                            .summary("error")
+                                            .body(&format!("{}", e.to_string()))
+                                            .show()
+                                            .unwrap();
+                                    }
                                 }
                                 self.redraw_panels();
                             }

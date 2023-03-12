@@ -1,3 +1,10 @@
+use std::{
+    error::Error,
+    path::{Path, PathBuf},
+};
+
+use fs_extra::dir::CopyOptions;
+
 pub fn file_size_str(file_size: u64) -> String {
     match file_size {
         0..=1023 => format!("{file_size} B"),
@@ -37,3 +44,59 @@ pub trait ExactWidth: std::fmt::Display {
 }
 
 impl<T: std::fmt::Display> ExactWidth for T {}
+
+/// Calculates the destination path when we want to copy or move items from 'source' to 'destination'.
+///
+/// Note: Destination must be a directory, otherwise this function will fail.
+pub fn get_destination<P, Q>(source: P, destination: Q) -> Result<PathBuf, std::io::Error>
+where
+    P: AsRef<Path>,
+    Q: AsRef<Path>,
+{
+    let from = source.as_ref();
+    let to = destination.as_ref();
+    if !to.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("{} is not a directory", to.display()),
+        ));
+    }
+    let mut dest_name = from
+        .file_name()
+        .and_then(|p| p.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    let mut result = to.join(&dest_name);
+    // Append underscores until the name exists
+    while result.exists() {
+        dest_name.push('_');
+        result = to.join(&dest_name);
+    }
+    Ok(result)
+}
+
+pub fn move_item<P, Q>(source: P, destination: Q) -> Result<(), Box<dyn Error>>
+where
+    P: AsRef<Path>,
+    Q: AsRef<Path>,
+{
+    let from = source.as_ref();
+    let to = get_destination(&source, destination)?;
+    std::fs::rename(from, to)?;
+    Ok(())
+}
+
+pub fn copy_item<P, Q>(source: P, destination: Q) -> Result<(), Box<dyn Error>>
+where
+    P: AsRef<Path>,
+    Q: AsRef<Path>,
+{
+    let from = source.as_ref();
+    let to = get_destination(&source, destination)?;
+    if from.is_dir() {
+        fs_extra::dir::copy(from, to, &CopyOptions::default().copy_inside(true))?;
+    } else {
+        std::fs::copy(from, to)?;
+    }
+    Ok(())
+}
