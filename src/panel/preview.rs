@@ -12,6 +12,7 @@ use super::{BasePanel, DirPanel, Draw, PanelContent};
 use crossterm::{
     cursor, queue,
     style::{self, Colors, Print, PrintStyledContent, ResetColor, SetColors, Stylize},
+    terminal::Clear,
     Result,
 };
 use image::DynamicImage;
@@ -106,8 +107,15 @@ impl Draw for FilePreview {
                 let mut idx = 0;
                 for line in lines.iter().take(height as usize) {
                     let cy = idx + y_range.start;
-                    let line = line.replace('\r', "").exact_width(width as usize);
-                    queue!(stdout, cursor::MoveTo(x_range.start + 1, cy), Print(line),)?;
+                    let line = line
+                        .replace('\r', "")
+                        .exact_width(width.saturating_sub(2) as usize);
+                    queue!(
+                        stdout,
+                        cursor::MoveTo(x_range.start + 1, cy),
+                        Print(" "),
+                        Print(line),
+                    )?;
                     idx += 1;
                 }
                 for cy in idx + 1..y_range.end {
@@ -151,6 +159,15 @@ impl FilePreview {
                     Preview::Image { img: None }
                 }
             }
+            "wav" | "aiff" | "au" | "flac" | "m4a" | "mp3" | "opus" | "pdf" | "doc" | "docx"
+            | "ppt" | "pptx" | "xls" | "xlsx" => {
+                let output = std::process::Command::new("mediainfo")
+                    .arg(&path)
+                    .output()
+                    .expect("failed to run mediainfo");
+                let lines: Vec<String> = output.stdout.lines().take(128).flatten().collect();
+                Preview::Text { lines }
+            }
             _ => {
                 // Simple method
                 if let Ok(file) = File::open(&path) {
@@ -167,11 +184,12 @@ impl FilePreview {
                 // let output = std::process::Command::new("bat")
                 //     .arg("--color always")
                 //     .arg(&path)
-                //     .spawn()
-                //     .expect("failed to run neovim")
-                //     .wait_with_output()
-                //     .unwrap();
-                // let lines = output.stdout.lines().take(128).flatten().collect();
+                //     .output()
+                //     .expect("failed to run bat");
+                // let lines: Vec<String> = output.stdout.lines().take(128).flatten().collect();
+                // if lines.is_empty() {
+                //     Notification::new().summary("empty").show().unwrap();
+                // }
                 // Preview::Text { lines }
             }
         };
