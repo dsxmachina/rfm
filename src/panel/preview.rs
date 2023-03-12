@@ -158,8 +158,8 @@ impl FilePreview {
                     Preview::Image { img: None }
                 }
             }
-            "wav" | "aiff" | "au" | "flac" | "m4a" | "mp3" | "opus" | "pdf" | "doc" | "docx"
-            | "ppt" | "pptx" | "xls" | "xlsx" => {
+            "wav" | "aiff" | "au" | "flac" | "m4a" | "mp3" | "opus" | "mov" | "pdf" | "doc"
+            | "docx" | "ppt" | "pptx" | "xls" | "xlsx" | "zip" => {
                 let output = std::process::Command::new("mediainfo")
                     .arg(&path)
                     .output()
@@ -167,6 +167,16 @@ impl FilePreview {
                 let lines: Vec<String> = output.stdout.lines().take(128).flatten().collect();
                 Preview::Text { lines }
             }
+            // "tar" | "tar.gz" | ".gz" => {
+            //     let output = std::process::Command::new("tar")
+            //         .arg("--list")
+            //         .arg("-f")
+            //         .arg(&path)
+            //         .output()
+            //         .expect("failed to run tar");
+            //     let lines: Vec<String> = output.stdout.lines().take(128).flatten().collect();
+            //     Preview::Text { lines }
+            // }
             _ => {
                 // Simple method
                 if let Ok(file) = File::open(&path) {
@@ -179,17 +189,6 @@ impl FilePreview {
                 } else {
                     Preview::Text { lines: Vec::new() }
                 }
-                // BAT
-                // let output = std::process::Command::new("bat")
-                //     .arg("--color always")
-                //     .arg(&path)
-                //     .output()
-                //     .expect("failed to run bat");
-                // let lines: Vec<String> = output.stdout.lines().take(128).flatten().collect();
-                // if lines.is_empty() {
-                //     Notification::new().summary("empty").show().unwrap();
-                // }
-                // Preview::Text { lines }
             }
         };
 

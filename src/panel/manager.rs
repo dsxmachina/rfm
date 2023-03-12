@@ -713,11 +713,17 @@ impl PanelManager {
                         }
                         Command::Next => {
                             self.center.panel_mut().select_next_marked();
+                            self.right
+                                .new_panel_delayed(self.center.panel().selected_path());
                             self.redraw_center();
+                            self.redraw_right();
                         }
                         Command::Previous => {
                             self.center.panel_mut().select_prev_marked();
+                            self.right
+                                .new_panel_delayed(self.center.panel().selected_path());
                             self.redraw_center();
+                            self.redraw_right();
                         }
                         Command::Mkdir => {
                             self.mode = Mode::CreateItem {
@@ -880,8 +886,11 @@ impl PanelManager {
                     if let KeyCode::Enter = key_event.code {
                         self.center.panel_mut().finish_search(&input);
                         self.center.panel_mut().select_next_marked();
+                        self.right
+                            .new_panel_delayed(self.center.panel().selected_path());
                         self.mode = Mode::Normal;
                         self.redraw_center();
+                        self.redraw_right();
                     } else {
                         if let KeyCode::Char(c) = key_event.code {
                             input.push(c.to_ascii_lowercase());
