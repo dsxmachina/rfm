@@ -81,6 +81,10 @@ where
     Q: AsRef<Path>,
 {
     let from = source.as_ref();
+    // If destination is the directory of from, don't do anything
+    if from == destination.as_ref().join(from) {
+        return Ok(());
+    }
     let to = get_destination(&source, destination)?;
     std::fs::rename(from, to)?;
     Ok(())

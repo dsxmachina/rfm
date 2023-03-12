@@ -310,9 +310,12 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
         }
     }
 
-    // TODO Swap the panel with some other managed panel
-    pub fn swap_panel(&mut self, _other: &mut ManagedPanel<PanelType>) {
-        todo!()
+    pub fn reload(&self) {
+        self.content_tx
+            .send(PanelUpdate {
+                state: self.state.lock().clone(),
+            })
+            .expect("Receiver dropped or closed");
     }
 
     fn update(&mut self, panel: PanelType) {

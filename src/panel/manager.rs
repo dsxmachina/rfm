@@ -761,6 +761,9 @@ impl PanelManager {
                                         .unwrap();
                                 }
                             }
+                            self.left.reload();
+                            self.center.reload();
+                            self.right.reload();
                         }
                         Command::Paste { overwrite } => {
                             self.unmark_items();
@@ -780,6 +783,11 @@ impl PanelManager {
                                             .show()
                                             .unwrap();
                                     }
+                                }
+                                if clipboard.cut {
+                                    self.left.reload();
+                                    self.center.reload();
+                                    self.right.reload();
                                 }
                                 self.redraw_panels();
                             }
