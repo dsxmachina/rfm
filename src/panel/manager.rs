@@ -1,7 +1,6 @@
 use std::{fs::OpenOptions, os::unix::prelude::MetadataExt};
 
 use crossterm::event::{Event, EventStream, KeyCode};
-use fs_extra::{dir::CopyOptions as DirOptions, file::CopyOptions as FileOptions};
 use futures::{FutureExt, StreamExt};
 use notify_rust::Notification;
 use tempfile::TempDir;
