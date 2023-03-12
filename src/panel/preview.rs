@@ -107,14 +107,17 @@ impl Draw for FilePreview {
                 for line in lines.iter().take(height as usize) {
                     let cy = idx + y_range.start;
                     let line = line
-                        .replace('\r', "")
-                        .exact_width(width.saturating_sub(2) as usize);
-                    queue!(
-                        stdout,
-                        cursor::MoveTo(x_range.start + 1, cy),
-                        Print(" "),
-                        Print(line),
-                    )?;
+                        // .replace('\r', "")
+                        .exact_width(width.saturating_sub(1) as usize);
+                    queue!(stdout, cursor::MoveTo(x_range.start + 1, cy), Print(" "),)?;
+                    for (i, c) in line.escape_default().enumerate() {
+                        queue!(
+                            stdout,
+                            cursor::MoveTo(x_range.start + 2 + i as u16, cy),
+                            // Print(" "),
+                            Print(c),
+                        )?;
+                    }
                     idx += 1;
                 }
                 for cy in idx + 1..y_range.end {
@@ -133,6 +136,7 @@ impl FilePreview {
         let extension = path
             .extension()
             .and_then(|s| s.to_str())
+            .map(|s| s.to_ascii_lowercase())
             .unwrap_or_default();
 
         let hash = path
@@ -149,7 +153,7 @@ impl FilePreview {
             .and_then(|m| m.modified().ok())
             .unwrap_or_else(SystemTime::now);
 
-        let preview = match extension {
+        let preview = match extension.as_str() {
             "png" | "bmp" | "jpg" | "jpeg" => {
                 if let Ok(img_bytes) = image::io::Reader::open(&path) {
                     let img = img_bytes.decode().ok();
