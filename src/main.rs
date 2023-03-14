@@ -7,6 +7,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType, DisableLineWrap},
     QueueableCommand, Result,
 };
+use notify_rust::Notification;
 use panel::manager::PanelManager;
 use std::{
     fs::OpenOptions,
@@ -33,6 +34,33 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+
+    std::panic::set_hook(Box::new(|panic_info| {
+        let body;
+        let summary;
+        if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            body = format!("panic occurred: {s:?}");
+        } else {
+            body = "panic occurred".to_string();
+        }
+        if let Some(location) = panic_info.location() {
+            summary = format!(
+                "panic occurred in file '{}' at line {}",
+                location.file(),
+                location.line(),
+            );
+        } else {
+            summary = "panic occurred somewhere".to_string();
+        }
+        if Notification::new()
+            .summary(&summary)
+            .body(&body)
+            .show()
+            .is_err()
+        {
+            eprintln!("{summary}: {body}");
+        }
+    }));
 
     enable_raw_mode()?;
 
