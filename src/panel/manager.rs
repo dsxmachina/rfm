@@ -121,10 +121,11 @@ impl PanelManager {
 
         let mut left = ManagedPanel::new(directory_cache.clone(), directory_tx.clone(), false);
         let mut center = ManagedPanel::new(directory_cache, directory_tx, false);
-        let right = ManagedPanel::new(preview_cache, preview_tx, true);
+        let mut right = ManagedPanel::new(preview_cache, preview_tx, true);
 
         left.new_panel_instant(Some(".."));
         center.new_panel_instant(Some("."));
+        right.new_panel_instant(center.panel().selected_path());
 
         let trash_dir = tempfile::tempdir()?;
 
