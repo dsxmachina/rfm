@@ -67,6 +67,7 @@ pub enum Command {
     ViewTrash,
     Cd,
     Search,
+    Rename,
     Mkdir,
     Touch,
     Cut,
@@ -164,6 +165,9 @@ impl CommandParser {
         key_commands.insert("cd", Command::Cd);
         key_commands.insert("mkdir", Command::Mkdir);
         key_commands.insert("touch", Command::Touch);
+
+        // Rename
+        key_commands.insert("rename", Command::Rename);
 
         // Quit
         key_commands.insert("q", Command::Quit);

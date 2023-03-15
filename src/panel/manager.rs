@@ -35,6 +35,7 @@ enum Mode {
     Console { console: DirConsole },
     CreateItem { input: String, is_dir: bool },
     Search { input: String },
+    Rename { input: String },
 }
 
 struct Clipboard {
@@ -240,13 +241,26 @@ impl PanelManager {
         if !self.redraw.footer {
             return Ok(());
         }
+        // Common operation at the start
+        queue!(
+            self.stdout,
+            cursor::MoveTo(0, self.layout.footer()),
+            Clear(ClearType::CurrentLine),
+        )?;
+
         if let Mode::Search { input } = &self.mode {
             queue!(
                 self.stdout,
-                cursor::MoveTo(0, self.layout.footer()),
-                Clear(ClearType::CurrentLine),
                 style::PrintStyledContent("Search:".bold().dark_green().reverse()),
                 style::PrintStyledContent(format!(" {input}").bold().red()),
+            )?;
+            return Ok(());
+        }
+        if let Mode::Rename { input } = &self.mode {
+            queue!(
+                self.stdout,
+                style::PrintStyledContent("Rename:".bold().dark_green().reverse()),
+                style::PrintStyledContent(format!(" {input}").bold().yellow()),
             )?;
             return Ok(());
         }
@@ -258,8 +272,6 @@ impl PanelManager {
             };
             queue!(
                 self.stdout,
-                cursor::MoveTo(0, self.layout.footer()),
-                Clear(ClearType::CurrentLine),
                 style::PrintStyledContent(prompt.bold().dark_green().reverse()),
                 style::PrintStyledContent(item),
             )?;
@@ -302,8 +314,6 @@ impl PanelManager {
 
             queue!(
                 self.stdout,
-                cursor::MoveTo(0, self.layout.footer()),
-                Clear(ClearType::CurrentLine),
                 style::PrintStyledContent(permissions.dark_cyan()),
                 Print("   "),
                 Print(other)
@@ -311,8 +321,6 @@ impl PanelManager {
         } else {
             queue!(
                 self.stdout,
-                cursor::MoveTo(0, self.layout.footer()),
-                Clear(ClearType::CurrentLine),
                 style::PrintStyledContent("------------".dark_cyan()),
             )?;
         }
@@ -711,6 +719,17 @@ impl PanelManager {
                             self.mode = Mode::Search { input: "".into() };
                             self.redraw_footer();
                         }
+                        Command::Rename => {
+                            let input = self
+                                .center
+                                .panel()
+                                .selected_path()
+                                .and_then(|p| p.file_name())
+                                .and_then(|f| f.to_owned().into_string().ok())
+                                .unwrap_or_default();
+                            self.mode = Mode::Rename { input };
+                            self.redraw_footer();
+                        }
                         Command::Next => {
                             self.center.panel_mut().select_next_marked();
                             self.right
@@ -899,6 +918,33 @@ impl PanelManager {
                             input.pop();
                         }
                         self.center.panel_mut().update_search(input.clone());
+                        self.redraw_center();
+                    }
+                }
+                Mode::Rename { input } => {
+                    if let KeyCode::Enter = key_event.code {
+                        // TODO: Actually rename the selection
+                        if let Some(from) = self.center.panel().selected_path() {
+                            let to = from.parent().map(|p| p.join(input)).unwrap_or_default();
+                            if let Err(e) = std::fs::rename(from, to) {
+                                Notification::new()
+                                    .summary("Error:")
+                                    .body(&format!("{e}"))
+                                    .show()
+                                    .unwrap();
+                            }
+                        }
+                        self.mode = Mode::Normal;
+                        self.center.reload();
+                        self.right.reload();
+                        self.redraw_panels();
+                    } else {
+                        if let KeyCode::Char(c) = key_event.code {
+                            input.push(c);
+                        }
+                        if let KeyCode::Backspace = key_event.code {
+                            input.pop();
+                        }
                         self.redraw_center();
                     }
                 }
