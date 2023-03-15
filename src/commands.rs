@@ -209,9 +209,35 @@ impl CommandParser {
     }
 
     pub fn new() -> Self {
+        let mut mod_commands = HashMap::new();
+        // Insert basic arrow key movement
+        mod_commands.insert(
+            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            Command::Move(Move::Up),
+        );
+        mod_commands.insert(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            Command::Move(Move::Down),
+        );
+        mod_commands.insert(
+            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+            Command::Move(Move::Left),
+        );
+        mod_commands.insert(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            Command::Move(Move::Right),
+        );
+        mod_commands.insert(
+            KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
+            Command::Move(Move::PageBackward),
+        );
+        mod_commands.insert(
+            KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+            Command::Move(Move::PageForward),
+        );
         CommandParser {
             key_commands: PatriciaMap::new(),
-            mod_commands: HashMap::new(),
+            mod_commands,
             buffer: "".to_string(),
         }
     }
