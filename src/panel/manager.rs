@@ -536,21 +536,21 @@ impl PanelManager {
         }
     }
 
-    fn move_cursor(&mut self, movement: Movement) {
+    fn move_cursor(&mut self, movement: Move) {
         // NOTE: Movement functions needs to determine which panels require a redraw.
         match movement {
-            Movement::Up => self.move_up(1),
-            Movement::Down => self.move_down(1),
-            Movement::Left => self.move_left(),
-            Movement::Right => self.move_right(),
-            Movement::Top => self.move_up(usize::MAX),
-            Movement::Bottom => self.move_down(usize::MAX),
-            Movement::HalfPageForward => self.move_down(self.layout.height() as usize / 2),
-            Movement::HalfPageBackward => self.move_up(self.layout.height() as usize / 2),
-            Movement::PageForward => self.move_down(self.layout.height() as usize),
-            Movement::PageBackward => self.move_up(self.layout.height() as usize),
-            Movement::JumpTo(path) => self.jump(path.into()),
-            Movement::JumpPrevious => self.jump(self.previous.clone()),
+            Move::Up => self.move_up(1),
+            Move::Down => self.move_down(1),
+            Move::Left => self.move_left(),
+            Move::Right => self.move_right(),
+            Move::Top => self.move_up(usize::MAX),
+            Move::Bottom => self.move_down(usize::MAX),
+            Move::HalfPageForward => self.move_down(self.layout.height() as usize / 2),
+            Move::HalfPageBackward => self.move_up(self.layout.height() as usize / 2),
+            Move::PageForward => self.move_down(self.layout.height() as usize),
+            Move::PageBackward => self.move_up(self.layout.height() as usize),
+            Move::JumpTo(path) => self.jump(path.into()),
+            Move::JumpPrevious => self.jump(self.previous.clone()),
         };
     }
 
@@ -760,7 +760,7 @@ impl PanelManager {
                         }
                         Command::Mark => {
                             self.center.panel_mut().mark_selected_item();
-                            self.move_cursor(Movement::Down);
+                            self.move_cursor(Move::Down);
                         }
                         Command::Cut => {
                             self.clipboard = Some(Clipboard {

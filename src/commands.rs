@@ -6,6 +6,8 @@ use std::{
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use patricia_tree::PatriciaMap;
 
+use self::config::KeyConfig;
+
 const CTRL_C: KeyEvent = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
 const CTRL_X: KeyEvent = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
 const CTRL_P: KeyEvent = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
@@ -18,13 +20,12 @@ impl From<&str> for ExpandedPath {
     fn from(path: &str) -> Self {
         let mut string = path.to_string();
 
-        // Expand "~"
-        if string.starts_with('~') {
-            // Replace with users home directory
-            let home = std::env::var("HOME").unwrap_or_default();
-            string = string.replace('~', &home);
-        }
-        // TODO: Extract environment variables
+        // Replace with users home directory
+        let home = std::env::var("HOME").unwrap_or_default();
+
+        // Expand "~" and "$HOME"
+        string = string.replace('~', &home);
+        string = string.replace("$HOME", &home);
 
         ExpandedPath(string.into())
     }
@@ -42,8 +43,70 @@ impl From<ExpandedPath> for PathBuf {
     }
 }
 
+mod config {
+    use serde::Deserialize;
+
+    #[derive(Deserialize, Debug)]
+    pub struct Manipulation {
+        change_directory: Vec<String>,
+        rename: Vec<String>,
+        mkdir: Vec<String>,
+        touch: Vec<String>,
+        cut: Vec<String>,
+        copy: Vec<String>,
+        delete: Vec<String>,
+        paste: Vec<String>,
+        paste_overwrite: Vec<String>,
+    }
+
+    #[derive(Deserialize, Debug)]
+    pub struct Movement {
+        up: Vec<String>,
+        down: Vec<String>,
+        left: Vec<String>,
+        right: Vec<String>,
+        top: Vec<String>,
+        bottom: Vec<String>,
+        page_forward: Vec<String>,
+        page_backward: Vec<String>,
+        half_page_forward: Vec<String>,
+        half_page_backward: Vec<String>,
+        jump_previous: Vec<String>,
+        jump_to: Vec<(String, String)>,
+    }
+
+    #[derive(Deserialize, Debug)]
+    pub struct General {
+        search: Vec<String>,
+        mark: Vec<String>,
+        next: Vec<String>,
+        previous: Vec<String>,
+        view_trash: Vec<String>,
+        toggle_hidden: Vec<String>,
+        quit: Vec<String>,
+    }
+
+    #[derive(Deserialize, Debug)]
+    pub struct KeyConfig {
+        pub general: General,
+        pub movement: Movement,
+        pub manipulation: Manipulation,
+    }
+
+    #[test]
+    fn test_config() {
+        let content = std::fs::read_to_string("/home/someone/.config/rfm/keys.toml").unwrap();
+        let result = toml::from_str(&content);
+        if let Err(e) = &result {
+            println!("{e}");
+        }
+        assert!(result.is_ok());
+        let _config: KeyConfig = result.unwrap();
+    }
+}
+
 #[derive(Debug, Clone)]
-pub enum Movement {
+pub enum Move {
     Up,
     Down,
     Left,
@@ -60,7 +123,7 @@ pub enum Movement {
 
 #[derive(Debug, Clone)]
 pub enum Command {
-    Move(Movement),
+    Move(Move),
     Next,
     Previous,
     ToggleHidden,
@@ -92,56 +155,59 @@ pub struct CommandParser {
 
 // TODO: Make this configurable from a config-file
 impl CommandParser {
+    pub fn from_config(config: KeyConfig) -> Self {
+        todo!()
+    }
     pub fn new() -> Self {
         // --- Commands for "normal" keys:
         let mut key_commands = PatriciaMap::new();
         // Basic movement commands
-        key_commands.insert("h", Command::Move(Movement::Left));
-        key_commands.insert("j", Command::Move(Movement::Down));
-        key_commands.insert("k", Command::Move(Movement::Up));
-        key_commands.insert("l", Command::Move(Movement::Right));
+        key_commands.insert("h", Command::Move(Move::Left));
+        key_commands.insert("j", Command::Move(Move::Down));
+        key_commands.insert("k", Command::Move(Move::Up));
+        key_commands.insert("l", Command::Move(Move::Right));
 
-        key_commands.insert("gg", Command::Move(Movement::Top));
-        key_commands.insert("G", Command::Move(Movement::Bottom));
+        key_commands.insert("gg", Command::Move(Move::Top));
+        key_commands.insert("G", Command::Move(Move::Bottom));
 
         // Jump to something
-        key_commands.insert("gh", Command::Move(Movement::JumpTo("~".into())));
-        key_commands.insert("gr", Command::Move(Movement::JumpTo("/".into())));
-        key_commands.insert("gc", Command::Move(Movement::JumpTo("~/.config".into())));
+        key_commands.insert("gh", Command::Move(Move::JumpTo("~".into())));
+        key_commands.insert("gr", Command::Move(Move::JumpTo("/".into())));
+        key_commands.insert("gc", Command::Move(Move::JumpTo("~/.config".into())));
 
-        key_commands.insert("ge", Command::Move(Movement::JumpTo("/etc".into())));
-        key_commands.insert("gu", Command::Move(Movement::JumpTo("/usr".into())));
-        key_commands.insert("gN", Command::Move(Movement::JumpTo("/nix/store".into())));
+        key_commands.insert("ge", Command::Move(Move::JumpTo("/etc".into())));
+        key_commands.insert("gu", Command::Move(Move::JumpTo("/usr".into())));
+        key_commands.insert("gN", Command::Move(Move::JumpTo("/nix/store".into())));
 
         // custom jumps
-        key_commands.insert("gp", Command::Move(Movement::JumpTo("~/Projekte".into())));
-        key_commands.insert("gs", Command::Move(Movement::JumpTo("~/.scripts".into())));
-        key_commands.insert("gb", Command::Move(Movement::JumpTo("~/Bilder".into())));
+        key_commands.insert("gp", Command::Move(Move::JumpTo("~/Projekte".into())));
+        key_commands.insert("gs", Command::Move(Move::JumpTo("~/.scripts".into())));
+        key_commands.insert("gb", Command::Move(Move::JumpTo("~/Bilder".into())));
         key_commands.insert(
             "gw",
-            Command::Move(Movement::JumpTo("~/Bilder/wallpapers".into())),
+            Command::Move(Move::JumpTo("~/Bilder/wallpapers".into())),
         );
-        key_commands.insert("gd", Command::Move(Movement::JumpTo("~/Dokumente".into())));
-        key_commands.insert("gD", Command::Move(Movement::JumpTo("~/Downloads".into())));
+        key_commands.insert("gd", Command::Move(Move::JumpTo("~/Dokumente".into())));
+        key_commands.insert("gD", Command::Move(Move::JumpTo("~/Downloads".into())));
         key_commands.insert(
             "gl",
-            Command::Move(Movement::JumpTo("~/Projekte/loadrunner-2021".into())),
+            Command::Move(Move::JumpTo("~/Projekte/loadrunner-2021".into())),
         );
         key_commands.insert(
             "gL",
-            Command::Move(Movement::JumpTo(
+            Command::Move(Move::JumpTo(
                 "~/Projekte/loadrunner-2021/lr-localization".into(),
             )),
         );
-        key_commands.insert("gm", Command::Move(Movement::JumpTo("~/Musik".into())));
-        key_commands.insert("gN", Command::Move(Movement::JumpTo("/nix/store".into())));
+        key_commands.insert("gm", Command::Move(Move::JumpTo("~/Musik".into())));
+        key_commands.insert("gN", Command::Move(Move::JumpTo("/nix/store".into())));
         key_commands.insert("gT", Command::ViewTrash);
 
         // Toggle hidden files
         key_commands.insert("zh", Command::ToggleHidden);
 
         // Jump to previous location
-        key_commands.insert("\'\'", Command::Move(Movement::JumpPrevious));
+        key_commands.insert("\'\'", Command::Move(Move::JumpPrevious));
 
         // Mark current file
         key_commands.insert(" ", Command::Mark);
@@ -189,19 +255,19 @@ impl CommandParser {
         // Advanced movement
         mod_commands.insert(
             KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
-            Command::Move(Movement::PageForward),
+            Command::Move(Move::PageForward),
         );
         mod_commands.insert(
             KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
-            Command::Move(Movement::PageBackward),
+            Command::Move(Move::PageBackward),
         );
         mod_commands.insert(
             KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
-            Command::Move(Movement::HalfPageForward),
+            Command::Move(Move::HalfPageForward),
         );
         mod_commands.insert(
             KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
-            Command::Move(Movement::HalfPageBackward),
+            Command::Move(Move::HalfPageBackward),
         );
 
         // Toggle hidden (backspace)

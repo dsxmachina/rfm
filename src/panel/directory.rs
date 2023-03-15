@@ -728,17 +728,3 @@ impl DirPanel {
         }
     }
 }
-
-#[test]
-fn test_search() {
-    let panel = DirPanel::from_path("/home/someone/Musik".into());
-
-    let pattern = "minimal";
-
-    for item in panel.elements.iter() {
-        if item.name().contains(pattern) {
-            println!("{}", item.name());
-        }
-    }
-    assert!(false);
-}
