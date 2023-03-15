@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 use clap::Parser;
+use commands::CommandParser;
 use content::PanelCache;
 use crossterm::{
     cursor,
@@ -95,7 +96,21 @@ async fn main() -> Result<()> {
     let dir_mngr_handle = tokio::spawn(dir_manager.run());
     let prev_mngr_handle = tokio::spawn(preview_manager.run());
 
+    // Read config file
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let config_dir = home.join(".config/rfm/");
+    let key_config_file = config_dir.join("keys.toml");
+
+    let parser: CommandParser;
+    if let Ok(content) = std::fs::read_to_string(key_config_file) {
+        let key_config = toml::from_str(&content).unwrap();
+        parser = CommandParser::from_config(key_config);
+    } else {
+        parser = CommandParser::default_bindings();
+    }
+
     let panel_manager = PanelManager::new(
+        parser,
         directory_cache,
         preview_cache,
         dir_rx,

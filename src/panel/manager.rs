@@ -106,6 +106,7 @@ pub struct PanelManager {
 
 impl PanelManager {
     pub fn new(
+        parser: CommandParser,
         directory_cache: PanelCache<DirPanel>,
         preview_cache: PanelCache<PreviewPanel>,
         dir_rx: mpsc::Receiver<(DirPanel, PanelState)>,
@@ -115,7 +116,6 @@ impl PanelManager {
     ) -> Result<Self> {
         let stdout = stdout();
         let event_reader = EventStream::new();
-        let parser = CommandParser::new();
         let terminal_size = terminal::size()?;
         let layout = MillerColumns::from_size(terminal_size);
 

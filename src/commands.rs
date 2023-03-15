@@ -5,8 +5,7 @@ use std::{
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use patricia_tree::PatriciaMap;
-
-use self::config::KeyConfig;
+use serde::Deserialize;
 
 const CTRL_C: KeyEvent = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
 const CTRL_X: KeyEvent = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
@@ -16,9 +15,9 @@ const CTRL_F: KeyEvent = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL
 #[derive(Debug, Clone)]
 pub struct ExpandedPath(PathBuf);
 
-impl From<&str> for ExpandedPath {
-    fn from(path: &str) -> Self {
-        let mut string = path.to_string();
+impl<S: AsRef<str>> From<S> for ExpandedPath {
+    fn from(path: S) -> Self {
+        let mut string = path.as_ref().to_string();
 
         // Replace with users home directory
         let home = std::env::var("HOME").unwrap_or_default();
@@ -43,66 +42,58 @@ impl From<ExpandedPath> for PathBuf {
     }
 }
 
-mod config {
-    use serde::Deserialize;
+#[derive(Deserialize, Debug)]
+struct Manipulation {
+    change_directory: Vec<String>,
+    rename: Vec<String>,
+    mkdir: Vec<String>,
+    touch: Vec<String>,
+    cut: Vec<String>,
+    copy: Vec<String>,
+    delete: Vec<String>,
+    paste: Vec<String>,
+    paste_overwrite: Vec<String>,
+}
 
-    #[derive(Deserialize, Debug)]
-    pub struct Manipulation {
-        change_directory: Vec<String>,
-        rename: Vec<String>,
-        mkdir: Vec<String>,
-        touch: Vec<String>,
-        cut: Vec<String>,
-        copy: Vec<String>,
-        delete: Vec<String>,
-        paste: Vec<String>,
-        paste_overwrite: Vec<String>,
-    }
+#[derive(Deserialize, Debug)]
+struct Movement {
+    up: Vec<String>,
+    down: Vec<String>,
+    left: Vec<String>,
+    right: Vec<String>,
+    top: Vec<String>,
+    bottom: Vec<String>,
+    page_forward: Vec<String>,
+    page_backward: Vec<String>,
+    half_page_forward: Vec<String>,
+    half_page_backward: Vec<String>,
+    jump_previous: Vec<String>,
+    jump_to: Vec<(String, String)>,
+}
 
-    #[derive(Deserialize, Debug)]
-    pub struct Movement {
-        up: Vec<String>,
-        down: Vec<String>,
-        left: Vec<String>,
-        right: Vec<String>,
-        top: Vec<String>,
-        bottom: Vec<String>,
-        page_forward: Vec<String>,
-        page_backward: Vec<String>,
-        half_page_forward: Vec<String>,
-        half_page_backward: Vec<String>,
-        jump_previous: Vec<String>,
-        jump_to: Vec<(String, String)>,
-    }
+#[derive(Deserialize, Debug)]
+struct General {
+    search: Vec<String>,
+    mark: Vec<String>,
+    next: Vec<String>,
+    previous: Vec<String>,
+    view_trash: Vec<String>,
+    toggle_hidden: Vec<String>,
+    quit: Vec<String>,
+}
 
-    #[derive(Deserialize, Debug)]
-    pub struct General {
-        search: Vec<String>,
-        mark: Vec<String>,
-        next: Vec<String>,
-        previous: Vec<String>,
-        view_trash: Vec<String>,
-        toggle_hidden: Vec<String>,
-        quit: Vec<String>,
-    }
+#[derive(Deserialize, Debug)]
+pub struct KeyConfig {
+    general: General,
+    movement: Movement,
+    manipulation: Manipulation,
+}
 
-    #[derive(Deserialize, Debug)]
-    pub struct KeyConfig {
-        pub general: General,
-        pub movement: Movement,
-        pub manipulation: Manipulation,
-    }
-
-    #[test]
-    fn test_config() {
-        let content = std::fs::read_to_string("/home/someone/.config/rfm/keys.toml").unwrap();
-        let result = toml::from_str(&content);
-        if let Err(e) = &result {
-            println!("{e}");
-        }
-        assert!(result.is_ok());
-        let _config: KeyConfig = result.unwrap();
-    }
+#[test]
+fn test_split() {
+    let s = "ctrl-f";
+    let (_, key) = s.split_at(5);
+    assert_eq!(key, "f");
 }
 
 #[derive(Debug, Clone)]
@@ -153,12 +144,100 @@ pub struct CommandParser {
     buffer: String,
 }
 
-// TODO: Make this configurable from a config-file
 impl CommandParser {
     pub fn from_config(config: KeyConfig) -> Self {
-        todo!()
+        let mut parser = CommandParser::new();
+        // General commands
+        parser.insert(config.general.search, Command::Search);
+        parser.insert(config.general.mark, Command::Mark);
+        parser.insert(config.general.next, Command::Next);
+        parser.insert(config.general.previous, Command::Previous);
+        parser.insert(config.general.quit, Command::Quit);
+        parser.insert(config.general.toggle_hidden, Command::ToggleHidden);
+        parser.insert(config.general.view_trash, Command::ViewTrash);
+
+        // Movement commands
+        parser.insert(config.movement.up, Command::Move(Move::Up));
+        parser.insert(config.movement.down, Command::Move(Move::Down));
+        parser.insert(config.movement.left, Command::Move(Move::Left));
+        parser.insert(config.movement.right, Command::Move(Move::Right));
+        parser.insert(config.movement.top, Command::Move(Move::Top));
+        parser.insert(config.movement.bottom, Command::Move(Move::Bottom));
+        parser.insert(
+            config.movement.page_forward,
+            Command::Move(Move::PageForward),
+        );
+        parser.insert(
+            config.movement.page_backward,
+            Command::Move(Move::PageBackward),
+        );
+        parser.insert(
+            config.movement.half_page_forward,
+            Command::Move(Move::HalfPageForward),
+        );
+        parser.insert(
+            config.movement.half_page_backward,
+            Command::Move(Move::HalfPageBackward),
+        );
+        parser.insert(
+            config.movement.jump_previous,
+            Command::Move(Move::JumpPrevious),
+        );
+        for (keys, path) in config.movement.jump_to {
+            parser
+                .key_commands
+                .insert(keys, Command::Move(Move::JumpTo(path.into())));
+        }
+        // Manipulation commands
+        parser.insert(config.manipulation.change_directory, Command::Cd);
+        parser.insert(config.manipulation.rename, Command::Rename);
+        parser.insert(config.manipulation.mkdir, Command::Mkdir);
+        parser.insert(config.manipulation.touch, Command::Touch);
+        parser.insert(config.manipulation.cut, Command::Cut);
+        parser.insert(config.manipulation.copy, Command::Copy);
+        parser.insert(config.manipulation.delete, Command::Delete);
+        parser.insert(
+            config.manipulation.paste,
+            Command::Paste { overwrite: false },
+        );
+        parser.insert(
+            config.manipulation.paste_overwrite,
+            Command::Paste { overwrite: true },
+        );
+
+        parser
     }
+
     pub fn new() -> Self {
+        CommandParser {
+            key_commands: PatriciaMap::new(),
+            mod_commands: HashMap::new(),
+            buffer: "".to_string(),
+        }
+    }
+
+    fn insert(&mut self, bindings: Vec<String>, cmd: Command) {
+        for b in bindings {
+            // Check if b starts with "ctrl"
+            if b.starts_with("ctrl-") {
+                let (_, key) = b.split_at(5);
+                if key.is_empty() {
+                    continue;
+                }
+                self.mod_commands.insert(
+                    KeyEvent::new(
+                        KeyCode::Char(key.chars().next().unwrap()),
+                        KeyModifiers::CONTROL,
+                    ),
+                    cmd.clone(),
+                );
+            } else {
+                self.key_commands.insert(b, cmd.clone());
+            }
+        }
+    }
+
+    pub fn default_bindings() -> Self {
         // --- Commands for "normal" keys:
         let mut key_commands = PatriciaMap::new();
         // Basic movement commands
