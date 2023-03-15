@@ -800,30 +800,30 @@ impl PanelManager {
                         }
                         Command::Paste { overwrite } => {
                             self.unmark_items();
-                            if let Some(clipboard) = &self.clipboard {
-                                let current_path = self.center.panel().path();
-
-                                for file in clipboard.files.iter() {
-                                    let result = if clipboard.cut {
-                                        move_item(file, &current_path)
-                                    } else {
-                                        copy_item(file, &current_path)
-                                    };
-                                    if let Err(e) = result {
-                                        Notification::new()
-                                            .summary("error")
-                                            .body(&format!("{}", e.to_string()))
-                                            .show()
-                                            .unwrap();
+                            let current_path = self.center.panel().path().to_path_buf();
+                            let clipboard = std::mem::replace(&mut self.clipboard, None);
+                            tokio::task::spawn_blocking(move || {
+                                if let Some(clipboard) = clipboard {
+                                    for file in clipboard.files.iter() {
+                                        let result = if clipboard.cut {
+                                            move_item(file, &current_path)
+                                        } else {
+                                            copy_item(file, &current_path)
+                                        };
+                                        if let Err(e) = result {
+                                            Notification::new()
+                                                .summary("error")
+                                                .body(&format!("{}", e.to_string()))
+                                                .show()
+                                                .unwrap();
+                                        }
                                     }
                                 }
-                                if clipboard.cut {
-                                    self.left.reload();
-                                    self.center.reload();
-                                    self.right.reload();
-                                }
-                                self.redraw_panels();
-                            }
+                            });
+                            self.left.reload();
+                            self.center.reload();
+                            self.right.reload();
+                            self.redraw_panels();
                         }
                         Command::Quit => return Ok(true),
                         Command::None => self.redraw_footer(),

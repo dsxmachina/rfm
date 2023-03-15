@@ -165,6 +165,7 @@ impl DirManager {
     }
 
     pub async fn run(mut self) {
+        let last_cache_path = PathBuf::default();
         while let Some(update) = self.rx.recv().await {
             if !update.state.path().is_dir() {
                 continue;
@@ -191,11 +192,13 @@ impl DirManager {
                 self.preview_cache
                     .insert(update.state.path().clone(), PreviewPanel::Dir(panel));
             }
-            tokio::task::spawn(fill_cache(
-                update.state.path(),
-                self.directory_cache.clone(),
-                self.preview_cache.clone(),
-            ));
+            if update.state.path() != last_cache_path.as_path() {
+                tokio::task::spawn(fill_cache(
+                    update.state.path(),
+                    self.directory_cache.clone(),
+                    self.preview_cache.clone(),
+                ));
+            }
         }
     }
 }

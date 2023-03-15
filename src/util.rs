@@ -4,6 +4,7 @@ use std::{
 };
 
 use fs_extra::dir::CopyOptions;
+use notify_rust::Notification;
 
 pub fn file_size_str(file_size: u64) -> String {
     match file_size {
@@ -81,8 +82,17 @@ where
     Q: AsRef<Path>,
 {
     let from = source.as_ref();
+    let dest_name = from
+        .file_name()
+        .and_then(|p| p.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_default();
     // If destination is the directory of from, don't do anything
-    if from == destination.as_ref().join(from) {
+    if from == destination.as_ref().join(dest_name) {
+        Notification::new()
+            .summary("from and to are identical")
+            .show()
+            .unwrap();
         return Ok(());
     }
     let to = get_destination(&source, destination)?;
