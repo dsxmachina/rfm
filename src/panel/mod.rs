@@ -19,7 +19,10 @@ use std::{
 };
 use tokio::sync::mpsc;
 
-use crate::content::{hash_elements, PanelCache};
+use crate::{
+    commands::Move,
+    content::{hash_elements, PanelCache},
+};
 
 mod console;
 mod directory;
