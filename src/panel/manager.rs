@@ -2,6 +2,7 @@ use std::{fs::OpenOptions, os::unix::prelude::MetadataExt};
 
 use crossterm::event::{Event, EventStream, KeyCode};
 use futures::{FutureExt, StreamExt};
+use log::{debug, error, info, warn};
 use notify_rust::Notification;
 use tempfile::TempDir;
 use time::OffsetDateTime;
@@ -9,6 +10,7 @@ use users::{get_group_by_gid, get_user_by_uid};
 
 use crate::{
     commands::{Command, CommandParser},
+    logger::LogBuffer,
     opener::OpenEngine,
     util::{copy_item, file_size_str, get_destination, move_item},
 };
@@ -20,13 +22,20 @@ struct Redraw {
     center: bool,
     right: bool,
     console: bool,
+    log: bool,
     header: bool,
     footer: bool,
 }
 
 impl Redraw {
     fn any(&self) -> bool {
-        self.left || self.center || self.right || self.console || self.header || self.footer
+        self.left
+            || self.center
+            || self.right
+            || self.console
+            || self.header
+            || self.footer
+            || self.log
     }
 }
 
@@ -67,6 +76,8 @@ pub struct PanelManager {
     mode: Mode,
 
     opener: OpenEngine,
+
+    logger: LogBuffer,
 
     /// Clipboard
     clipboard: Option<Clipboard>,
@@ -129,11 +140,19 @@ impl PanelManager {
 
         let trash_dir = tempfile::tempdir()?;
 
+        // Initialize logger
+        let logger = LogBuffer::default()
+            .with_level(log::Level::Debug)
+            .with_capacity(15);
+        log::set_boxed_logger(Box::new(logger.clone())).expect("failed to initialize logger");
+        log::set_max_level(log::LevelFilter::Debug);
+
         Ok(PanelManager {
             left,
             center,
             right,
             mode: Mode::Normal,
+            logger,
             clipboard: None,
             layout,
             opener: OpenEngine::default(),
@@ -143,6 +162,7 @@ impl PanelManager {
                 left: true,
                 center: true,
                 right: true,
+                log: true,
                 console: true,
                 header: true,
                 footer: true,
@@ -201,6 +221,39 @@ impl PanelManager {
         self.redraw.center = true;
         self.redraw.right = true;
         self.redraw.console = true;
+    }
+
+    fn redraw_log(&mut self) {
+        self.redraw.log = true;
+    }
+
+    fn draw_log(&mut self) -> Result<()> {
+        if !self.redraw.log {
+            return Ok(());
+        }
+
+        let mut y = self.layout.footer().saturating_sub(2);
+
+        for (level, line) in self.logger.get().into_iter().rev() {
+            let content = match level {
+                log::Level::Error => style::PrintStyledContent("error".red().bold()),
+                log::Level::Warn => style::PrintStyledContent("warn".yellow().bold()),
+                log::Level::Info => style::PrintStyledContent("info".grey().bold()),
+                log::Level::Debug => style::PrintStyledContent("debug".blue()),
+                log::Level::Trace => style::PrintStyledContent("trace".grey()),
+            };
+            queue!(
+                self.stdout,
+                cursor::MoveTo(0, y),
+                Clear(ClearType::CurrentLine),
+                content,
+                style::Print(": "),
+                style::PrintStyledContent(line.dark_green().bold()),
+            )?;
+            y = y.saturating_sub(1);
+        }
+        self.redraw.log = false;
+        Ok(())
     }
 
     // Prints our header
@@ -358,6 +411,7 @@ impl PanelManager {
         self.draw_header()?;
         self.draw_panels()?;
         self.draw_console()?;
+        self.draw_log()?;
         self.stdout.flush()
     }
 
@@ -459,6 +513,7 @@ impl PanelManager {
     }
 
     fn move_up(&mut self, step: usize) {
+        debug!("move-up");
         if self.center.panel_mut().up(step) {
             self.right
                 .new_panel_delayed(self.center.panel().selected_path());
@@ -469,6 +524,7 @@ impl PanelManager {
     }
 
     fn move_down(&mut self, step: usize) {
+        debug!("move-down");
         if self.center.panel_mut().down(step) {
             self.right
                 .new_panel_delayed(self.center.panel().selected_path());
@@ -611,10 +667,15 @@ impl PanelManager {
         // Initial draw
         self.redraw_everything();
         self.draw()?;
+        info!("hello");
 
         loop {
             let event_reader = self.event_reader.next().fuse();
             tokio::select! {
+                // Check incoming new logs
+                () = self.logger.update() => {
+                    self.redraw_log();
+                }
                 // Check incoming new dir-panels
                 result = self.dir_rx.recv() => {
                     // Shutdown if sender has been dropped

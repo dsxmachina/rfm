@@ -1542,6 +1542,7 @@ dependencies = [
  "futures",
  "futures-timer",
  "image",
+ "log",
  "notify",
  "notify-rust",
  "parking_lot",
