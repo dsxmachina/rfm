@@ -8,7 +8,6 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType, DisableLineWrap},
     QueueableCommand, Result,
 };
-use logger::LogBuffer;
 use notify_rust::Notification;
 use panel::manager::PanelManager;
 use std::{

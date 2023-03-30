@@ -2,8 +2,7 @@ use std::{fs::OpenOptions, os::unix::prelude::MetadataExt};
 
 use crossterm::event::{Event, EventStream, KeyCode};
 use futures::{FutureExt, StreamExt};
-use log::{debug, error, info, warn};
-use notify_rust::Notification;
+use log::{debug, error, info, trace, warn};
 use tempfile::TempDir;
 use time::OffsetDateTime;
 use users::{get_group_by_gid, get_user_by_uid};
@@ -196,6 +195,7 @@ impl PanelManager {
 
     fn redraw_left(&mut self) {
         self.redraw.left = true;
+        self.redraw.log = true;
     }
 
     fn redraw_center(&mut self) {
@@ -204,10 +204,12 @@ impl PanelManager {
         // also redraw header and footer
         self.redraw.footer = true;
         self.redraw.header = true;
+        self.redraw.log = true;
     }
 
     fn redraw_right(&mut self) {
         self.redraw.right = true;
+        self.redraw.log = true;
     }
 
     fn redraw_console(&mut self) {
@@ -238,8 +240,8 @@ impl PanelManager {
             let content = match level {
                 log::Level::Error => style::PrintStyledContent("error".red().bold()),
                 log::Level::Warn => style::PrintStyledContent("warn".yellow().bold()),
-                log::Level::Info => style::PrintStyledContent("info".grey().bold()),
-                log::Level::Debug => style::PrintStyledContent("debug".blue()),
+                log::Level::Info => style::PrintStyledContent("info".dark_green().bold()),
+                log::Level::Debug => style::PrintStyledContent("debug".dark_blue()),
                 log::Level::Trace => style::PrintStyledContent("trace".grey()),
             };
             queue!(
@@ -248,7 +250,8 @@ impl PanelManager {
                 Clear(ClearType::CurrentLine),
                 content,
                 style::Print(": "),
-                style::PrintStyledContent(line.dark_green().bold()),
+                style::PrintStyledContent(line.grey()),
+                style::Print("  "),
             )?;
             y = y.saturating_sub(1);
         }
@@ -513,7 +516,7 @@ impl PanelManager {
     }
 
     fn move_up(&mut self, step: usize) {
-        debug!("move-up");
+        trace!("move-up");
         if self.center.panel_mut().up(step) {
             self.right
                 .new_panel_delayed(self.center.panel().selected_path());
@@ -524,7 +527,7 @@ impl PanelManager {
     }
 
     fn move_down(&mut self, step: usize) {
-        debug!("move-down");
+        trace!("move-down");
         if self.center.panel_mut().down(step) {
             self.right
                 .new_panel_delayed(self.center.panel().selected_path());
@@ -536,6 +539,7 @@ impl PanelManager {
 
     // TODO: Make this more efficient - the swapping was too nice to give it up
     fn move_right(&mut self) {
+        trace!("move-right");
         if let Some(selected) = self.center.panel().selected_path().map(|p| p.to_path_buf()) {
             // If the selected item is a directory, all panels will shift to the left
             if selected.is_dir() {
@@ -556,6 +560,7 @@ impl PanelManager {
 
     // TODO: Make this more efficient - the swapping was too nice to give it up
     fn move_left(&mut self) {
+        trace!("move-left");
         // If the left panel is empty, we cannot move left:
         if self.left.panel().selected_path().is_none() {
             return;
@@ -578,6 +583,7 @@ impl PanelManager {
     }
 
     fn jump(&mut self, path: PathBuf) {
+        trace!("jump-to {}", path.display());
         // Don't do anything, if the path hasn't changed
         if path.as_path() == self.center.panel().path() {
             return;
@@ -667,7 +673,6 @@ impl PanelManager {
         // Initial draw
         self.redraw_everything();
         self.draw()?;
-        info!("hello");
 
         loop {
             let event_reader = self.event_reader.next().fuse();
@@ -700,7 +705,7 @@ impl PanelManager {
                         self.redraw_left();
                         self.redraw_console();
                     } else {
-                        // Notification::new().summary("unknown update").body(&format!("{:?}", state)).show().unwrap();
+                        error!("unknown panel update: {:?}", state);
                     }
                 }
                 // Check incoming new preview-panels
@@ -825,22 +830,18 @@ impl PanelManager {
                             self.move_cursor(Move::Down);
                         }
                         Command::Cut => {
-                            self.clipboard = Some(Clipboard {
-                                files: self.marked_or_selected(),
-                                cut: true,
-                            });
+                            let files = self.marked_or_selected();
+                            info!("cut {} items", files.len());
+                            self.clipboard = Some(Clipboard { files, cut: true });
                         }
                         Command::Copy => {
-                            self.clipboard = Some(Clipboard {
-                                files: self.marked_or_selected(),
-                                cut: false,
-                            });
+                            let files = self.marked_or_selected();
+                            info!("copying {} items", files.len());
+                            self.clipboard = Some(Clipboard { files, cut: false });
                         }
                         Command::Delete => {
                             let files = self.marked_or_selected();
-                            // Notification::new()
-                            //     .summary(&format!("Delete {} items", files.len()))
-                            //     .body(&format!("{}", trash_dir.path().display())).show().unwrap();
+                            info!("Deleted {} items", files.len());
                             self.unmark_items();
                             // self.stack.push(Operation::MoveItems { from: files.clone(), to: trash_dir.path().to_path_buf() });
                             for file in files {
@@ -848,11 +849,7 @@ impl PanelManager {
                                     get_destination(&file, self.trash_dir.path()).unwrap();
                                 let result = std::fs::rename(&file, &destination);
                                 if let Err(e) = result {
-                                    Notification::new()
-                                        .summary("error")
-                                        .body(&format!("{e}"))
-                                        .show()
-                                        .unwrap();
+                                    error!("{e}");
                                 }
                             }
                             self.left.reload();
@@ -865,6 +862,11 @@ impl PanelManager {
                             let clipboard = std::mem::replace(&mut self.clipboard, None);
                             tokio::task::spawn_blocking(move || {
                                 if let Some(clipboard) = clipboard {
+                                    info!(
+                                        "paste {} items, overwrite = {}",
+                                        clipboard.files.len(),
+                                        overwrite
+                                    );
                                     for file in clipboard.files.iter() {
                                         let result = if clipboard.cut {
                                             move_item(file, &current_path)
@@ -872,11 +874,7 @@ impl PanelManager {
                                             copy_item(file, &current_path)
                                         };
                                         if let Err(e) = result {
-                                            Notification::new()
-                                                .summary("error")
-                                                .body(&format!("{}", e.to_string()))
-                                                .show()
-                                                .unwrap();
+                                            error!("{e}");
                                         }
                                     }
                                 }
@@ -942,11 +940,7 @@ impl PanelManager {
                                 }
                             };
                             if let Err(e) = create_fn(current_path.join(input.trim())) {
-                                Notification::new()
-                                    .summary("error")
-                                    .body(&format!("{}", e.to_string()))
-                                    .show()
-                                    .unwrap();
+                                error!("{e}");
                             }
                             // self.stack.push(Operation::Mkdir { path: new_dir.clone() });
                             self.mode = Mode::Normal;
@@ -989,11 +983,7 @@ impl PanelManager {
                         if let Some(from) = self.center.panel().selected_path() {
                             let to = from.parent().map(|p| p.join(input)).unwrap_or_default();
                             if let Err(e) = std::fs::rename(from, to) {
-                                Notification::new()
-                                    .summary("Error:")
-                                    .body(&format!("{e}"))
-                                    .show()
-                                    .unwrap();
+                                error!("{e}");
                             }
                         }
                         self.mode = Mode::Normal;

@@ -4,8 +4,8 @@ use crossterm::{
     terminal::{self, Clear, ClearType},
     QueueableCommand, Result,
 };
+use log::{debug, error, trace, warn};
 use notify::{RecommendedWatcher, Watcher};
-use notify_rust::Notification;
 use parking_lot::Mutex;
 use std::{
     cmp::Ordering,
@@ -191,20 +191,14 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                         notify::EventKind::Create(_) | notify::EventKind::Remove(_) => {
                             let state = watcher_state.lock().clone();
                             if let Err(e) = watcher_tx.send(PanelUpdate { state }) {
-                                Notification::new()
-                                    .summary(&format!("{e:?}"))
-                                    .show()
-                                    .unwrap();
+                                error!("{e}");
                             }
                         }
                         notify::EventKind::Modify(_) => {
                             if reload_on_modify {
                                 let state = watcher_state.lock().clone();
                                 if let Err(e) = watcher_tx.send(PanelUpdate { state }) {
-                                    Notification::new()
-                                        .summary(&format!("{e:?}"))
-                                        .show()
-                                        .unwrap();
+                                    error!("{e}");
                                 }
                             }
                         }
@@ -235,23 +229,29 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
         if let Some(path) = path.and_then(|p| canonicalize(p.as_ref()).ok()) {
             // Only create a new panel when the path has changed
             if path == self.panel.path() {
+                debug!("new-panel-instant: same path, path = {}", path.display());
                 return;
             }
 
             if let Some(cached) = self.cache.get(&path) {
-                let cached_access_time = cached.modified();
+                debug!("new-panel-instant: using cache, path = {}", path.display());
+                let cached_mod_time = cached.modified();
                 // Update panel with content from cache
                 self.update_panel(cached);
 
-                let access_time = path
+                let mod_time = path
                     .metadata()
                     .ok()
-                    .and_then(|m| m.accessed().ok())
+                    .and_then(|m| m.modified().ok())
                     .unwrap_or_else(SystemTime::now);
 
                 // If the access time is has not changed, dont trigger an update
                 // by returning early
-                if access_time == cached_access_time {
+                if mod_time == cached_mod_time {
+                    debug!(
+                        "new-panel-instant: access-time == cached-access-time, path = {}",
+                        path.display()
+                    );
                     return;
                 }
             } else {
@@ -264,6 +264,7 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                 })
                 .expect("Receiver dropped or closed");
         } else {
+            debug!("new-panel-instant: empty panel");
             self.update(PanelType::empty());
         }
     }
@@ -335,18 +336,10 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
         if self.panel.path().exists() {
             match self.watcher.unwatch(self.panel.path()) {
                 Ok(_) => {
-                    // Notification::new()
-                    //     .summary("unwatching")
-                    //     .body(&format!("{}", self.panel.path().display()))
-                    //     .show()
-                    //     .unwrap();
+                    trace!("unwatching {}", self.panel.path().display());
                 }
-                Err(_e) => {
-                    // Notification::new()
-                    //     .summary("unwatch-error")
-                    //     .body(&format!("{e:?}"))
-                    //     .show()
-                    //     .unwrap();
+                Err(e) => {
+                    warn!("unwatch-error: {}", e);
                 }
             }
         }
@@ -356,18 +349,10 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                 .watch(panel.path(), notify::RecursiveMode::NonRecursive)
             {
                 Ok(_) => {
-                    // Notification::new()
-                    //     .summary("watching")
-                    //     .body(&format!("{}", panel.path().display()))
-                    //     .show()
-                    //     .unwrap();
+                    trace!("watching {}", panel.path().display());
                 }
-                Err(_e) => {
-                    // Notification::new()
-                    //     .summary("watch-error")
-                    //     .body(&format!("{e:?}"))
-                    //     .show()
-                    //     .unwrap();
+                Err(e) => {
+                    warn!("watch-error: {}", e);
                 }
             }
         }

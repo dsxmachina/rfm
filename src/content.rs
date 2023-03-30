@@ -1,4 +1,5 @@
 use cached::{Cached, SizedCache};
+use log::{debug, info, warn};
 use parking_lot::Mutex;
 use std::{
     hash::{Hash, Hasher},
@@ -171,6 +172,7 @@ impl DirManager {
                 continue;
             }
             let dir_path = update.state.path().clone();
+            debug!("request new dir-panel for {}", dir_path.display());
             let result = spawn_blocking(move || dir_content(dir_path)).await;
             if let Ok(content) = result {
                 // Only update when the hash has changed
@@ -185,7 +187,11 @@ impl DirManager {
                         break;
                     };
                 } else {
-                    // Notification::new().summary("unchanged hash").body(&format!("{}", update.state.hash())).show().unwrap();
+                    debug!(
+                        "unchanged hash: {}, path = {}",
+                        update.state.hash(),
+                        update.state.path().display()
+                    );
                 }
                 self.directory_cache
                     .insert(update.state.path().clone(), panel.clone());
