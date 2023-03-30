@@ -86,8 +86,11 @@ pub struct PanelManager {
     /// Miller-Columns layout
     layout: MillerColumns,
 
-    /// Indicates what we want to show or hide
+    /// Show hidden files
     show_hidden: bool,
+
+    /// Show log
+    show_log: bool,
 
     /// Elements that needs to be redrawn
     redraw: Redraw,
@@ -157,6 +160,7 @@ impl PanelManager {
             opener: OpenEngine::default(),
             // stack: Vec::new(),
             show_hidden: false,
+            show_log: false,
             redraw: Redraw {
                 left: true,
                 center: true,
@@ -230,7 +234,7 @@ impl PanelManager {
     }
 
     fn draw_log(&mut self) -> Result<()> {
-        if !self.redraw.log {
+        if !self.redraw.log || !self.show_log {
             return Ok(());
         }
 
@@ -504,6 +508,16 @@ impl PanelManager {
         self.redraw_everything();
     }
 
+    fn toggle_log(&mut self) {
+        self.show_log = !self.show_log;
+        if self.show_log {
+            self.redraw_log();
+        } else {
+            // Redraw everything, so that the current log gets overdrawn by the panels
+            self.redraw_everything();
+        }
+    }
+
     fn select(&mut self, path: &Path) {
         if self.center.panel().selected_path() == Some(path) {
             return;
@@ -772,9 +786,8 @@ impl PanelManager {
                         Command::ViewTrash => {
                             self.jump(self.trash_dir.path().to_path_buf());
                         }
-                        Command::ToggleHidden => {
-                            self.toggle_hidden();
-                        }
+                        Command::ToggleHidden => self.toggle_hidden(),
+                        Command::ToggleLog => self.toggle_log(),
                         Command::Cd => {
                             self.pre_console_path = self.center.panel().path().to_path_buf();
                             self.mode = Mode::Console {

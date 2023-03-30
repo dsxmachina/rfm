@@ -79,6 +79,7 @@ struct General {
     previous: Vec<String>,
     view_trash: Vec<String>,
     toggle_hidden: Vec<String>,
+    toggle_log: Vec<String>,
     quit: Vec<String>,
 }
 
@@ -118,6 +119,7 @@ pub enum Command {
     Next,
     Previous,
     ToggleHidden,
+    ToggleLog,
     ViewTrash,
     Cd,
     Search,
@@ -154,6 +156,7 @@ impl CommandParser {
         parser.insert(config.general.previous, Command::Previous);
         parser.insert(config.general.quit, Command::Quit);
         parser.insert(config.general.toggle_hidden, Command::ToggleHidden);
+        parser.insert(config.general.toggle_log, Command::ToggleLog);
         parser.insert(config.general.view_trash, Command::ViewTrash);
 
         // Movement commands
@@ -310,6 +313,9 @@ impl CommandParser {
 
         // Toggle hidden files
         key_commands.insert("zh", Command::ToggleHidden);
+
+        // Toggle log visibility
+        key_commands.insert("devlog", Command::ToggleLog);
 
         // Jump to previous location
         key_commands.insert("\'\'", Command::Move(Move::JumpPrevious));
