@@ -127,27 +127,32 @@ impl PanelManager {
         directory_tx: mpsc::UnboundedSender<PanelUpdate>,
         preview_tx: mpsc::UnboundedSender<PanelUpdate>,
     ) -> Result<Self> {
-        let stdout = stdout();
-        let event_reader = EventStream::new();
-        let terminal_size = terminal::size()?;
-        let layout = MillerColumns::from_size(terminal_size);
-
-        let mut left = ManagedPanel::new(directory_cache.clone(), directory_tx.clone(), false);
-        let mut center = ManagedPanel::new(directory_cache, directory_tx, false);
-        let mut right = ManagedPanel::new(preview_cache, preview_tx, true);
-
-        left.new_panel_instant(Some(".."));
-        center.new_panel_instant(Some("."));
-        right.new_panel_instant(center.panel().selected_path());
-
-        let trash_dir = tempfile::tempdir()?;
-
         // Initialize logger
         let logger = LogBuffer::default()
             .with_level(log::Level::Debug)
             .with_capacity(15);
         log::set_boxed_logger(Box::new(logger.clone())).expect("failed to initialize logger");
         log::set_max_level(log::LevelFilter::Debug);
+        // Prepare terminal
+        let stdout = stdout();
+        let event_reader = EventStream::new();
+        let terminal_size = terminal::size()?;
+        let layout = MillerColumns::from_size(terminal_size);
+
+        // Create three panels
+        let mut left = ManagedPanel::new(directory_cache.clone(), directory_tx.clone(), false);
+        let mut center = ManagedPanel::new(directory_cache, directory_tx, false);
+        let mut right = ManagedPanel::new(preview_cache, preview_tx, true);
+
+        // Set the directories accordingly
+        left.new_panel_instant(Some(".."));
+        center.new_panel_instant(Some("."));
+        right.new_panel_instant(center.panel().selected_path());
+
+        // select the correct directory for the left panel
+        left.panel_mut().select_path(center.panel().path());
+
+        let trash_dir = tempfile::tempdir()?;
 
         Ok(PanelManager {
             left,
