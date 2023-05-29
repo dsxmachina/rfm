@@ -15,6 +15,7 @@ use std::{
     io::{stdout, Write},
     path::PathBuf,
 };
+use symbols::SymbolEngine;
 use tokio::sync::mpsc;
 
 mod commands;
@@ -22,6 +23,7 @@ mod content;
 mod logger;
 mod opener;
 mod panel;
+mod symbols;
 mod util;
 
 #[derive(Parser, Debug)]
@@ -75,6 +77,8 @@ async fn main() -> Result<()> {
         .queue(cursor::Hide)?
         .queue(Clear(ClearType::All))?
         .queue(cursor::MoveTo(0, 0))?;
+
+    SymbolEngine::init();
 
     let directory_cache = PanelCache::with_size(16384);
     let preview_cache = PanelCache::with_size(4096);

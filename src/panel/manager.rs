@@ -153,6 +153,7 @@ impl PanelManager {
         left.panel_mut().select_path(center.panel().path());
 
         let trash_dir = tempfile::tempdir()?;
+        debug!("Using {} as temporary trash", trash_dir.path().display());
 
         Ok(PanelManager {
             left,

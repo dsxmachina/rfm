@@ -10,6 +10,7 @@ use unix_mode::is_allowed;
 
 use crate::{
     content::dir_content,
+    symbols::SymbolEngine,
     util::{file_size_str, ExactWidth},
 };
 
@@ -84,17 +85,22 @@ impl DirElem {
         // Prepare output
         let name_len = usize::from(max_len)
             .saturating_sub(self.suffix.len())
-            .saturating_sub(4);
+            .saturating_sub(6);
         let name = self.name.exact_width(name_len);
-        let string = format!(" {name} {} ", self.suffix);
 
+        let string: String;
         let mut style = ContentStyle::new();
         if self.path.is_dir() {
             style = style.dark_green().bold();
+            string = format!(" \u{1F4C1}{name} {} ", self.suffix);
         } else if self.is_executable {
             style = style.green().bold();
+            let symbol = SymbolEngine::get_symbol(self.path());
+            string = format!(" {symbol} {name} {} ", self.suffix);
         } else {
             style = style.grey();
+            let symbol = SymbolEngine::get_symbol(self.path());
+            string = format!(" {symbol} {name} {} ", self.suffix);
         }
         if self.is_marked {
             style = style.dark_yellow();

@@ -16,10 +16,13 @@ futures = "0.3.26"
 futures-timer = "3.0.2"
 image = "0.24.5"
 log = { version ="0.4.17", features = ["std"] }
+mime = "0.3.17"
+mime_guess = "2.0.4"
 notify = {version = "5.1.0", default-features = false, features = ["macos_fsevent"]}
 notify-rust = "4.7.1"
+once_cell = { version = "1.17.2", features = ["parking_lot"] }
 parking_lot = "0.12.1"
-patricia_tree = "0.5.5"
+patricia_tree = "0.6"
 rand = "0.8.5"
 serde = {version = "1.0.156", features = ["serde_derive"]}
 tempfile = "3.3.0"
