@@ -6,6 +6,7 @@ use std::{
 };
 
 use crossterm::style::{ContentStyle, StyledContent};
+use log::info;
 use unix_mode::is_allowed;
 
 use crate::{
@@ -260,19 +261,18 @@ impl Draw for DirPanel {
         let height = y_range.end.saturating_sub(y_range.start);
 
         // Calculate page-scroll
+        let h = (height.saturating_add(1)) as usize / 2;
+        let bot = if self.show_hidden {
+            self.elements.len().min(self.selected_idx.saturating_add(h))
+        } else {
+            self.non_hidden
+                .len()
+                .min(self.non_hidden_idx.saturating_add(h))
+        };
         let scroll: usize = {
             // if selected should be in the middle all the time:
             // bot = min(max-items, selected + height / 2)
             // scroll = min(0, bot - (height + 1))
-            let h = (height.saturating_add(1)) as usize / 2;
-            let bot = if self.show_hidden {
-                self.elements.len().min(self.selected_idx.saturating_add(h))
-            } else {
-                self.non_hidden
-                    .len()
-                    .min(self.non_hidden_idx.saturating_add(h))
-                    .saturating_add(1)
-            };
             bot.saturating_sub(height as usize)
         };
 
@@ -330,8 +330,8 @@ impl Draw for DirPanel {
                 .elements
                 .iter_mut()
                 .enumerate()
-                .skip(scroll)
                 .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
+                .skip(scroll)
                 .take(height as usize)
             {
                 let y = y_range.start + y_offset;

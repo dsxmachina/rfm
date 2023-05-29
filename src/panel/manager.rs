@@ -430,11 +430,18 @@ impl PanelManager {
     }
 
     fn draw_panels(&mut self) -> Result<()> {
+        let (start, end) = (self.layout.y_range.start, self.layout.y_range.end);
+        let height = if self.show_log {
+            let cap = self.logger.capacity();
+            start..end.saturating_sub(cap as u16)
+        } else {
+            start..end
+        };
         if self.redraw.left {
             self.left.panel_mut().draw(
                 &mut self.stdout,
                 self.layout.left_x_range.clone(),
-                self.layout.y_range.clone(),
+                height.clone(),
             )?;
             self.redraw.left = false;
         }
@@ -442,7 +449,7 @@ impl PanelManager {
             self.center.panel_mut().draw(
                 &mut self.stdout,
                 self.layout.center_x_range.clone(),
-                self.layout.y_range.clone(),
+                height.clone(),
             )?;
             self.redraw.center = false;
         }
@@ -450,7 +457,7 @@ impl PanelManager {
             self.right.panel_mut().draw(
                 &mut self.stdout,
                 self.layout.right_x_range.clone(),
-                self.layout.y_range.clone(),
+                height,
             )?;
             self.redraw.right = false;
         }
