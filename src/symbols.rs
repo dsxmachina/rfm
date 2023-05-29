@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use log::{error, info};
+use log::error;
 use once_cell::sync::OnceCell;
 use patricia_tree::StringPatriciaMap;
 
@@ -41,7 +41,6 @@ impl SymbolEngine {
     pub fn get_symbol<P: AsRef<Path>>(path: P) -> &'static str {
         if let Some(engine) = SYMBOLS.get() {
             let mime_type = mime_guess::from_path(path).first_or_text_plain();
-            info!("mime-type: {}", mime_type);
             if let Some(icon) = engine.symbols.get(&mime_type) {
                 return icon;
             } else {
