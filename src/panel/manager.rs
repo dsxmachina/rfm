@@ -373,7 +373,8 @@ impl PanelManager {
                     .and_then(|g| g.name().to_str().map(String::from))
                     .unwrap_or_default();
                 let size_str = file_size_str(metadata.size());
-                other = format!("{user} {group} {size_str} {modified}");
+                let mime_type = mime_guess::from_path(path).first_raw().unwrap_or_default();
+                other = format!("{user} {group} {size_str} {modified} {mime_type}");
             } else {
                 permissions = String::from("------------");
                 other = String::from("");
