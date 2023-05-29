@@ -511,6 +511,11 @@ impl PanelManager {
         if let PreviewPanel::Dir(panel) = self.right.panel_mut() {
             panel.set_hidden(self.show_hidden);
         };
+        // FIX: Re-selecting path. If we are in a hidden directory, we want to re-select the
+        // correct path in the left panel.
+        self.left
+            .panel_mut()
+            .select_path(self.center.panel().path());
         self.redraw_everything();
     }
 
