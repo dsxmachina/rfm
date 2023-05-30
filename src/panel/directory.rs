@@ -297,7 +297,7 @@ impl Draw for DirPanel {
                         PrintStyledContent("│".dark_green().bold()),
                         entry.print_styled(false, width),
                     )?;
-                    let pattern_x = x_range.start + 2 + offset as u16;
+                    let pattern_x = x_range.start + 4 + offset as u16;
                     if pattern_x <= width {
                         queue!(
                             stdout,
