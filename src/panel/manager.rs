@@ -795,6 +795,7 @@ impl PanelManager {
                 self.center.panel_mut().clear_search();
                 self.redraw_panels();
                 self.redraw_footer();
+                self.unmark_items();
             }
             match &mut self.mode {
                 Mode::Normal => {
