@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use crate::opener::get_mime_type;
 use log::error;
 use once_cell::sync::OnceCell;
 use patricia_tree::StringPatriciaMap;
@@ -40,7 +41,7 @@ impl SymbolEngine {
 
     pub fn get_symbol<P: AsRef<Path>>(path: P) -> &'static str {
         if let Some(engine) = SYMBOLS.get() {
-            let mime_type = mime_guess::from_path(path).first_or_text_plain();
+            let mime_type = get_mime_type(path);
             if let Some(icon) = engine.symbols.get(&mime_type) {
                 return icon;
             } else {

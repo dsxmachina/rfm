@@ -1,6 +1,6 @@
 use std::{
     io::{stdout, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
@@ -9,6 +9,23 @@ use crossterm::{
     terminal::{self, Clear, ClearType},
     QueueableCommand, Result,
 };
+use mime::Mime;
+
+/// Uses mime_guess to extract the mime-type.
+///
+/// However: There are a few exceptions,
+/// where mime_guess is wrong, which is why we wrap the functionality here.
+pub fn get_mime_type<P: AsRef<Path>>(path: P) -> Mime {
+    let ext = path.as_ref().extension().and_then(|e| e.to_str());
+    // Check the special extensions here
+    match ext {
+        Some("ts") => return mime::TEXT_PLAIN,
+        None => return mime::TEXT_PLAIN,
+        _ => (),
+    }
+    // Otherwise just use mime_guess
+    mime_guess::from_path(path).first_or_text_plain()
+}
 
 #[derive(Default)]
 pub struct OpenEngine {}
@@ -28,7 +45,7 @@ impl OpenEngine {
         stdout.flush()?;
         // Check mime-type
 
-        let mime_type = mime_guess::from_path(&absolute).first_or_text_plain();
+        let mime_type = get_mime_type(&absolute);
         match mime_type.type_().as_str() {
             "image" => {
                 Command::new("sxiv")
