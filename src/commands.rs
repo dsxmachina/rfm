@@ -4,13 +4,15 @@ use std::{
 };
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use log::debug;
 use patricia_tree::PatriciaMap;
 use serde::Deserialize;
 
 const CTRL_C: KeyEvent = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
 const CTRL_X: KeyEvent = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
-const CTRL_P: KeyEvent = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
+const CTRL_V: KeyEvent = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
 const CTRL_F: KeyEvent = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL);
+const CTRL_SHIFT_V: KeyEvent = KeyEvent::new(KeyCode::Char('V'), KeyModifiers::CONTROL);
 
 #[derive(Debug, Clone)]
 pub struct ExpandedPath(PathBuf);
@@ -358,7 +360,8 @@ impl CommandParser {
         // Copy, Paste, Cut
         mod_commands.insert(CTRL_C, Command::Copy);
         mod_commands.insert(CTRL_X, Command::Cut);
-        mod_commands.insert(CTRL_P, Command::Paste { overwrite: false });
+        mod_commands.insert(CTRL_V, Command::Paste { overwrite: false });
+        mod_commands.insert(CTRL_SHIFT_V, Command::Paste { overwrite: true });
 
         // Escape from what you are doing
         // mod_commands.insert(CTRL_C, Command::Esc);
@@ -436,6 +439,7 @@ impl CommandParser {
                 // Check if we have a valid command
                 if let Some(command) = self.key_commands.get(self.buffer.as_bytes()) {
                     self.buffer.clear();
+                    debug!("Command: {:?}", command);
                     return command.clone();
                 }
             }
@@ -446,6 +450,7 @@ impl CommandParser {
         // incoming event.
         if let Some(command) = self.mod_commands.get(&event) {
             self.buffer.clear();
+            debug!("Command: {:?}", command);
             return command.clone();
         }
         Command::None
