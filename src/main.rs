@@ -11,9 +11,10 @@ use crossterm::{
     },
     QueueableCommand, Result,
 };
-use log::info;
+use log::{info, warn};
 use logger::LogBuffer;
 use notify_rust::Notification;
+use opener::OpenEngine;
 use panel::manager::PanelManager;
 use std::{
     fs::OpenOptions,
@@ -121,12 +122,42 @@ async fn main() -> Result<()> {
 
     let parser: CommandParser;
     if let Ok(content) = std::fs::read_to_string(&key_config_file) {
-        let key_config = toml::from_str(&content).unwrap();
-        info!("Using keyboard config: {}", key_config_file.display());
-        parser = CommandParser::from_config(key_config);
+        match toml::from_str(&content) {
+            Ok(key_config) => {
+                info!("Using keyboard config: {}", key_config_file.display());
+                parser = CommandParser::from_config(key_config);
+            }
+            Err(e) => {
+                warn!("Configuration error: {e}. Using default keyboard bindings");
+                parser = CommandParser::default_bindings();
+            }
+        }
     } else {
-        info!("Using default keyboard bindings");
+        warn!(
+            "Cannot find keyboard config '{}'. Using default keyboard bindings",
+            key_config_file.display()
+        );
         parser = CommandParser::default_bindings();
+    }
+
+    // Read opener config
+    let open_config_file = config_dir.join("open.toml");
+
+    let opener: OpenEngine;
+    if let Ok(content) = std::fs::read_to_string(&open_config_file) {
+        match toml::from_str(&content) {
+            Ok(open_config) => {
+                info!("Using open-engine config: {}", open_config_file.display());
+                opener = OpenEngine::with_config(open_config);
+            }
+            Err(e) => {
+                warn!("Configuration error: {e}. Using default open engine");
+                opener = OpenEngine::default();
+            }
+        }
+    } else {
+        info!("Using default open engine");
+        opener = OpenEngine::default();
     }
 
     let panel_manager = PanelManager::new(
@@ -138,6 +169,7 @@ async fn main() -> Result<()> {
         directory_tx,
         preview_tx,
         logger,
+        opener,
     )?;
     let panel_handle = tokio::spawn(panel_manager.run());
 

@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io::{stdout, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -9,7 +10,9 @@ use crossterm::{
     terminal::{self, Clear, ClearType},
     QueueableCommand, Result,
 };
+use log::{debug, error, info};
 use mime::Mime;
+use serde::{Deserialize, Serialize};
 
 /// Uses mime_guess to extract the mime-type.
 ///
@@ -27,10 +30,70 @@ pub fn get_mime_type<P: AsRef<Path>>(path: P) -> Mime {
     mime_guess::from_path(path).first_or_text_plain()
 }
 
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct Application {
+    name: String,
+    terminal: bool,
+    args: Vec<String>,
+}
+
+impl Application {
+    pub fn open<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        info!("Opening '{}' with '{}'", path.as_ref().display(), self.name);
+        let mut handle = Command::new(&self.name)
+            .args(&self.args)
+            .arg(path.as_ref())
+            .spawn()?;
+        if self.terminal {
+            handle.wait()?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenOptions {
+    default: Application,
+    extensions: Option<Vec<(String, Application)>>,
+}
+
+impl OpenOptions {
+    pub fn open(&self, absolute: PathBuf) -> Result<()> {
+        if let Some(ext_list) = &self.extensions {
+            info!("checking extensions: {:?}", ext_list);
+            let path_extension = absolute.extension().and_then(|s| s.to_str());
+            for (ext, application) in ext_list.iter() {
+                if Some(ext.as_str()) == path_extension {
+                    return application.open(&absolute);
+                }
+            }
+        }
+        self.default.open(absolute)
+    }
+}
+
+// #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+// pub struct Applications(HashMap<String, Application>);
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct OpenerConfig {
+    application: Option<OpenOptions>,
+    audio: Option<OpenOptions>,
+    video: Option<OpenOptions>,
+    image: Option<OpenOptions>,
+    text: Option<OpenOptions>,
+}
+
 #[derive(Default)]
-pub struct OpenEngine {}
+pub struct OpenEngine {
+    config: OpenerConfig,
+}
 
 impl OpenEngine {
+    pub fn with_config(config: OpenerConfig) -> Self {
+        OpenEngine { config }
+    }
+
     pub fn open(&self, path: PathBuf) -> Result<()> {
         let absolute = if path.is_absolute() {
             path
@@ -43,32 +106,53 @@ impl OpenEngine {
             .queue(Clear(ClearType::All))?
             .queue(cursor::MoveTo(0, 0))?;
         stdout.flush()?;
-        // Check mime-type
 
+        // Check mime-type
         let mime_type = get_mime_type(&absolute);
         match mime_type.type_().as_str() {
+            "text" => {
+                debug!("MIME-Type: Text");
+                if let Some(engine) = &self.config.text {
+                    engine.open(absolute)?;
+                } else {
+                    error!("Unset config value for mime-type 'text'");
+                }
+            }
             "image" => {
-                Command::new("sxiv")
-                    .stderr(Stdio::null())
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .arg(absolute.clone())
-                    .spawn()?;
-            }
-            "audio" | "video" => {
-                Command::new("mpv").arg(absolute).spawn()?.wait()?;
-            }
-            "application" => match mime_type.subtype().as_str() {
-                "pdf" => {
-                    Command::new("zathura").arg(absolute).spawn()?;
+                debug!("MIME-Type: Image");
+                if let Some(engine) = &self.config.image {
+                    engine.open(absolute)?;
+                } else {
+                    error!("Unset config value for mime-type 'image'");
                 }
-                _ => {
-                    Command::new("nvim").arg(absolute).spawn()?.wait()?;
+            }
+            "audio" => {
+                debug!("MIME-Type: Audio");
+                if let Some(engine) = &self.config.audio {
+                    engine.open(absolute)?;
+                } else {
+                    error!("Unset config value for mime-type 'audio'");
                 }
-            },
+            }
+            "video" => {
+                debug!("MIME-Type: Video");
+                if let Some(engine) = &self.config.video {
+                    engine.open(absolute)?;
+                } else {
+                    error!("Unset config value for mime-type 'video'");
+                }
+            }
+            "application" => {
+                debug!("MIME-Type: Application");
+                if let Some(app) = &self.config.application {
+                    app.open(absolute)?
+                } else {
+                    error!("Unset config value for mime-type 'application'");
+                }
+            }
             _ => {
-                // Everything else with vim
-                Command::new("nvim").arg(absolute).spawn()?.wait()?;
+                // Otherwise print error
+                error!("Cannot open '{}' - unknown mime-type", absolute.display());
             }
         }
 

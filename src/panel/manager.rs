@@ -127,6 +127,7 @@ impl PanelManager {
         directory_tx: mpsc::UnboundedSender<PanelUpdate>,
         preview_tx: mpsc::UnboundedSender<PanelUpdate>,
         logger: LogBuffer,
+        opener: OpenEngine,
     ) -> Result<Self> {
         // Prepare terminal
         let stdout = stdout();
@@ -158,7 +159,7 @@ impl PanelManager {
             logger,
             clipboard: None,
             layout,
-            opener: OpenEngine::default(),
+            opener,
             // stack: Vec::new(),
             show_hidden: false,
             show_log: false,
