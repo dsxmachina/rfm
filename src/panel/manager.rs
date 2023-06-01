@@ -588,6 +588,8 @@ impl PanelManager {
                 self.redraw_everything();
             }
             // self.stack.push(Operation::Move(Movement::Right));
+            //
+            self.unmark_left_right();
         }
     }
 
@@ -609,6 +611,8 @@ impl PanelManager {
         self.left
             .panel_mut()
             .select_path(self.center.panel().path());
+
+        self.unmark_left_right();
 
         // All panels needs to be redrawn
         self.redraw_panels();
@@ -662,15 +666,21 @@ impl PanelManager {
     }
 
     /// Unmarks all items in all panels
-    fn unmark_items(&mut self) {
-        self.left
-            .panel_mut()
-            .elements_mut()
-            .for_each(|item| item.unmark());
+    fn unmark_all_items(&mut self) {
         self.center
             .panel_mut()
             .elements_mut()
             .for_each(|item| item.unmark());
+        self.unmark_left_right();
+    }
+
+    /// Unmarks all items in the left and right panels.
+    fn unmark_left_right(&mut self) {
+        self.left
+            .panel_mut()
+            .elements_mut()
+            .for_each(|item| item.unmark());
+
         if let PreviewPanel::Dir(panel) = self.right.panel_mut() {
             panel.elements_mut().for_each(|item| item.unmark());
         }
@@ -795,7 +805,7 @@ impl PanelManager {
                 self.center.panel_mut().clear_search();
                 self.redraw_panels();
                 self.redraw_footer();
-                self.unmark_items();
+                self.unmark_all_items();
             }
             match &mut self.mode {
                 Mode::Normal => {
@@ -875,7 +885,7 @@ impl PanelManager {
                         Command::Delete => {
                             let files = self.marked_or_selected();
                             info!("Deleted {} items", files.len());
-                            self.unmark_items();
+                            self.unmark_all_items();
                             // self.stack.push(Operation::MoveItems { from: files.clone(), to: trash_dir.path().to_path_buf() });
                             for file in files {
                                 let destination =
@@ -890,7 +900,7 @@ impl PanelManager {
                             self.right.reload();
                         }
                         Command::Paste { overwrite } => {
-                            self.unmark_items();
+                            self.unmark_all_items();
                             let current_path = self.center.panel().path().to_path_buf();
                             let clipboard = std::mem::replace(&mut self.clipboard, None);
                             tokio::task::spawn_blocking(move || {
