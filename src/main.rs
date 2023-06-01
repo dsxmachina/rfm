@@ -5,7 +5,10 @@ use content::PanelCache;
 use crossterm::{
     cursor,
     event::DisableMouseCapture,
-    terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType, DisableLineWrap},
+    terminal::{
+        disable_raw_mode, enable_raw_mode, Clear, ClearType, DisableLineWrap, EnterAlternateScreen,
+        LeaveAlternateScreen,
+    },
     QueueableCommand, Result,
 };
 use notify_rust::Notification;
@@ -74,6 +77,7 @@ async fn main() -> Result<()> {
         .queue(DisableMouseCapture)?
         .queue(DisableLineWrap)?
         .queue(cursor::SavePosition)?
+        .queue(EnterAlternateScreen)?
         .queue(cursor::Hide)?
         .queue(Clear(ClearType::All))?
         .queue(cursor::MoveTo(0, 0))?;
@@ -132,7 +136,8 @@ async fn main() -> Result<()> {
     // Be a good citizen, cleanup
     stdout
         .queue(Clear(ClearType::Purge))?
-        .queue(cursor::MoveTo(0, 0))?
+        .queue(LeaveAlternateScreen)?
+        .queue(cursor::RestorePosition)?
         .queue(cursor::Show)?
         .flush()?;
     disable_raw_mode()?;
