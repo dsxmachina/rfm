@@ -11,6 +11,8 @@ use crossterm::{
     },
     QueueableCommand, Result,
 };
+use log::info;
+use logger::LogBuffer;
 use notify_rust::Notification;
 use panel::manager::PanelManager;
 use std::{
@@ -69,6 +71,13 @@ async fn main() -> Result<()> {
         }
     }));
 
+    // Initialize logger
+    let logger = LogBuffer::default()
+        .with_level(log::Level::Debug)
+        .with_capacity(15);
+    log::set_boxed_logger(Box::new(logger.clone())).expect("failed to initialize logger");
+    log::set_max_level(log::LevelFilter::Debug);
+
     enable_raw_mode()?;
 
     // Initialize terminal
@@ -111,10 +120,12 @@ async fn main() -> Result<()> {
     let key_config_file = config_dir.join("keys.toml");
 
     let parser: CommandParser;
-    if let Ok(content) = std::fs::read_to_string(key_config_file) {
+    if let Ok(content) = std::fs::read_to_string(&key_config_file) {
         let key_config = toml::from_str(&content).unwrap();
+        info!("Using keyboard config: {}", key_config_file.display());
         parser = CommandParser::from_config(key_config);
     } else {
+        info!("Using default keyboard bindings");
         parser = CommandParser::default_bindings();
     }
 
@@ -126,6 +137,7 @@ async fn main() -> Result<()> {
         prev_rx,
         directory_tx,
         preview_tx,
+        logger,
     )?;
     let panel_handle = tokio::spawn(panel_manager.run());
 

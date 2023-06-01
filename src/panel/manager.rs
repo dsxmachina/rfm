@@ -126,13 +126,8 @@ impl PanelManager {
         prev_rx: mpsc::Receiver<(PreviewPanel, PanelState)>,
         directory_tx: mpsc::UnboundedSender<PanelUpdate>,
         preview_tx: mpsc::UnboundedSender<PanelUpdate>,
+        logger: LogBuffer,
     ) -> Result<Self> {
-        // Initialize logger
-        let logger = LogBuffer::default()
-            .with_level(log::Level::Debug)
-            .with_capacity(15);
-        log::set_boxed_logger(Box::new(logger.clone())).expect("failed to initialize logger");
-        log::set_max_level(log::LevelFilter::Debug);
         // Prepare terminal
         let stdout = stdout();
         let event_reader = EventStream::new();
