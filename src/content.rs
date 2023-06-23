@@ -224,32 +224,40 @@ impl PreviewManager {
     }
 
     pub async fn run(mut self) {
-        loop {
-            tokio::select! {
-                biased;
-                result = self.rx.recv() => {
-                    if result.is_none() {
+        while let Some(update) = self.rx.recv().await {
+            if update.state.path().is_dir() {
+                let dir_path = update.state.path().clone();
+                let result = spawn_blocking(move || dir_content(dir_path)).await;
+                if let Ok(content) = result {
+                    let panel =
+                        PreviewPanel::Dir(DirPanel::new(content, update.state.path().clone()));
+                    if update.state.hash() != panel.content_hash()
+                        && self
+                            .tx
+                            .send((panel.clone(), update.state.increased()))
+                            .await
+                            .is_err()
+                    {
                         break;
                     }
-                    let update = result.unwrap();
-                    if update.state.path().is_dir() {
-                        let dir_path = update.state.path().clone();
-                        let result = spawn_blocking(move || dir_content(dir_path)).await;
-                        if let Ok(content) = result {
-                            let panel = PreviewPanel::Dir(DirPanel::new(content, update.state.path().clone()));
-                            if update.state.hash() != panel.content_hash() && self.tx.send((panel.clone(), update.state.increased())).await.is_err() { break; }
-                            self.preview_cache.insert(update.state.path(), panel);
-                        }
-                    } else {
-                        // Create preview
-                        let file_path = update.state.path().clone();
-                        let result = spawn_blocking(move || FilePreview::new(file_path)).await;
-                        if let Ok(preview) = result {
-                            let panel = PreviewPanel::File(preview);
-                            if update.state.hash() != panel.content_hash() && self.tx.send((panel.clone(), update.state.increased())).await.is_err() { break; }
-                            self.preview_cache.insert(update.state.path(), panel);
-                        }
+                    self.preview_cache.insert(update.state.path(), panel);
+                }
+            } else {
+                // Create preview
+                let file_path = update.state.path().clone();
+                let result = spawn_blocking(move || FilePreview::new(file_path)).await;
+                if let Ok(preview) = result {
+                    let panel = PreviewPanel::File(preview);
+                    if update.state.hash() != panel.content_hash()
+                        && self
+                            .tx
+                            .send((panel.clone(), update.state.increased()))
+                            .await
+                            .is_err()
+                    {
+                        break;
                     }
+                    self.preview_cache.insert(update.state.path(), panel);
                 }
             }
         }
