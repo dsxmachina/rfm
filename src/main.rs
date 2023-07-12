@@ -39,6 +39,14 @@ struct Args {
     /// it will write the full path of the last visited directory to CHOOSEDIR
     #[arg(long)]
     choosedir: Option<PathBuf>,
+
+    // TODO
+    /// Creates the default config-dir (if it does not exist)
+    /// and creates the default configuration files there.
+    ///
+    /// Note: This does not overwrite existing config-files (if any).
+    #[arg(long)]
+    create_config: bool,
 }
 
 #[tokio::main]
@@ -87,6 +95,8 @@ async fn main() -> Result<()> {
         .queue(DisableMouseCapture)?
         .queue(DisableLineWrap)?
         .queue(cursor::SavePosition)?
+        // NOTE: We move to the alternate screen,
+        // to not mess with the current content of the terminal
         .queue(EnterAlternateScreen)?
         .queue(cursor::Hide)?
         .queue(Clear(ClearType::All))?

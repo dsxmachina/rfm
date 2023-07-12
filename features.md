@@ -9,7 +9,7 @@
 
 - [x] Imrove panel creation time
 
-- [ ] Improve drawing speed
+- [x] Improve drawing speed
 
 ## Search
 
