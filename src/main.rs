@@ -39,14 +39,6 @@ struct Args {
     /// it will write the full path of the last visited directory to CHOOSEDIR
     #[arg(long)]
     choosedir: Option<PathBuf>,
-
-    // TODO
-    /// Creates the default config-dir (if it does not exist)
-    /// and creates the default configuration files there.
-    ///
-    /// Note: This does not overwrite existing config-files (if any).
-    #[arg(long)]
-    create_config: bool,
 }
 
 #[tokio::main]
