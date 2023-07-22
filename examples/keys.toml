@@ -24,18 +24,12 @@ jump_to = [ ["gh", "~"],
             ["gc", "~/.config"],
             ["gs", "~/.scripts"],
             ["gb", "~/Bilder"],
-            ["gw", "~/Bilder/wallpapers"],
             ["gd", "~/Dokumente"],
             ["gD", "~/Downloads"],
             ["gm", "~/Musik"],
-            ["gp", "~/Projekte"],
-            ["gl", "~/Projekte/loadrunner-2021/"],
-            ["gL", "~/Projekte/loadrunner-2021/lr-localization"],
-            ["gö", "~/Projekte/blockchain/nodes"],
             ["gr", "/"],
             ["ge", "/etc"],
-            ["gu", "/usr"],
-            ["gN", "/nix/store"]]
+            ["gu", "/usr"]]
 
 [manipulation]
 change_directory = [ "cd" ]
