@@ -1,0 +1,97 @@
+# RFM - A super fast file-manager written in pure rust
+
+---
+
+## Brief description
+
+***rfm** is a console file manager with VI-bindings (although you can configure the keybindings to whatever you like).
+It shares a lot of similarity with (*ranger*)[https://github.com/ranger/ranger], but also has some major differences in handling.
+
+## Installation
+
+Clone this repository, build the application with cargo and copy the binary somewhere into your `$PATH`.
+At the moment rfm is considered beta and there is no "official" way to install or update it via your package-manager yet 
+(but there will be in the future).
+
+## Configuration
+
+There are two configuration files `keys.toml` and `open.toml` which must be placed under `$HOME/.config/rfm/` in order to start the executable.
+You can find examples of these two inside the `examples/` directory of this repo. 
+
+If you are lazy, you can use the provided shell script to create the config directory and copy the two example files over:
+```shell
+./create-default-config.sh
+```
+
+## Basic functions
+
+A small and non-exhaustive overview of some basic features:
+
+### Directory manipulation as keybindings
+
+The following commands are accessible as basic keybindings (meaning you can just type into the application to execute them, without opening a console):
+
+- Create a new directory (mkdir)
+- Create a new file (touch)
+- Rename a file or directory (rename)
+- Delete a file or directory (delete)
+
+### Preview-Engine
+
+There is a simple preview engine, that generates text previews of the currently selected file.
+For images and text there is an inbuilt system to do it - for other mime-types the application relies on *mediainfo*.
+
+### Trash
+
+Deleting a file does not really delete it, instead it will be moved into a temporary *trash* directory.
+This allows you to "undo" the delete operation, because you can always copy the files or directory from the trash to their original location.
+The trash diretory will be deleted automatically if you close rfm, so you don't accidentely clutter your file-system with a lot of trash files.
+
+### Jump into the last directory
+
+If you leave rfm, you can make your shell jump into the current directory that the file-manager was in, 
+by adding the following to your `.bashrc` (or `.zshrc` or whatever shell you use):
+
+``` shell
+function rfm-cd {
+    # create a temp file and store the name
+    tempfile="$(mktemp -t tmp.XXXXXX)"
+
+    # run ranger and ask it to output the last path into the
+    # temp file
+    rfm --choosedir="$tempfile"
+
+    # if the temp file exists read and the content of the temp
+    # file was not equal to the current path
+    test -f "$tempfile" &&
+    if [ "$(cat -- "$tempfile")" != "$(echo -n `pwd`)" ]; then
+        # change directory to the path in the temp file
+        cd -- "$(cat "$tempfile")"
+    fi
+
+    # its not super necessary to have this line for deleting
+    # the temp file since Linux should handle it on the next
+    # boot
+    rm -f -- "$tempfile"
+}
+
+alias rfm=rfm-cd
+```
+
+This is completely similar to ranger, so you can replace `ranger` with `rfm` in your `ranger-cd` function, and everything will work out-of-the-box.
+
+## Design choices
+
+The main design goals behind **rfm** are speed and simplicity:
+
+- nothing should interrupt your workflow, you should almost never wait for the application to finish some task
+- the mental load while using the application should be as low as possible, so no different "modes" where keys have different meanings
+- everything should be un-doable (because if you go fast, you may go wrong)
+- the application should have as little dependencies as possible
+
+I absolutely *love* ranger and have a lot of admiration for it. 
+However, if you work with large directories, ranger tends to become slow and unresponsive (because it is written in python) - which bugs me a lot.
+Another thing that I found unintuitive is the seperation between console commands and normal commands that you can use with keybindings.
+In my opinion, all the standard features should be accessible in the same way to reduce the overall mental load
+(e.g. if you want to create a directory in ranger - which is a common task if you work with a file-manager - you have to enter console mode by hitting ":" and then type
+"mkdir"; but functions like searching, movement and jumping around are accessible by just typing into the application).
