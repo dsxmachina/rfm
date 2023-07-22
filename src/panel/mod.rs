@@ -4,7 +4,7 @@ use crossterm::{
     terminal::{self, Clear, ClearType},
     QueueableCommand, Result,
 };
-use log::{debug, error, trace, warn};
+use log::{debug, error, info, trace, warn};
 use notify::{RecommendedWatcher, Watcher};
 use parking_lot::Mutex;
 use std::{
@@ -190,6 +190,7 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                     match event.kind {
                         notify::EventKind::Create(_) | notify::EventKind::Remove(_) => {
                             let state = watcher_state.lock().clone();
+                            info!("Updating: {}", state.path().display());
                             if let Err(e) = watcher_tx.send(PanelUpdate { state }) {
                                 error!("{e}");
                             }
@@ -197,6 +198,7 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                         notify::EventKind::Modify(_) => {
                             if reload_on_modify {
                                 let state = watcher_state.lock().clone();
+                                info!("Updating: {}", state.path().display());
                                 if let Err(e) = watcher_tx.send(PanelUpdate { state }) {
                                     error!("{e}");
                                 }
@@ -333,23 +335,23 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
     /// To check if an update is necessary, call [`check_update`] on the new panel state.
     pub fn update_panel(&mut self, panel: PanelType) {
         // Watch new panels path
-        if self.panel.path().exists() {
+        if self.panel.path().exists() && self.panel.path().is_dir() {
             match self.watcher.unwatch(self.panel.path()) {
                 Ok(_) => {
-                    trace!("unwatching {}", self.panel.path().display());
+                    debug!("unwatching {}", self.panel.path().display());
                 }
                 Err(e) => {
                     warn!("unwatch-error: {}", e);
                 }
             }
         }
-        if panel.path().exists() {
+        if panel.path().exists() && panel.path().is_dir() {
             match self
                 .watcher
                 .watch(panel.path(), notify::RecursiveMode::NonRecursive)
             {
                 Ok(_) => {
-                    trace!("watching {}", panel.path().display());
+                    debug!("watching {}", panel.path().display());
                 }
                 Err(e) => {
                     warn!("watch-error: {}", e);

@@ -580,7 +580,14 @@ impl PanelManager {
                     .new_panel_delayed(self.center.panel().selected_path());
                 self.redraw_panels();
             } else {
-                if let Err(_e) = self.opener.open(selected) { /* failed to open selected */ }
+                info!("Opening '{}'", selected.display());
+                if let Err(e) = self.opener.open(selected) {
+                    /* failed to open selected */
+                    error!("Opening failed: {e}");
+                } else {
+                    // The application might have put some swapfiles into the current directory.
+                    self.center.reload();
+                }
                 self.redraw_everything();
             }
             // self.stack.push(Operation::Move(Movement::Right));
