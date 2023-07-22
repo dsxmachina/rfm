@@ -36,6 +36,8 @@ The following commands are accessible as basic keybindings (meaning you can just
 - Rename a file or directory (rename)
 - Delete a file or directory (delete)
 
+Note: You can change the keybindings for this.
+
 ### Preview-Engine
 
 There is a simple preview engine, that generates text previews of the currently selected file.
@@ -47,7 +49,7 @@ Deleting a file does not really delete it, instead it will be moved into a tempo
 This allows you to "undo" the delete operation, because you can always copy the files or directory from the trash to their original location.
 The trash diretory will be deleted automatically if you close rfm, so you don't accidentely clutter your file-system with a lot of trash files.
 
-### Jump into the last directory
+### cd into the current directory on exit
 
 If you leave rfm, you can make your shell jump into the current directory that the file-manager was in, 
 by adding the following to your `.bashrc` (or `.zshrc` or whatever shell you use):
