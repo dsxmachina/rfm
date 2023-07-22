@@ -1,0 +1,22 @@
+[text]
+default = { name = "nvim", terminal = true, args = [] }
+
+[image]
+default = { name = "sxiv", terminal = true, args = [] }
+
+[audio]
+default = { name = "mpv", terminal = true, args = [] }
+
+[video]
+default = { name = "mpv", terminal = true, args = [] }
+
+[application]
+default = { name = "nvim", terminal = true, args = [] }
+extensions = [ 
+  ["pdf",  { name = "zathura", terminal = false, args = [] } ], 
+  ["docx",  { name = "read2pdf", terminal = false, args = [] } ],
+  ["xlsx",  { name = "libreoffice", terminal = false, args = [] } ],
+  ["xls",  { name = "libreoffice", terminal = false, args = [] } ],
+  ["pptx",  { name = "libreoffice", terminal = false, args = [] } ],
+  ["ppt",  { name = "libreoffice", terminal = false, args = [] } ] 
+]
