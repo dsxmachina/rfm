@@ -164,11 +164,19 @@ impl FilePreview {
             }
             "wav" | "aiff" | "au" | "flac" | "m4a" | "mp3" | "opus" | "mov" | "pdf" | "doc"
             | "docx" | "ppt" | "pptx" | "xls" | "xlsx" | "zip" => {
-                let output = std::process::Command::new("mediainfo")
-                    .arg(&path)
-                    .output()
-                    .expect("failed to run mediainfo");
-                let lines: Vec<String> = output.stdout.lines().take(128).flatten().collect();
+                let lines = match std::process::Command::new("mediainfo").arg(&path).output() {
+                    Ok(output) => output.stdout.lines().take(128).flatten().collect(),
+                    Err(e) => {
+                        let mut lines = Vec::new();
+                        lines.push("Error: Could not run mediainfo".to_string());
+                        lines.push(e.to_string());
+                        lines.push("".to_string());
+                        lines.push(
+                            "You must have mediainfo installed to get a preview for this file-type.".to_string(),
+                        );
+                        lines
+                    }
+                };
                 Preview::Text { lines }
             }
             // "tar" | "tar.gz" | ".gz" => {
