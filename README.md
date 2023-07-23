@@ -1,6 +1,6 @@
 # &#128448; rfm - A fast file-manager written in pure rust
 
-## Brief description
+## &#9993; Brief description
 
 **rfm** is a console file manager with VI-bindings (although you can configure the keybindings to whatever you like).
 It shares a lot of similarity with [*ranger*](https://github.com/ranger/ranger), but also has some major differences in handling.
@@ -8,7 +8,7 @@ It shares a lot of similarity with [*ranger*](https://github.com/ranger/ranger),
 Please note: rfm is considered beta. Testing is much apprechiated,
 if you see something suspicious, please open an issue.
 
-## Installation
+## &#128187; Installation
 
 Clone this repository:
 ``` shell
@@ -58,7 +58,7 @@ sudo pacman -S mediainfo
 nix-env -iA nixpkgs.mediainfo
 ```
 
-## Configuration &#128462;
+## &#128462; Configuration 
 
 There are two configuration files 
 
@@ -78,7 +78,7 @@ If you are lazy, you can use the provided shell script to create the config dire
 ./create-default-config.sh
 ```
 
-## Basic functions
+## &#9000; Basic functions
 
 A small and non-exhaustive overview of some basic features:
 
