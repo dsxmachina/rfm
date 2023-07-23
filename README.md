@@ -5,7 +5,7 @@
 ## Brief description
 
 **rfm** is a console file manager with VI-bindings (although you can configure the keybindings to whatever you like).
-It shares a lot of similarity with (*ranger*)[https://github.com/ranger/ranger], but also has some major differences in handling.
+It shares a lot of similarity with [*ranger*](https://github.com/ranger/ranger), but also has some major differences in handling.
 
 ## Installation
 
