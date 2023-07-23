@@ -1,22 +1,55 @@
 # RFM - A fast file-manager written in pure rust
 
----
-
 ## Brief description
 
 **rfm** is a console file manager with VI-bindings (although you can configure the keybindings to whatever you like).
 It shares a lot of similarity with [*ranger*](https://github.com/ranger/ranger), but also has some major differences in handling.
 
+Please note: rfm is considered beta. Testing is much apprechiated,
+if you see something suspicious, please open an issue.
+
 ## Installation
 
-Clone this repository, build the application with cargo and copy the binary somewhere into your `$PATH`.
-At the moment rfm is considered beta and there is no "official" way to install or update it via your package-manager yet 
-(but there will be in the future).
+Clone this repository:
+``` shell
+git clone https://github.com/dsxmachina/rfm
+```
+
+Build the application with cargo:
+``` shell
+cd rfm
+cargo build --release
+```
+
+Grab a coffee, while cargo is building: ☕
+
+Copy the binary from the build directory to some directory in your `$PATH`:
+
+``` shell
+cp target/release/rfm /usr/bin/rfm
+```
+
+
+If you are not sure where to place the binary, you can inspect your `$PATH` variable:
+``` shell
+$: echo $PATH | tr ":" "\n"
+/bin
+/usr/bin
+/home/$USER/.scripts
+/home/$USER/.cargo/bin
+```
+And pick one of those.
+
 
 ## Configuration
 
 There are two configuration files `keys.toml` and `open.toml` which must be placed under `$HOME/.config/rfm/` in order to start the executable.
 You can find examples of these two inside the `examples/` directory of this repo. 
+
+```shell
+mkdir -p $HOME/.config/rfm
+cp examples/* $HOME/.config/rfm/
+```
 
 If you are lazy, you can use the provided shell script to create the config directory and copy the two example files over:
 ```shell
