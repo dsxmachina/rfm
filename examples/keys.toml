@@ -1,3 +1,16 @@
+# Basic configuration of rfm
+#
+# The syntax is pretty simple:
+#
+# [category]
+# command = [ "k" , "sk", "thirdkeybinding" ]
+#    ^        ^^^   ^^^^   ^^^^^^^^^^^^^^^^^
+#    |      single   |       or even words
+#    |       key   multiple
+#    |              keys
+#    |
+# Name of the command
+
 [general]
 search        = [ "/", "search", "f" ]
 mark          = [ " " ]
@@ -20,6 +33,13 @@ page_backward      = [ "ctrl-b" ]
 half_page_forward  = [ "ctrl-d" ]
 half_page_backward = [ "ctrl-u" ]
 jump_previous      = [ "''" ]
+#
+# You can define custom jumpmarks.
+#
+# On the left side, you put the keybinding or key-combination,
+# and on the right side, the directory you want to jump into.
+# You can use "~" for "$HOME".
+#
 jump_to = [ ["gh", "~"],
             ["gc", "~/.config"],
             ["gs", "~/.scripts"],

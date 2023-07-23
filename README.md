@@ -43,7 +43,12 @@ And pick one of those.
 
 ## Configuration
 
-There are two configuration files `keys.toml` and `open.toml` which must be placed under `$HOME/.config/rfm/` in order to start the executable.
+There are two configuration files 
+
+- `keys.toml` for keyboard configuration and jump-marks
+- `open.toml` to configure how to open files based on mime-type and/or extension
+
+Both files must be placed under `$HOME/.config/rfm/` in order to start the executable.
 You can find examples of these two inside the `examples/` directory of this repo. 
 
 ```shell

@@ -1,22 +1,50 @@
+# Configuration of how to open files with rfm
+#
+# The file is split into sections of different mime-types like "test" or "application".
+# You can set a default application for each mime-type, with the "default" key:
+#
+# default = { name = "vim", args = [], terminal = true }
+#
+# The right sight consists of the following keys:
+# {
+#   name = "vim",    # Name of the application to open
+#   args = ["-d"],   # Addition cmdline arguments
+#   terminal = true  # If terminal = false, an additional window is spawned and rfm execution continues.
+# }                  # if terminal = true, the application is launched inside the current session as a child process
+#
+#
+# If you want to use multiple applications for the same mime-type you can can define them
+# with the "extensions" key of the section:
+#
+# extensions = [ 
+#   ["pdf",   { name = "zathura",     args = [], terminal = false } ], 
+#   ["ppt",   { name = "libreoffice", args = [], terminal = false } ] 
+# ]
+#
+# The right side is just a list of elements with the same syntax that we used for the "default" key.
+#
+# If you are not sure what mime-type of a specific file is, you can look at the bottom line of "rfm".
+# It shows the mime-type for the current selection.
+#
 [text]
-default = { name = "nvim", terminal = true, args = [] }
+default = { name = "nvim", args = [], terminal = true }
 
 [image]
-default = { name = "sxiv", terminal = true, args = [] }
+default = { name = "sxiv", args = [], terminal = true }
 
 [audio]
-default = { name = "mpv", terminal = true, args = [] }
+default = { name = "mpv", args = [], terminal = true }
 
 [video]
-default = { name = "mpv", terminal = true, args = [] }
+default = { name = "mpv", args = [], terminal = true }
 
 [application]
-default = { name = "nvim", terminal = true, args = [] }
+default = { name = "nvim", args = [], terminal = true }
 extensions = [ 
-  ["pdf",  { name = "zathura", terminal = false, args = [] } ], 
-  ["docx",  { name = "read2pdf", terminal = false, args = [] } ],
-  ["xlsx",  { name = "libreoffice", terminal = false, args = [] } ],
-  ["xls",  { name = "libreoffice", terminal = false, args = [] } ],
-  ["pptx",  { name = "libreoffice", terminal = false, args = [] } ],
-  ["ppt",  { name = "libreoffice", terminal = false, args = [] } ] 
+  ["pdf",   { name = "zathura",     args = [], terminal = false } ], 
+  ["docx",  { name = "read2pdf",    args = [], terminal = false } ],
+  ["xlsx",  { name = "libreoffice", args = [], terminal = false } ],
+  ["xls",   { name = "libreoffice", args = [], terminal = false } ],
+  ["pptx",  { name = "libreoffice", args = [], terminal = false } ],
+  ["ppt",   { name = "libreoffice", args = [], terminal = false } ] 
 ]
