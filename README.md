@@ -26,7 +26,7 @@ Grab a coffee, while cargo is building: ☕
 Copy the binary from the build directory to some directory in your `$PATH`:
 
 ``` shell
-cp target/release/rfm /usr/bin/rfm
+cp target/release/rfm /usr/local/bin/rfm
 ```
 
 
@@ -35,6 +35,7 @@ If you are not sure where to place the binary, you can inspect your `$PATH` vari
 $: echo $PATH | tr ":" "\n"
 /bin
 /usr/bin
+/usr/local/bin
 /home/$USER/.scripts
 /home/$USER/.cargo/bin
 ```
