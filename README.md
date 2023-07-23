@@ -1,4 +1,4 @@
-# RFM - A fast file-manager written in pure rust
+# &#128448; rfm - A fast file-manager written in pure rust
 
 ## Brief description
 
@@ -41,7 +41,24 @@ $: echo $PATH | tr ":" "\n"
 And pick one of those.
 
 
-## Configuration
+### Mediainfo
+
+To get a preview for audio- and video-files (and some application/something mime-types), you must install `mediainfo`.
+
+Use your package-manager to install it:
+
+``` shell
+# Ubuntu
+sudo apt install mediainfo
+
+# Arch
+sudo pacman -S mediainfo
+
+# Nix
+nix-env -iA nixpkgs.mediainfo
+```
+
+## Configuration &#128462;
 
 There are two configuration files 
 
