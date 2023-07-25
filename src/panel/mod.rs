@@ -334,27 +334,29 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
     /// The panel is directly updated without any further checks!
     /// To check if an update is necessary, call [`check_update`] on the new panel state.
     pub fn update_panel(&mut self, panel: PanelType) {
-        // Watch new panels path
-        if self.panel.path().exists() && self.panel.path().is_dir() {
-            match self.watcher.unwatch(self.panel.path()) {
-                Ok(_) => {
-                    debug!("unwatching {}", self.panel.path().display());
-                }
-                Err(e) => {
-                    warn!("unwatch-error: {}", e);
+        // Update watchers
+        if self.panel.path() != panel.path() {
+            if self.panel.path().exists() && self.panel.path().is_dir() {
+                match self.watcher.unwatch(self.panel.path()) {
+                    Ok(_) => {
+                        debug!("unwatching {}", self.panel.path().display());
+                    }
+                    Err(e) => {
+                        warn!("unwatch-error: {}", e);
+                    }
                 }
             }
-        }
-        if panel.path().exists() && panel.path().is_dir() {
-            match self
-                .watcher
-                .watch(panel.path(), notify::RecursiveMode::NonRecursive)
-            {
-                Ok(_) => {
-                    debug!("watching {}", panel.path().display());
-                }
-                Err(e) => {
-                    warn!("watch-error: {}", e);
+            if panel.path().exists() && panel.path().is_dir() {
+                match self
+                    .watcher
+                    .watch(panel.path(), notify::RecursiveMode::NonRecursive)
+                {
+                    Ok(_) => {
+                        debug!("watching {}", panel.path().display());
+                    }
+                    Err(e) => {
+                        warn!("watch-error: {}", e);
+                    }
                 }
             }
         }
