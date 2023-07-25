@@ -19,10 +19,7 @@ use std::{
 };
 use tokio::sync::mpsc;
 
-use crate::{
-    commands::Move,
-    content::{hash_elements, PanelCache},
-};
+use crate::{commands::Move, content::PanelCache};
 
 mod console;
 mod directory;
@@ -42,9 +39,6 @@ pub trait Draw {
 pub trait PanelContent: Draw + Clone + Send {
     /// Path of the panel
     fn path(&self) -> &Path;
-
-    /// Hash of the panels content
-    fn content_hash(&self) -> u64;
 
     /// Access time of the path
     fn modified(&self) -> SystemTime;
@@ -86,9 +80,6 @@ pub struct PanelState {
 
     /// Path of the panel
     path: PathBuf,
-
-    /// Hash of the panels content
-    hash: u64,
 }
 
 impl Default for PanelState {
@@ -99,7 +90,6 @@ impl Default for PanelState {
             panel_id: rand::random(),
             cnt: 0,
             path: PathBuf::default(),
-            hash: 0,
         }
     }
 }
@@ -114,7 +104,6 @@ impl PanelState {
             panel_id: self.panel_id,
             cnt: self.cnt + 1,
             path: self.path.clone(),
-            hash: self.hash,
         }
     }
 
@@ -133,10 +122,6 @@ impl PanelState {
 
     pub fn id(&self) -> u64 {
         self.panel_id
-    }
-
-    pub fn hash(&self) -> u64 {
-        self.hash
     }
 
     pub fn path(&self) -> PathBuf {
@@ -353,7 +338,6 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
 
     fn update(&mut self, panel: PanelType) {
         let mut state = self.state.lock();
-        state.hash = panel.content_hash();
         state.increase();
         state.path = panel.path().to_path_buf();
         self.panel.update_content(panel);

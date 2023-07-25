@@ -245,9 +245,6 @@ pub struct DirPanel {
 
     /// Weather or not to show hidden files
     show_hidden: bool,
-
-    /// Hash of the elements
-    hash: u64,
 }
 
 impl Draw for DirPanel {
@@ -386,10 +383,6 @@ impl PanelContent for DirPanel {
         self.path.as_path()
     }
 
-    fn content_hash(&self) -> u64 {
-        self.hash
-    }
-
     fn modified(&self) -> SystemTime {
         self.modified
     }
@@ -439,7 +432,6 @@ impl DirPanel {
             .collect::<Vec<usize>>();
 
         let selected = *non_hidden.first().unwrap_or(&0);
-        let hash = hash_elements(&elements);
 
         let modified = path
             .metadata()
@@ -457,7 +449,6 @@ impl DirPanel {
             modified,
             loading: false,
             show_hidden: false,
-            hash,
         }
     }
 
@@ -618,7 +609,6 @@ impl DirPanel {
             modified: SystemTime::now(),
             loading: true,
             show_hidden: false,
-            hash: 0,
         }
     }
 
@@ -636,7 +626,6 @@ impl DirPanel {
             path: "path-of-empty-panel".into(),
             loading: false,
             show_hidden: false,
-            hash: 0,
         }
     }
 

@@ -87,14 +87,6 @@ pub fn dir_content(path: PathBuf) -> Vec<DirElem> {
     }
 }
 
-pub fn hash_elements(elements: &[DirElem]) -> u64 {
-    let mut h: fasthash::XXHasher = Default::default();
-    for elem in elements {
-        elem.name().hash(&mut h);
-    }
-    h.finish()
-}
-
 // TODO: Benchmark this guy
 async fn fill_cache(
     path: PathBuf,
@@ -177,28 +169,14 @@ impl DirManager {
             if let Ok(content) = result {
                 // Only update when the hash has changed
                 let panel = DirPanel::new(content, update.state.path().clone());
-                if update.state.hash() != panel.content_hash() {
-                    debug!(
-                        "new content-hash: {} vs {}, path = {}",
-                        update.state.hash(),
-                        panel.content_hash(),
-                        update.state.path().display()
-                    );
-                    if self
-                        .tx
-                        .send((panel.clone(), update.state.increased().increased()))
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    };
-                } else {
-                    debug!(
-                        "unchanged hash: {}, path = {}",
-                        update.state.hash(),
-                        update.state.path().display()
-                    );
-                }
+                if self
+                    .tx
+                    .send((panel.clone(), update.state.increased().increased()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                };
                 self.directory_cache
                     .insert(update.state.path().clone(), panel.clone());
                 self.preview_cache
@@ -237,12 +215,11 @@ impl PreviewManager {
                 if let Ok(content) = result {
                     let panel =
                         PreviewPanel::Dir(DirPanel::new(content, update.state.path().clone()));
-                    if update.state.hash() != panel.content_hash()
-                        && self
-                            .tx
-                            .send((panel.clone(), update.state.increased()))
-                            .await
-                            .is_err()
+                    if self
+                        .tx
+                        .send((panel.clone(), update.state.increased()))
+                        .await
+                        .is_err()
                     {
                         break;
                     }
@@ -254,12 +231,11 @@ impl PreviewManager {
                 let result = spawn_blocking(move || FilePreview::new(file_path)).await;
                 if let Ok(preview) = result {
                     let panel = PreviewPanel::File(preview);
-                    if update.state.hash() != panel.content_hash()
-                        && self
-                            .tx
-                            .send((panel.clone(), update.state.increased()))
-                            .await
-                            .is_err()
+                    if self
+                        .tx
+                        .send((panel.clone(), update.state.increased()))
+                        .await
+                        .is_err()
                     {
                         break;
                     }

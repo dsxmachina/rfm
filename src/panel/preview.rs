@@ -26,7 +26,6 @@ pub enum Preview {
 pub struct FilePreview {
     path: PathBuf,
     modified: SystemTime,
-    hash: u64,
     preview: Preview,
 }
 
@@ -139,14 +138,6 @@ impl FilePreview {
             .map(|s| s.to_ascii_lowercase())
             .unwrap_or_default();
 
-        let hash = path
-            .metadata()
-            .ok()
-            .and_then(|m| m.accessed().ok())
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .unwrap_or_default()
-            .as_secs();
-
         let modified = path
             .metadata()
             .ok()
@@ -206,7 +197,6 @@ impl FilePreview {
 
         FilePreview {
             path,
-            hash,
             modified,
             preview,
         }
@@ -216,10 +206,6 @@ impl FilePreview {
 impl PanelContent for FilePreview {
     fn path(&self) -> &Path {
         self.path.as_path()
-    }
-
-    fn content_hash(&self) -> u64 {
-        self.hash
     }
 
     fn modified(&self) -> SystemTime {
@@ -274,14 +260,6 @@ impl PanelContent for PreviewPanel {
             PreviewPanel::Dir(panel) => panel.path(),
             PreviewPanel::File(preview) => preview.path(),
             PreviewPanel::Empty => Path::new("path-of-empty-panel"),
-        }
-    }
-
-    fn content_hash(&self) -> u64 {
-        match self {
-            PreviewPanel::Dir(p) => p.content_hash(),
-            PreviewPanel::File(p) => p.content_hash(),
-            PreviewPanel::Empty => 0,
         }
     }
 
