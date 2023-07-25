@@ -4,7 +4,7 @@ use std::{
 };
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use log::debug;
+use log::{debug, trace};
 use patricia_tree::PatriciaMap;
 use serde::Deserialize;
 
@@ -439,7 +439,7 @@ impl CommandParser {
                 // Check if we have a valid command
                 if let Some(command) = self.key_commands.get(self.buffer.as_bytes()) {
                     self.buffer.clear();
-                    debug!("Command: {:?}", command);
+                    trace!("Command: {:?}", command);
                     return command.clone();
                 }
             }
@@ -450,7 +450,7 @@ impl CommandParser {
         // incoming event.
         if let Some(command) = self.mod_commands.get(&event) {
             self.buffer.clear();
-            debug!("Command: {:?}", command);
+            trace!("Command: {:?}", command);
             return command.clone();
         }
         Command::None
