@@ -144,6 +144,36 @@ impl PanelState {
     }
 }
 
+// Helper function to call 'unwatch' on some watcher
+fn unwatch_path<P: AsRef<Path>>(watcher: &mut RecommendedWatcher, path: P) {
+    let path = path.as_ref();
+    if path.exists() && path.is_dir() {
+        match watcher.unwatch(path) {
+            Ok(_) => {
+                debug!("unwatching {}", path.display());
+            }
+            Err(e) => {
+                warn!("unwatch-error: {}", e);
+            }
+        }
+    }
+}
+
+// Helper function to call 'watch' on some watcher
+fn watch_path<P: AsRef<Path>>(watcher: &mut RecommendedWatcher, path: P) {
+    let path = path.as_ref();
+    if path.exists() && path.is_dir() {
+        match watcher.watch(path, notify::RecursiveMode::NonRecursive) {
+            Ok(_) => {
+                debug!("watching {}", path.display());
+            }
+            Err(e) => {
+                warn!("watch-error: {}", e);
+            }
+        }
+    }
+}
+
 /// Combines all data that is necessary to update a panel.
 ///
 /// Will be send as a request to the [`ContentManager`].
@@ -329,6 +359,22 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
         self.panel.update_content(panel);
     }
 
+    /// Freezes the panel in its current state.
+    ///
+    /// Deactivates all watchers so that the panel will receive no updates until we call "unfreeze".
+    pub fn freeze(&mut self) {
+        unwatch_path(&mut self.watcher, self.panel.path());
+    }
+
+    /// Unfreezes the panel in its current state.
+    ///
+    /// Re-activates all watchers so that the panel will receive new updates.
+    /// Also refreshes the panel in case the content has changed since the last freeze.
+    pub fn unfreeze(&mut self) {
+        watch_path(&mut self.watcher, self.panel.path());
+        self.reload();
+    }
+
     /// Updates an existing panel.
     ///
     /// The panel is directly updated without any further checks!
@@ -336,29 +382,8 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
     pub fn update_panel(&mut self, panel: PanelType) {
         // Update watchers
         if self.panel.path() != panel.path() {
-            if self.panel.path().exists() && self.panel.path().is_dir() {
-                match self.watcher.unwatch(self.panel.path()) {
-                    Ok(_) => {
-                        debug!("unwatching {}", self.panel.path().display());
-                    }
-                    Err(e) => {
-                        warn!("unwatch-error: {}", e);
-                    }
-                }
-            }
-            if panel.path().exists() && panel.path().is_dir() {
-                match self
-                    .watcher
-                    .watch(panel.path(), notify::RecursiveMode::NonRecursive)
-                {
-                    Ok(_) => {
-                        debug!("watching {}", panel.path().display());
-                    }
-                    Err(e) => {
-                        warn!("watch-error: {}", e);
-                    }
-                }
-            }
+            unwatch_path(&mut self.watcher, self.panel.path());
+            watch_path(&mut self.watcher, panel.path());
         }
         self.update(panel);
     }

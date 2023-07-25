@@ -178,6 +178,12 @@ impl DirManager {
                 // Only update when the hash has changed
                 let panel = DirPanel::new(content, update.state.path().clone());
                 if update.state.hash() != panel.content_hash() {
+                    debug!(
+                        "new content-hash: {} vs {}, path = {}",
+                        update.state.hash(),
+                        panel.content_hash(),
+                        update.state.path().display()
+                    );
                     if self
                         .tx
                         .send((panel.clone(), update.state.increased().increased()))
