@@ -1,12 +1,7 @@
 use cached::{Cached, SizedCache};
-use log::{debug, info, warn};
+use log::{debug, error};
 use parking_lot::Mutex;
-use std::{
-    hash::{Hash, Hasher},
-    path::PathBuf,
-    sync::Arc,
-    time::SystemTime,
-};
+use std::{path::PathBuf, sync::Arc, time::SystemTime};
 use tokio::{sync::mpsc, task::spawn_blocking};
 use walkdir::WalkDir;
 
@@ -169,12 +164,12 @@ impl DirManager {
             if let Ok(content) = result {
                 // Only update when the hash has changed
                 let panel = DirPanel::new(content, update.state.path().clone());
-                if self
+                if let Err(e) = self
                     .tx
                     .send((panel.clone(), update.state.increased().increased()))
                     .await
-                    .is_err()
                 {
+                    error!("Cannot send panel-update: {e}");
                     break;
                 };
                 self.directory_cache
@@ -215,12 +210,12 @@ impl PreviewManager {
                 if let Ok(content) = result {
                     let panel =
                         PreviewPanel::Dir(DirPanel::new(content, update.state.path().clone()));
-                    if self
+                    if let Err(e) = self
                         .tx
                         .send((panel.clone(), update.state.increased()))
                         .await
-                        .is_err()
                     {
+                        error!("Cannot send panel-update: {e}");
                         break;
                     }
                     self.preview_cache.insert(update.state.path(), panel);
@@ -231,12 +226,12 @@ impl PreviewManager {
                 let result = spawn_blocking(move || FilePreview::new(file_path)).await;
                 if let Ok(preview) = result {
                     let panel = PreviewPanel::File(preview);
-                    if self
+                    if let Err(e) = self
                         .tx
                         .send((panel.clone(), update.state.increased()))
                         .await
-                        .is_err()
                     {
+                        error!("Cannot send panel-update: {e}");
                         break;
                     }
                     self.preview_cache.insert(update.state.path(), panel);

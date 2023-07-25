@@ -4,7 +4,7 @@ use std::{
 };
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use log::{debug, trace};
+use log::trace;
 use patricia_tree::PatriciaMap;
 use serde::Deserialize;
 

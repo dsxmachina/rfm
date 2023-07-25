@@ -2,7 +2,7 @@ use std::{fs::OpenOptions, os::unix::prelude::MetadataExt};
 
 use crossterm::event::{Event, EventStream, KeyCode};
 use futures::{FutureExt, StreamExt};
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, info, trace};
 use tempfile::TempDir;
 use time::OffsetDateTime;
 use users::{get_group_by_gid, get_user_by_uid};

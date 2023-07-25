@@ -1,8 +1,7 @@
 use std::{
-    collections::HashMap,
     io::{stdout, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Command,
 };
 
 use crossterm::{

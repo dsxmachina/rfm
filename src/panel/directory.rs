@@ -6,7 +6,6 @@ use std::{
 };
 
 use crossterm::style::{ContentStyle, StyledContent};
-use log::info;
 use unix_mode::is_allowed;
 
 use crate::{

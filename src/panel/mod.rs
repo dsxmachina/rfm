@@ -4,7 +4,7 @@ use crossterm::{
     terminal::{self, Clear, ClearType},
     QueueableCommand, Result,
 };
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, info, warn};
 use notify::{RecommendedWatcher, Watcher};
 use parking_lot::Mutex;
 use std::{
