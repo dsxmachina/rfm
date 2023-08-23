@@ -48,22 +48,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
     std::panic::set_hook(Box::new(|panic_info| {
-        let body;
-        let summary;
-        if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
-            body = format!("panic occurred: {s:?}");
+        let body = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            format!("panic occurred: {s:?}")
         } else {
-            body = "panic occurred".to_string();
-        }
-        if let Some(location) = panic_info.location() {
-            summary = format!(
+            "panic occurred".to_string()
+        };
+        let summary = if let Some(location) = panic_info.location() {
+            format!(
                 "panic occurred in file '{}' at line {}",
                 location.file(),
                 location.line(),
-            );
+            )
         } else {
-            summary = "panic occurred somewhere".to_string();
-        }
+            "panic occurred somewhere".to_string()
+        };
         if Notification::new()
             .summary(&summary)
             .body(&body)
@@ -123,16 +121,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let config_dir = xdg_config_home()?.join("rfm");
     let key_config_file = config_dir.join("keys.toml");
 
-    let parser: CommandParser;
-    if let Ok(content) = std::fs::read_to_string(&key_config_file) {
+    let parser = if let Ok(content) = std::fs::read_to_string(&key_config_file) {
         match toml::from_str(&content) {
             Ok(key_config) => {
                 info!("Using keyboard config: {}", key_config_file.display());
-                parser = CommandParser::from_config(key_config);
+                CommandParser::from_config(key_config)
             }
             Err(e) => {
                 warn!("Configuration error: {e}. Using default keyboard bindings");
-                parser = CommandParser::default_bindings();
+                CommandParser::default_bindings()
             }
         }
     } else {
@@ -140,28 +137,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "Cannot find keyboard config '{}'. Using default keyboard bindings",
             key_config_file.display()
         );
-        parser = CommandParser::default_bindings();
-    }
+        CommandParser::default_bindings()
+    };
 
     // Read opener config
     let open_config_file = config_dir.join("open.toml");
 
-    let opener: OpenEngine;
-    if let Ok(content) = std::fs::read_to_string(&open_config_file) {
+    let opener = if let Ok(content) = std::fs::read_to_string(&open_config_file) {
         match toml::from_str(&content) {
             Ok(open_config) => {
                 info!("Using open-engine config: {}", open_config_file.display());
-                opener = OpenEngine::with_config(open_config);
+                OpenEngine::with_config(open_config)
             }
             Err(e) => {
                 warn!("Configuration error: {e}. Using default open engine");
-                opener = OpenEngine::default();
+                OpenEngine::default()
             }
         }
     } else {
         info!("Using default open engine");
-        opener = OpenEngine::default();
-    }
+        OpenEngine::default()
+    };
 
     let panel_manager = PanelManager::new(
         parser,
