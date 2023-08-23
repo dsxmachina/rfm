@@ -117,7 +117,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let dir_mngr_handle = tokio::spawn(dir_manager.run());
     let prev_mngr_handle = tokio::spawn(preview_manager.run());
 
-    // Read config file
+    // Read keybinding config
     let config_dir = xdg_config_home()?.join("rfm");
     let key_config_file = config_dir.join("keys.toml");
 
