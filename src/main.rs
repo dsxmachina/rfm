@@ -9,7 +9,7 @@ use crossterm::{
         disable_raw_mode, enable_raw_mode, Clear, ClearType, DisableLineWrap, EnterAlternateScreen,
         LeaveAlternateScreen,
     },
-    QueueableCommand, Result,
+    QueueableCommand,
 };
 use log::{info, warn};
 use logger::LogBuffer;
@@ -17,12 +17,14 @@ use notify_rust::Notification;
 use opener::OpenEngine;
 use panel::manager::PanelManager;
 use std::{
+    error::Error,
     fs::OpenOptions,
     io::{stdout, Write},
     path::PathBuf,
 };
 use symbols::SymbolEngine;
 use tokio::sync::mpsc;
+use util::xdg_config_home;
 
 mod commands;
 mod content;
@@ -42,7 +44,7 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
     std::panic::set_hook(Box::new(|panic_info| {
@@ -118,8 +120,7 @@ async fn main() -> Result<()> {
     let prev_mngr_handle = tokio::spawn(preview_manager.run());
 
     // Read config file
-    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
-    let config_dir = home.join(".config/rfm/");
+    let config_dir = xdg_config_home()?.join("rfm");
     let key_config_file = config_dir.join("keys.toml");
 
     let parser: CommandParser;
