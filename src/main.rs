@@ -6,8 +6,8 @@ use crossterm::{
     cursor,
     event::DisableMouseCapture,
     terminal::{
-        disable_raw_mode, enable_raw_mode, Clear, ClearType, DisableLineWrap, EnterAlternateScreen,
-        LeaveAlternateScreen,
+        disable_raw_mode, enable_raw_mode, Clear, ClearType, DisableLineWrap, EnableLineWrap,
+        EnterAlternateScreen, LeaveAlternateScreen,
     },
     QueueableCommand,
 };
@@ -182,6 +182,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Be a good citizen, cleanup
     stdout
+        .queue(EnableLineWrap)?
         .queue(Clear(ClearType::Purge))?
         .queue(LeaveAlternateScreen)?
         .queue(cursor::RestorePosition)?
