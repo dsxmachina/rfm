@@ -43,10 +43,8 @@ impl Input {
             KeyCode::Backspace => {
                 if self.cursor == self.input.len() {
                     self.input.pop();
-                } else {
-                    if self.cursor > 0 {
-                        self.input.remove(self.cursor.saturating_sub(1));
-                    }
+                } else if self.cursor > 0 {
+                    self.input.remove(self.cursor.saturating_sub(1));
                 }
                 self.cursor = self.cursor.saturating_sub(1);
             }

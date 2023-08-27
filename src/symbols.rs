@@ -44,12 +44,10 @@ impl SymbolEngine {
             let mime_type = get_mime_type(path);
             if let Some(icon) = engine.symbols.get(&mime_type) {
                 return icon;
+            } else if let Some(icon) = engine.symbols.get(mime_type.type_()) {
+                return icon;
             } else {
-                if let Some(icon) = engine.symbols.get(mime_type.type_()) {
-                    return icon;
-                } else {
-                    return "\u{1F5B9}";
-                }
+                return "\u{1F5B9}";
             }
         } else {
             error!("Symbol engine was not initialized.");

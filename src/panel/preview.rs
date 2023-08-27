@@ -158,14 +158,12 @@ impl FilePreview {
                 let lines = match std::process::Command::new("mediainfo").arg(&path).output() {
                     Ok(output) => output.stdout.lines().take(128).flatten().collect(),
                     Err(e) => {
-                        let mut lines = Vec::new();
-                        lines.push("Error: Could not run mediainfo".to_string());
-                        lines.push(e.to_string());
-                        lines.push("".to_string());
-                        lines.push(
+                        vec![
+                            "Error: Could not run mediainfo".to_string(),
+                            e.to_string(),
+                            "".to_string(),
                             "You must have mediainfo installed to get a preview for this file-type.".to_string(),
-                        );
-                        lines
+                        ]
                     }
                 };
                 Preview::Text { lines }

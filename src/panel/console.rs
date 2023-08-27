@@ -33,10 +33,10 @@ impl Draw for DirConsole {
         let path_len = path.len() as u16;
 
         let text_len = path_len + self.input.len() as u16;
-        let offset = if text_len < (width / 2).into() {
+        let offset = if text_len < (width / 2) {
             width / 4
         } else if text_len < width {
-            ((width - text_len).saturating_sub(1) / 2) as u16
+            (width - text_len).saturating_sub(1) / 2
         } else {
             0
         };

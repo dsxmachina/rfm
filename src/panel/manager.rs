@@ -919,7 +919,7 @@ impl PanelManager {
                         Command::Paste { overwrite } => {
                             self.unmark_all_items();
                             let current_path = self.center.panel().path().to_path_buf();
-                            let clipboard = std::mem::replace(&mut self.clipboard, None);
+                            let clipboard = self.clipboard.take();
                             tokio::task::spawn_blocking(move || {
                                 if let Some(clipboard) = clipboard {
                                     info!(
