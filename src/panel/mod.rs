@@ -25,6 +25,7 @@ mod console;
 mod directory;
 pub mod manager;
 mod preview;
+mod input;
 
 pub use directory::{DirElem, DirPanel};
 pub use preview::{FilePreview, Preview, PreviewPanel};

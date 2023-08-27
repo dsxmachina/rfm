@@ -14,7 +14,7 @@ use crate::{
     util::{copy_item, file_size_str, get_destination, move_item},
 };
 
-use super::{console::DirConsole, *};
+use super::{console::DirConsole, input::Input, *};
 
 struct Redraw {
     left: bool,
@@ -41,9 +41,9 @@ impl Redraw {
 enum Mode {
     Normal,
     Console { console: DirConsole },
-    CreateItem { input: String, is_dir: bool },
-    Search { input: String },
-    Rename { input: String },
+    CreateItem { input: Input, is_dir: bool },
+    Search { input: Input },
+    Rename { input: Input },
 }
 
 struct Clipboard {
@@ -315,7 +315,7 @@ impl PanelManager {
             queue!(
                 self.stdout,
                 style::PrintStyledContent("Search:".bold().dark_green().reverse()),
-                style::PrintStyledContent(format!(" {input}").bold().red()),
+                style::PrintStyledContent(format!(" {}", input.get()).bold().red()),
             )?;
             return Ok(());
         }
@@ -323,15 +323,18 @@ impl PanelManager {
             queue!(
                 self.stdout,
                 style::PrintStyledContent("Rename:".bold().dark_green().reverse()),
-                style::PrintStyledContent(format!(" {input}").bold().yellow()),
+                style::PrintStyledContent(format!(" {}", input.get()).bold().yellow()),
             )?;
             return Ok(());
         }
         if let Mode::CreateItem { input, is_dir } = &self.mode {
             let (prompt, item) = if *is_dir {
-                ("Make Directory:", format!(" {input}").dark_green().bold())
+                (
+                    "Make Directory:",
+                    format!(" {}", input.get()).dark_green().bold(),
+                )
             } else {
-                ("Touch:", format!(" {input}").grey())
+                ("Touch:", format!(" {}", input.get()).grey())
             };
             queue!(
                 self.stdout,
@@ -839,18 +842,22 @@ impl PanelManager {
                             self.redraw_console();
                         }
                         Command::Search => {
-                            self.mode = Mode::Search { input: "".into() };
+                            self.mode = Mode::Search {
+                                input: Input::empty(),
+                            };
                             self.redraw_footer();
                         }
                         Command::Rename => {
-                            let input = self
+                            let selected = self
                                 .center
                                 .panel()
                                 .selected_path()
                                 .and_then(|p| p.file_name())
                                 .and_then(|f| f.to_owned().into_string().ok())
                                 .unwrap_or_default();
-                            self.mode = Mode::Rename { input };
+                            self.mode = Mode::Rename {
+                                input: Input::from_str(selected),
+                            };
                             self.redraw_footer();
                         }
                         Command::Next => {
@@ -869,14 +876,14 @@ impl PanelManager {
                         }
                         Command::Mkdir => {
                             self.mode = Mode::CreateItem {
-                                input: "".into(),
+                                input: Input::empty(),
                                 is_dir: true,
                             };
                             self.redraw_footer();
                         }
                         Command::Touch => {
                             self.mode = Mode::CreateItem {
-                                input: "".into(),
+                                input: Input::empty(),
                                 is_dir: false,
                             };
                             self.redraw_footer();
@@ -977,10 +984,6 @@ impl PanelManager {
                 },
                 Mode::CreateItem { input, is_dir } => {
                     match key_event.code {
-                        KeyCode::Backspace => {
-                            input.pop();
-                            self.redraw_footer();
-                        }
                         KeyCode::Enter => {
                             let current_path = self.center.panel().path();
                             let create_fn = if *is_dir {
@@ -995,7 +998,7 @@ impl PanelManager {
                                     Ok(())
                                 }
                             };
-                            if let Err(e) = create_fn(current_path.join(input.trim())) {
+                            if let Err(e) = create_fn(current_path.join(input.get().trim())) {
                                 error!("{e}");
                             }
                             // self.stack.push(Operation::Mkdir { path: new_dir.clone() });
@@ -1006,16 +1009,14 @@ impl PanelManager {
                             /* autocomplete here ? */
                             self.redraw_footer();
                         }
-                        KeyCode::Char(c) => {
-                            input.push(c);
-                            self.redraw_footer();
+                        key_code => {
+                            input.update(key_code);
                         }
-                        _ => (),
                     }
                 }
                 Mode::Search { input } => {
                     if let KeyCode::Enter = key_event.code {
-                        self.center.panel_mut().finish_search(&input);
+                        self.center.panel_mut().finish_search(input.get());
                         self.center.panel_mut().select_next_marked();
                         self.right
                             .new_panel_delayed(self.center.panel().selected_path());
@@ -1023,21 +1024,20 @@ impl PanelManager {
                         self.redraw_center();
                         self.redraw_right();
                     } else {
-                        if let KeyCode::Char(c) = key_event.code {
-                            input.push(c.to_ascii_lowercase());
-                        }
-                        if let KeyCode::Backspace = key_event.code {
-                            input.pop();
-                        }
-                        self.center.panel_mut().update_search(input.clone());
+                        input.update(key_event.code);
+                        self.center
+                            .panel_mut()
+                            .update_search(input.get().to_string());
                         self.redraw_center();
                     }
                 }
                 Mode::Rename { input } => {
                     if let KeyCode::Enter = key_event.code {
-                        // TODO: Actually rename the selection
                         if let Some(from) = self.center.panel().selected_path() {
-                            let to = from.parent().map(|p| p.join(input)).unwrap_or_default();
+                            let to = from
+                                .parent()
+                                .map(|p| p.join(input.get()))
+                                .unwrap_or_default();
                             if let Err(e) = std::fs::rename(from, to) {
                                 error!("{e}");
                             }
@@ -1047,12 +1047,7 @@ impl PanelManager {
                         self.right.reload();
                         self.redraw_panels();
                     } else {
-                        if let KeyCode::Char(c) = key_event.code {
-                            input.push(c);
-                        }
-                        if let KeyCode::Backspace = key_event.code {
-                            input.pop();
-                        }
+                        input.update(key_event.code);
                         self.redraw_center();
                     }
                 }
