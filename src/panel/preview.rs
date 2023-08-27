@@ -84,9 +84,16 @@ impl Draw for FilePreview {
                                 queue!(stdout, cursor::MoveTo(cx, cy), ResetColor, Print(" "),)?;
                             }
                         }
-                        queue!(stdout, cursor::MoveTo(0, 0), ResetColor,)?;
                         // Increase column
                         cy += 1;
+                    }
+                    queue!(stdout, ResetColor)?;
+                    // Reset everything else
+                    for y in cy..height {
+                        for x in 0..width {
+                            let cx = x_range.start.saturating_add(x).saturating_add(1);
+                            queue!(stdout, cursor::MoveTo(cx, y), Print(" "),)?;
+                        }
                     }
                 } else {
                     queue!(
