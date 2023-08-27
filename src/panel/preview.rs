@@ -14,7 +14,7 @@ use crossterm::{
     style::{self, Colors, Print, PrintStyledContent, ResetColor, SetColors, Stylize},
     Result,
 };
-use image::DynamicImage;
+use image::{DynamicImage, GenericImageView};
 
 #[derive(Debug, Clone)]
 pub enum Preview {
@@ -53,36 +53,40 @@ impl Draw for FilePreview {
                 // load image
                 if let Some(img) = img {
                     // crop height
-                    let img_height = ((height as f32) - (height as f32) / 3.6).round();
+                    // let img_height = ((height as f32) - (height as f32) / 3.6).round();
+                    let aspect_ratio = (img.height() as f32) / (img.width() as f32);
+                    let img_height = ((width as f32) * aspect_ratio).round();
                     let img = img
                         .thumbnail_exact(width as u32, img_height as u32)
                         .into_rgb8();
-                    for y in 0..height {
-                        // cursor y
-                        let cy = y_range.start.saturating_add(y);
+                    let mut cy = y_range.start;
+                    for y in (0..img_height as usize).step_by(2) {
                         for x in 0..width {
                             // cursor x
                             let cx = x_range.start.saturating_add(x).saturating_add(1);
                             queue!(stdout, cursor::MoveTo(cx, cy))?;
-                            if let Some(px) = img.get_pixel_checked(x as u32, y as u32) {
+                            let px_hi = unsafe { img.unsafe_get_pixel(x as u32, y as u32) };
+                            if let Some(px_lo) = img.get_pixel_checked(x as u32, (y + 1) as u32) {
                                 let color = Colors::new(
                                     style::Color::Rgb {
-                                        r: px.0[0],
-                                        g: px.0[1],
-                                        b: px.0[2],
+                                        r: px_lo.0[0],
+                                        g: px_lo.0[1],
+                                        b: px_lo.0[2],
                                     },
                                     style::Color::Rgb {
-                                        r: px.0[0],
-                                        g: px.0[1],
-                                        b: px.0[2],
+                                        r: px_hi.0[0],
+                                        g: px_hi.0[1],
+                                        b: px_hi.0[2],
                                     },
                                 );
-                                queue!(stdout, SetColors(color), Print(" "),)?;
+                                queue!(stdout, SetColors(color), Print("▄"),)?;
                             } else {
                                 queue!(stdout, cursor::MoveTo(cx, cy), ResetColor, Print(" "),)?;
                             }
                         }
                         queue!(stdout, cursor::MoveTo(0, 0), ResetColor,)?;
+                        // Increase column
+                        cy += 1;
                     }
                 } else {
                     queue!(
