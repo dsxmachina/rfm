@@ -1,4 +1,10 @@
-use crossterm::event::KeyCode;
+use std::io::Stdout;
+
+use crossterm::{
+    event::KeyCode,
+    style::{Color, ContentStyle, PrintStyledContent, StyledContent, Stylize},
+    QueueableCommand,
+};
 
 pub struct Input {
     input: String,
@@ -24,6 +30,7 @@ impl Input {
 
     /// Updates the input field
     pub fn update(&mut self, key_code: KeyCode) {
+        // TODO respect cursor position
         if let KeyCode::Char(c) = key_code {
             self.input.push(c.to_ascii_lowercase());
             self.cursor = self.cursor.saturating_add(1);
@@ -36,5 +43,14 @@ impl Input {
 
     pub fn get(&self) -> &str {
         &self.input
+    }
+
+    pub fn cursor(&self) -> u16 {
+        self.cursor as u16
+    }
+
+    pub fn print(&self, stdout: &mut Stdout, color: Color) -> crossterm::Result<()> {
+        stdout.queue(PrintStyledContent(self.input.clone().bold().with(color)))?;
+        Ok(())
     }
 }

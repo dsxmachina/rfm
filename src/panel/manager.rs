@@ -1,6 +1,9 @@
 use std::{fs::OpenOptions, os::unix::prelude::MetadataExt};
 
-use crossterm::event::{Event, EventStream, KeyCode};
+use crossterm::{
+    event::{Event, EventStream, KeyCode},
+    style::{ContentStyle, PrintStyledContent},
+};
 use futures::{FutureExt, StreamExt};
 use log::{debug, error, info, trace};
 use tempfile::TempDir;
@@ -244,11 +247,11 @@ impl PanelManager {
 
         for (level, line) in self.logger.get().into_iter().rev() {
             let content = match level {
-                log::Level::Error => style::PrintStyledContent("error".red().bold()),
-                log::Level::Warn => style::PrintStyledContent("warn".yellow().bold()),
-                log::Level::Info => style::PrintStyledContent("info".dark_green().bold()),
-                log::Level::Debug => style::PrintStyledContent("debug".dark_blue()),
-                log::Level::Trace => style::PrintStyledContent("trace".grey()),
+                log::Level::Error => PrintStyledContent("error".red().bold()),
+                log::Level::Warn => PrintStyledContent("warn".yellow().bold()),
+                log::Level::Info => PrintStyledContent("info".dark_green().bold()),
+                log::Level::Debug => PrintStyledContent("debug".dark_blue()),
+                log::Level::Trace => PrintStyledContent("trace".grey()),
             };
             queue!(
                 self.stdout,
@@ -312,36 +315,30 @@ impl PanelManager {
         )?;
 
         if let Mode::Search { input } = &self.mode {
-            queue!(
-                self.stdout,
-                style::PrintStyledContent("Search:".bold().dark_green().reverse()),
-                style::PrintStyledContent(format!(" {}", input.get()).bold().red()),
-            )?;
-            return Ok(());
+            self.stdout
+                .queue(PrintStyledContent("Search".bold().dark_green().reverse()))?
+                .queue(Print(" "))?;
+            input.print(&mut self.stdout, style::Color::Red)?;
+            return self.stdout.flush();
         }
         if let Mode::Rename { input } = &self.mode {
-            queue!(
-                self.stdout,
-                style::PrintStyledContent("Rename:".bold().dark_green().reverse()),
-                style::PrintStyledContent(format!(" {}", input.get()).bold().yellow()),
-            )?;
-            return Ok(());
+            self.stdout
+                .queue(PrintStyledContent("Rename:".bold().dark_green().reverse()))?
+                .queue(Print(" "))?;
+            input.print(&mut self.stdout, style::Color::Yellow)?;
+            return self.stdout.flush();
         }
         if let Mode::CreateItem { input, is_dir } = &self.mode {
-            let (prompt, item) = if *is_dir {
-                (
-                    "Make Directory:",
-                    format!(" {}", input.get()).dark_green().bold(),
-                )
+            let prompt = if *is_dir { "Make Directory:" } else { "Touch:" };
+            self.stdout
+                .queue(PrintStyledContent(prompt.bold().dark_green().reverse()))?
+                .queue(Print(" "))?;
+            if *is_dir {
+                input.print(&mut self.stdout, style::Color::DarkGreen)?;
             } else {
-                ("Touch:", format!(" {}", input.get()).grey())
-            };
-            queue!(
-                self.stdout,
-                style::PrintStyledContent(prompt.bold().dark_green().reverse()),
-                style::PrintStyledContent(item),
-            )?;
-            return Ok(());
+                input.print(&mut self.stdout, style::Color::Grey)?;
+            }
+            return self.stdout.flush();
         }
         if let Some(selection) = self.center.panel().selected() {
             let path = selection.path();
