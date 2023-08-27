@@ -2,7 +2,7 @@ use std::{fs::OpenOptions, os::unix::prelude::MetadataExt};
 
 use crossterm::{
     event::{Event, EventStream, KeyCode},
-    style::{ContentStyle, PrintStyledContent},
+    style::PrintStyledContent,
 };
 use futures::{FutureExt, StreamExt};
 use log::{debug, error, info, trace};
