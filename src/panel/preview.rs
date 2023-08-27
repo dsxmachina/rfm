@@ -89,7 +89,7 @@ impl Draw for FilePreview {
                     }
                     queue!(stdout, ResetColor)?;
                     // Reset everything else
-                    for y in cy..height {
+                    for y in cy..y_range.end {
                         for x in 0..width {
                             let cx = x_range.start.saturating_add(x).saturating_add(1);
                             queue!(stdout, cursor::MoveTo(cx, y), Print(" "),)?;
@@ -107,9 +107,6 @@ impl Draw for FilePreview {
                         }
                     }
                 }
-
-                // let density =
-                //     "$@B%8&WM#*oahkbdpqwmZO0QLCJUYXzcvunxrjft/\\|()1{}[]?-_+~<>i!lI;:,\"^`\'. ";
             }
             Preview::Text { lines } => {
                 // Print preview
