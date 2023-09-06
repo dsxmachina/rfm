@@ -1007,7 +1007,7 @@ impl PanelManager {
                             self.redraw_footer();
                         }
                         key_code => {
-                            input.update(key_code);
+                            input.update(key_code, key_event.modifiers);
                         }
                     }
                 }
@@ -1021,7 +1021,7 @@ impl PanelManager {
                         self.redraw_center();
                         self.redraw_right();
                     } else {
-                        input.update(key_event.code);
+                        input.update(key_event.code, key_event.modifiers);
                         self.center
                             .panel_mut()
                             .update_search(input.get().to_string());
@@ -1044,7 +1044,7 @@ impl PanelManager {
                         self.right.reload();
                         self.redraw_panels();
                     } else {
-                        input.update(key_event.code);
+                        input.update(key_event.code, key_event.modifiers);
                         self.redraw_center();
                     }
                 }

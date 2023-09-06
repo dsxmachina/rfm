@@ -1,7 +1,7 @@
 use std::io::Stdout;
 
 use crossterm::{
-    event::KeyCode,
+    event::{KeyCode, KeyModifiers},
     style::{Color, PrintStyledContent, Stylize},
     QueueableCommand,
 };
@@ -25,18 +25,23 @@ impl Input {
     pub fn from_str<S: AsRef<str>>(string: S) -> Self {
         Self {
             input: string.as_ref().to_owned(),
-            cursor: 0,
+            cursor: string.as_ref().len(),
         }
     }
 
     /// Updates the input field
-    pub fn update(&mut self, key_code: KeyCode) {
+    pub fn update(&mut self, key_code: KeyCode, modifiers: KeyModifiers) {
         match key_code {
             KeyCode::Char(c) => {
-                if self.cursor == self.input.len() {
-                    self.input.push(c.to_ascii_lowercase());
+                let insert_char = if modifiers.contains(KeyModifiers::SHIFT) {
+                    c.to_ascii_uppercase()
                 } else {
-                    self.input.insert(self.cursor, c);
+                    c.to_ascii_lowercase()
+                };
+                if self.cursor == self.input.len() {
+                    self.input.push(insert_char);
+                } else {
+                    self.input.insert(self.cursor, insert_char);
                 }
                 self.cursor += 1;
             }
