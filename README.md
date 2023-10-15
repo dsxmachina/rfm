@@ -190,3 +190,16 @@ Another thing that I found unintuitive is the seperation between console command
 In my opinion, all the standard features should be accessible in the same way to reduce the overall mental load
 (e.g. if you want to create a directory in ranger - which is a common task if you work with a file-manager - you have to enter console mode by hitting ":" and then type
 "mkdir"; but functions like searching, movement and jumping around are accessible by just typing into the application).
+
+## Features
+
+A list of features that are planned to be implemented:
+
+- [X] Basic Preview Engine for images without adding extra dependencies
+- [X] Basic shell operations (move, delete, rename, touch, mkdir) on files and directories
+- [ ] Multiple Tabs with separate histories but a shared clipboard to move files around
+- [X] Easy "cd" mode with smart autocompletion
+- [X] Searchable panels + highlight items matching search patterns
+- [ ] Syntax highlighting in text previews
+- [ ] Bulkrename with smart security checks
+- [ ] Undo-Stack, that can undo every operation of the file-manager (even delete and other shell operations)
