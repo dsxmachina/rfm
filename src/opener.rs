@@ -39,12 +39,16 @@ pub struct Application {
 impl Application {
     pub fn open<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         info!("Opening '{}' with '{}'", path.as_ref().display(), self.name);
+        if self.terminal {
+            stdout().queue(terminal::EnableLineWrap)?.flush()?;
+        }
         let mut handle = Command::new(&self.name)
             .args(&self.args)
             .arg(path.as_ref())
             .spawn()?;
         if self.terminal {
             handle.wait()?;
+            stdout().queue(terminal::DisableLineWrap)?.flush()?;
         }
         Ok(())
     }
