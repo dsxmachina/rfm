@@ -23,12 +23,12 @@ use crate::{commands::Move, content::PanelCache};
 
 mod console;
 mod directory;
+mod input;
 pub mod manager;
 mod preview;
-mod input;
 
 pub use directory::{DirElem, DirPanel};
-pub use preview::{FilePreview, Preview, PreviewPanel};
+pub use preview::{FilePreview, PreviewPanel};
 
 /// Basic trait that lets us draw something on the terminal in a specified range.
 pub trait Draw {
