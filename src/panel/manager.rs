@@ -11,7 +11,7 @@ use time::OffsetDateTime;
 use users::{get_group_by_gid, get_user_by_uid};
 
 use crate::{
-    commands::{Command, CommandParser},
+    commands::{CloseCmd, Command, CommandParser},
     logger::LogBuffer,
     opener::OpenEngine,
     util::{copy_item, file_size_str, get_destination, move_item},
@@ -725,7 +725,7 @@ impl PanelManager {
         }
     }
 
-    pub async fn run(mut self) -> Result<PathBuf> {
+    pub async fn run(mut self) -> Result<CloseCmd> {
         // Initial draw
         self.redraw_everything();
         self.draw()?;
@@ -800,7 +800,10 @@ impl PanelManager {
             .queue(cursor::MoveTo(0, 0))?
             .queue(cursor::Show)?
             .flush()?;
-        Ok(self.center.panel().path().to_path_buf())
+
+        Ok(CloseCmd::QuitWithPath {
+            path: self.center.panel().path().to_path_buf(),
+        })
     }
 
     /// Handles the terminal events.

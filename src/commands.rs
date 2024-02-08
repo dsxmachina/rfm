@@ -115,6 +115,7 @@ pub enum Move {
     JumpPrevious,
 }
 
+/// Set of commands that the filemanager should perform during its runtime
 #[derive(Debug, Clone)]
 pub enum Command {
     Move(Move),
@@ -135,6 +136,12 @@ pub enum Command {
     Mark,
     Quit,
     None,
+}
+
+/// Set of commands that the filemanager should perform just before closing
+pub enum CloseCmd {
+    QuitWithPath { path: PathBuf },
+    Quit,
 }
 
 /// Takes the incoming key-events, and returns the corresponding command.

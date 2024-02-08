@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 use clap::Parser;
-use commands::CommandParser;
+use commands::{CloseCmd, CommandParser};
 use content::PanelCache;
 use crossterm::{
     cursor,
@@ -71,6 +71,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             eprintln!("{summary}: {body}");
         }
     }));
+
+    // Remember starting path
+    let starting_path = std::env::current_dir()?;
 
     // Initialize logger
     let logger = LogBuffer::default()
@@ -187,7 +190,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     disable_raw_mode()?;
 
     match panel_result {
-        Ok(Ok(path)) => {
+        Ok(Ok(close_cmd)) => {
             if let Some(choosedir) = args.choosedir {
                 if !choosedir.exists() {
                     eprintln!("Error: {} does not exist!", choosedir.display());
@@ -195,6 +198,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     eprintln!("Error: {} is not a file!", choosedir.display());
                 }
                 if choosedir.exists() && choosedir.is_file() {
+                    let path = match close_cmd {
+                        CloseCmd::QuitWithPath { path } => path,
+                        CloseCmd::Quit => starting_path,
+                    };
                     // Write output to file
                     let mut file = OpenOptions::new()
                         .write(true)
