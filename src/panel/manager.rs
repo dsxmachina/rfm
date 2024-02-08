@@ -593,6 +593,11 @@ impl PanelManager {
                 // "Freeze" the panel and deactivate the watchers while the open function is blocked.
                 info!("Opening '{}'", selected.display());
                 self.center.freeze();
+
+                // Change working directory so that child processes gets spawned from the currently active directory.
+                if let Err(e) = std::env::set_current_dir(self.center.panel().path()) {
+                    error!("Failed to set working-directory for process: {e}");
+                }
                 if let Err(e) = self.opener.open(selected) {
                     /* failed to open selected */
                     error!("Opening failed: {e}");
