@@ -10,6 +10,12 @@
 #    |              keys
 #    |
 # Name of the command
+#
+# You can specify modifiers for single-key patterns, by using the prefixes
+# ctrl-X (for control-key + X)
+# alt-X  (for alt-key     + X)
+# meta-X (for meta-key    + X)
+# Where X can be any key you like ofc.
 
 [general]
 search        = [ "/", "search", "f" ]
