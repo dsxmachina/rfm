@@ -1,6 +1,6 @@
 [package]
 name = "rfm"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Christian Hammermeister <christian.hammermeister@protonmail.com>"]
 description = "A super fast file-manager written in rust"
@@ -10,7 +10,6 @@ description = "A super fast file-manager written in rust"
 cached = "0.42.0"
 clap = {version = "4.1.6", features = ["derive"]}
 crossterm = { version = "0.26.0", features = ["event-stream"] }
-#fasthash = "0.4.0"
 fs_extra = "1.3.0"
 futures = "0.3.26"
 futures-timer = "3.0.2"
