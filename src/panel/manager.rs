@@ -730,7 +730,7 @@ impl PanelManager {
         self.redraw_everything();
         self.draw()?;
 
-        loop {
+        let close_cmd = loop {
             let event_reader = self.event_reader.next().fuse();
             tokio::select! {
                 // Check incoming new logs
@@ -741,7 +741,7 @@ impl PanelManager {
                 result = self.dir_rx.recv() => {
                     // Shutdown if sender has been dropped
                     if result.is_none() {
-                        break;
+                        break CloseCmd::QuitErr { error: "DirPanel receiver has been dropped" };
                     }
                     let (panel, state) = result.unwrap();
 
@@ -768,7 +768,7 @@ impl PanelManager {
                 result = self.prev_rx.recv() => {
                     // Shutdown if sender has been dropped
                     if result.is_none() {
-                        break;
+                        break CloseCmd::QuitErr { error: "Preview receiver has been dropped" };
                     }
                     let (panel, state) = result.unwrap();
 
@@ -783,17 +783,17 @@ impl PanelManager {
                     // Shutdown if reader has been dropped
                     match result {
                         Some(event) => {
-                            if self.handle_event(event?)? {
-                                break;
+                            if let Some(close_cmd) = self.handle_event(event?)? {
+                                break close_cmd;
                             }
                         }
-                        None => break,
+                        None => break CloseCmd::QuitErr { error: "event-reader has been dropped" },
                     }
                 }
             }
             // Always redraw what needs to be redrawn
             self.draw()?;
-        }
+        };
         // Cleanup after leaving this function
         self.stdout
             .queue(Clear(ClearType::All))?
@@ -801,15 +801,13 @@ impl PanelManager {
             .queue(cursor::Show)?
             .flush()?;
 
-        Ok(CloseCmd::QuitWithPath {
-            path: self.center.panel().path().to_path_buf(),
-        })
+        Ok(close_cmd)
     }
 
     /// Handles the terminal events.
     ///
     /// Returns Ok(true) if the application needs to shut down.
-    fn handle_event(&mut self, event: Event) -> Result<bool> {
+    fn handle_event(&mut self, event: Event) -> Result<Option<CloseCmd>> {
         if let Event::Key(key_event) = event {
             // If we hit escape - go back to normal mode.
             if let KeyCode::Esc = key_event.code {
@@ -947,7 +945,14 @@ impl PanelManager {
                             self.right.reload();
                             self.redraw_panels();
                         }
-                        Command::Quit => return Ok(true),
+                        Command::Quit => {
+                            return Ok(Some(CloseCmd::QuitWithPath {
+                                path: self.center.panel().path().to_path_buf(),
+                            }));
+                        }
+                        Command::QuitWithoutPath => {
+                            return Ok(Some(CloseCmd::Quit));
+                        }
                         Command::None => self.redraw_footer(),
                     }
                 }
@@ -1057,6 +1062,6 @@ impl PanelManager {
             self.layout = MillerColumns::from_size((sx, sy));
             self.redraw_everything();
         }
-        Ok(false)
+        Ok(None)
     }
 }

@@ -83,6 +83,7 @@ struct General {
     toggle_hidden: Vec<String>,
     toggle_log: Vec<String>,
     quit: Vec<String>,
+    // quit_no_cd: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -135,12 +136,14 @@ pub enum Command {
     Paste { overwrite: bool },
     Mark,
     Quit,
+    QuitWithoutPath,
     None,
 }
 
 /// Set of commands that the filemanager should perform just before closing
 pub enum CloseCmd {
     QuitWithPath { path: PathBuf },
+    QuitErr { error: &'static str },
     Quit,
 }
 

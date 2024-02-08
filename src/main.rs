@@ -43,6 +43,18 @@ struct Args {
     choosedir: Option<PathBuf>,
 }
 
+const ERROR_MSG: &str = "\
++------------------------------------------------------------------+
+| Encountered an unexpected error. This is a bug!                  |
+|                                                                  |
+| If you want to help me out, please open an issue on              |
+|                                                                  |
+| https://github.com/dsxmachina/rfm/issues                         |
+|                                                                  |
+| and include the error message below.                             |
++------------------------------------------------------------------+
+";
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
@@ -191,6 +203,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     match panel_result {
         Ok(Ok(close_cmd)) => {
+            if let CloseCmd::QuitErr { error } = &close_cmd {
+                eprintln!("{}", ERROR_MSG);
+                eprintln!("{error}");
+                return Ok(());
+            }
             if let Some(choosedir) = args.choosedir {
                 if !choosedir.exists() {
                     eprintln!("Error: {} does not exist!", choosedir.display());
@@ -200,7 +217,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 if choosedir.exists() && choosedir.is_file() {
                     let path = match close_cmd {
                         CloseCmd::QuitWithPath { path } => path,
-                        CloseCmd::Quit => starting_path,
+                        _ => starting_path,
                     };
                     // Write output to file
                     let mut file = OpenOptions::new()
@@ -210,13 +227,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
         }
-        Ok(Err(e)) => eprintln!("{e}"),
-        Err(e) => eprintln!("Error in panel-task: {e}"),
+        Ok(Err(e)) => {
+            eprintln!("{}", ERROR_MSG);
+            eprintln!("PanelManager returned an error: {e}");
+        }
+        Err(e) => {
+            eprintln!("{}", ERROR_MSG);
+            eprintln!("PanelManager task encountered an error: {e}")
+        }
     }
     if let Err(e) = dir_mngr_result {
+        eprintln!("{}", ERROR_MSG);
         eprintln!("Error in dir-mngr-task: {e}");
     }
     if let Err(e) = prev_mngr_result {
+        eprintln!("{}", ERROR_MSG);
         eprintln!("Error in preview-mngr-task: {e}");
     }
     Ok(())
