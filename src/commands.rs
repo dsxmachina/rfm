@@ -83,7 +83,7 @@ struct General {
     toggle_hidden: Vec<String>,
     toggle_log: Vec<String>,
     quit: Vec<String>,
-    // quit_no_cd: Option<Vec<String>>,
+    quit_no_cd: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -166,10 +166,13 @@ impl CommandParser {
         parser.insert(config.general.mark, Command::Mark);
         parser.insert(config.general.next, Command::Next);
         parser.insert(config.general.previous, Command::Previous);
-        parser.insert(config.general.quit, Command::Quit);
         parser.insert(config.general.toggle_hidden, Command::ToggleHidden);
         parser.insert(config.general.toggle_log, Command::ToggleLog);
         parser.insert(config.general.view_trash, Command::ViewTrash);
+        parser.insert(config.general.quit, Command::Quit);
+        if let Some(quit_cmd) = config.general.quit_no_cd {
+            parser.insert(quit_cmd, Command::QuitWithoutPath);
+        }
 
         // Movement commands
         parser.insert(config.movement.up, Command::Move(Move::Up));
@@ -269,6 +272,30 @@ impl CommandParser {
                     KeyEvent::new(
                         KeyCode::Char(key.chars().next().unwrap()),
                         KeyModifiers::CONTROL,
+                    ),
+                    cmd.clone(),
+                );
+            } else if b.starts_with("alt-") {
+                let (_, key) = b.split_at(4);
+                if key.is_empty() {
+                    continue;
+                }
+                self.mod_commands.insert(
+                    KeyEvent::new(
+                        KeyCode::Char(key.chars().next().unwrap()),
+                        KeyModifiers::ALT,
+                    ),
+                    cmd.clone(),
+                );
+            } else if b.starts_with("meta-") {
+                let (_, key) = b.split_at(5);
+                if key.is_empty() {
+                    continue;
+                }
+                self.mod_commands.insert(
+                    KeyEvent::new(
+                        KeyCode::Char(key.chars().next().unwrap()),
+                        KeyModifiers::META,
                     ),
                     cmd.clone(),
                 );

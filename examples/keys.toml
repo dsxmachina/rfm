@@ -20,6 +20,8 @@ view_trash    = [ "gT" ]
 toggle_hidden = [ "zh" ]
 toggle_log    = [ "devlog" ]
 quit          = [ "q", "Q", "exit" ]
+# Use this, if you want to quit without changing directories if --choose-dir is specified:
+# quit_no_cd    = [ "alt+q" ]
 
 [movement]
 up                 = [ "k" ]
