@@ -151,6 +151,9 @@ impl PanelManager {
         // select the correct directory for the left panel
         left.panel_mut().select_path(center.panel().path());
 
+        // TODO: If the user has multiple disks, the temp-dir may be on another disk,
+        // so deleting would effectively be a copy - which is not what we want here.
+        // Add a mechanism to check, if the file that should get deleted is on the same disk or not
         let trash_dir = tempfile::tempdir()?;
         debug!("Using {} as temporary trash", trash_dir.path().display());
 
