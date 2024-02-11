@@ -15,6 +15,7 @@ use crossterm::{
     Result,
 };
 use image::{DynamicImage, GenericImageView};
+use log::info;
 
 #[derive(Debug, Clone)]
 pub enum Preview {
@@ -111,20 +112,38 @@ impl Draw for FilePreview {
             Preview::Text { lines } => {
                 // Print preview
                 let mut idx = 0;
+                // Clear entire panel
+                for x in x_range.start + 1..x_range.end {
+                    for y in y_range.clone() {
+                        queue!(stdout, cursor::MoveTo(x, y), Print(" "),)?;
+                    }
+                }
                 for line in lines.iter().take(height as usize) {
                     let cy = idx + y_range.start;
-                    let line = line
-                        // .replace('\r', "")
-                        .exact_width(width.saturating_sub(1) as usize);
-                    queue!(stdout, cursor::MoveTo(x_range.start + 1, cy), Print(" "),)?;
-                    for (i, c) in line.escape_default().enumerate() {
-                        queue!(
-                            stdout,
-                            cursor::MoveTo(x_range.start + 2 + i as u16, cy),
-                            // Print(" "),
-                            Print(c),
-                        )?;
-                    }
+                    // let line = line
+                    //     // .replace('\r', "")
+                    //     .exact_width(width.saturating_sub(1) as usize);
+                    queue!(
+                        stdout,
+                        cursor::MoveTo(x_range.start + 1, cy),
+                        Print(" "),
+                        cursor::MoveTo(x_range.start + 2, cy),
+                        Print(line)
+                    )?;
+                    // for i in (line.len() as u16)..x_range.end {
+                    //     queue!(
+                    //         stdout,
+                    //         cursor::MoveTo(x_range.start + 2 + i as u16, cy),
+                    //         Print(" "),
+                    //     )?;
+                    // }
+                    // for (i, c) in line.escape_default().enumerate() {
+                    //     queue!(
+                    //         stdout,
+                    //         cursor::MoveTo(x_range.start + 2 + i as u16, cy),
+                    //         Print(c),
+                    //     )?;
+                    // }
                     idx += 1;
                 }
                 for cy in idx + 1..y_range.end {
@@ -188,16 +207,33 @@ impl FilePreview {
             // }
             _ => {
                 // Simple method
-                if let Ok(file) = File::open(&path) {
-                    let lines = io::BufReader::new(file)
-                        .lines()
-                        .take(128)
-                        .flatten()
-                        .collect();
-                    Preview::Text { lines }
-                } else {
-                    Preview::Text { lines: Vec::new() }
-                }
+                // if let Ok(file) = File::open(&path) {
+                //     let lines = io::BufReader::new(file)
+                //         .lines()
+                //         .take(128)
+                //         .flatten()
+                //         .collect();
+                //     Preview::Text { lines }
+                // } else {
+                //     Preview::Text { lines: Vec::new() }
+                // }
+                let lines = match std::process::Command::new("bat")
+                    .arg("--color=always")
+                    .arg(&path)
+                    .output()
+                {
+                    Ok(output) => output.stdout.lines().take(128).flatten().collect(),
+                    Err(e) => {
+                        vec![
+                            "Error: Could not run mediainfo".to_string(),
+                            e.to_string(),
+                            "".to_string(),
+                            "You must have mediainfo installed to get a preview for this file-type.".to_string(),
+                        ]
+                    }
+                };
+                // info!("printing text: {}", lines[0]);
+                Preview::Text { lines }
             }
         };
 
