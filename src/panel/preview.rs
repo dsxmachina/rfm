@@ -15,7 +15,6 @@ use crossterm::{
     Result,
 };
 use image::{DynamicImage, GenericImageView};
-use log::info;
 
 #[derive(Debug, Clone)]
 pub enum Preview {
@@ -219,16 +218,19 @@ impl FilePreview {
                 // }
                 let lines = match std::process::Command::new("bat")
                     .arg("--color=always")
+                    .arg("--style=plain")
+                    .arg("--line-range=0:128")
                     .arg(&path)
                     .output()
                 {
                     Ok(output) => output.stdout.lines().take(128).flatten().collect(),
                     Err(e) => {
                         vec![
-                            "Error: Could not run mediainfo".to_string(),
+                            "Error: Could not run bat".to_string(),
                             e.to_string(),
                             "".to_string(),
-                            "You must have mediainfo installed to get a preview for this file-type.".to_string(),
+                            "You must have bat installed to get a preview for this file-type."
+                                .to_string(),
                         ]
                     }
                 };
