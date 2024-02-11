@@ -122,7 +122,10 @@ pub fn xdg_config_home() -> Result<PathBuf, Box<dyn Error>> {
         Ok(xdg_config) => Ok(PathBuf::from(xdg_config)),
         Err(_) => match std::env::var("HOME") {
             Ok(home) => Ok(PathBuf::from(home).join(".config")),
-            Err(_) => Err("Neither the XDG_CONFIG_HOME nor the HOME environment variable was set.".to_string())?,
+            Err(_) => Err(
+                "Neither the XDG_CONFIG_HOME nor the HOME environment variable was set."
+                    .to_string(),
+            )?,
         },
     }
 }
