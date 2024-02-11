@@ -3,6 +3,7 @@ use std::{
     io::{self, BufRead, Stdout},
     ops::Range,
     path::{Path, PathBuf},
+    process::Stdio,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -194,16 +195,23 @@ impl FilePreview {
                 };
                 Preview::Text { lines }
             }
-            // "tar" | "tar.gz" | ".gz" => {
-            //     let output = std::process::Command::new("tar")
-            //         .arg("--list")
-            //         .arg("-f")
-            //         .arg(&path)
-            //         .output()
-            //         .expect("failed to run tar");
-            //     let lines: Vec<String> = output.stdout.lines().take(128).flatten().collect();
-            //     Preview::Text { lines }
-            // }
+            "tar" | "tar.gz" | "gz" => {
+                let tar = std::process::Command::new("tar")
+                    .arg("--list")
+                    .arg("-f")
+                    .arg(&path)
+                    .stdout(Stdio::piped())
+                    .spawn()
+                    .expect("failed to run tar");
+                let tar_stdout = tar.stdout.expect("Failed to connect to stdout of 'tar'");
+                let output = std::process::Command::new("head")
+                    .arg("-64")
+                    .stdin(Stdio::from(tar_stdout))
+                    .output()
+                    .expect("Failed to open 'head'");
+                let lines: Vec<String> = output.stdout.lines().take(64).flatten().collect();
+                Preview::Text { lines }
+            }
             _ => {
                 // Simple method
                 // if let Ok(file) = File::open(&path) {
