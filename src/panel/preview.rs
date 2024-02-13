@@ -196,34 +196,18 @@ impl FilePreview {
                 Preview::Text { lines }
             }
             "tar" | "tar.gz" | "gz" => {
-                let tar = std::process::Command::new("tar")
-                    .arg("--list")
-                    .arg("-f")
-                    .arg(&path)
-                    .stdout(Stdio::piped())
-                    .spawn()
-                    .expect("failed to run tar");
-                let tar_stdout = tar.stdout.expect("Failed to connect to stdout of 'tar'");
-                let output = std::process::Command::new("head")
-                    .arg("-64")
-                    .stdin(Stdio::from(tar_stdout))
-                    .output()
-                    .expect("Failed to open 'head'");
-                let lines: Vec<String> = output.stdout.lines().take(64).flatten().collect();
+                let lines = match tar_preview(&path) {
+                    Ok(l) => l,
+                    Err(e) => vec![
+                        format!("Failed to call 'tar --list -f {}'", path.display()),
+                        "".to_string(),
+                        format!("{}", e),
+                    ],
+                };
                 Preview::Text { lines }
             }
             _ => {
-                // Simple method
-                // if let Ok(file) = File::open(&path) {
-                //     let lines = io::BufReader::new(file)
-                //         .lines()
-                //         .take(128)
-                //         .flatten()
-                //         .collect();
-                //     Preview::Text { lines }
-                // } else {
-                //     Preview::Text { lines: Vec::new() }
-                // }
+                // Use bat for preview generation (if present)
                 let lines = match std::process::Command::new("bat")
                     .arg("--color=always")
                     .arg("--style=plain")
@@ -232,14 +216,20 @@ impl FilePreview {
                     .output()
                 {
                     Ok(output) => output.stdout.lines().take(128).flatten().collect(),
-                    Err(e) => {
-                        vec![
-                            "Error: Could not run bat".to_string(),
-                            e.to_string(),
-                            "".to_string(),
-                            "You must have bat installed to get a preview for this file-type."
-                                .to_string(),
-                        ]
+                    Err(_e) => {
+                        // Otherwise default to just reading the file
+                        match File::open(&path) {
+                            Ok(file) => io::BufReader::new(file)
+                                .lines()
+                                .take(128)
+                                .flatten()
+                                .collect(),
+                            Err(e) => vec![
+                                format!("Failed to open '{}'", path.display()),
+                                "".to_string(),
+                                format!("{}", e),
+                            ],
+                        }
                     }
                 };
                 // info!("printing text: {}", lines[0]);
@@ -252,6 +242,26 @@ impl FilePreview {
             modified,
             preview,
         }
+    }
+}
+
+// Helper function to generate a preview from tar output
+fn tar_preview(path: &Path) -> std::io::Result<Vec<String>> {
+    let tar = std::process::Command::new("tar")
+        .arg("--list")
+        .arg("-f")
+        .arg(path)
+        .stdout(Stdio::piped())
+        .spawn()?;
+    match tar.stdout {
+        Some(tar_stdout) => {
+            let output = std::process::Command::new("head")
+                .arg("-64")
+                .stdin(Stdio::from(tar_stdout))
+                .output()?;
+            Ok(output.stdout.lines().take(64).flatten().collect())
+        }
+        None => Ok(vec![format!("Failed to fetch stdout from 'tar --list'")]),
     }
 }
 
