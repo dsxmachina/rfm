@@ -459,11 +459,7 @@ impl DirPanel {
     pub fn finish_search(&mut self, pattern: &str) {
         let pat = pattern.to_lowercase();
         for elem in self.elements.iter_mut() {
-            if elem.name_lowercase().contains(&pat) {
-                elem.is_marked = true;
-            } else {
-                elem.is_marked = false;
-            }
+            elem.is_marked = elem.name_lowercase().contains(&pat);
         }
         self.search = None;
     }

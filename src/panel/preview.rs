@@ -7,8 +7,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::util::ExactWidth;
-
 use super::{BasePanel, DirPanel, Draw, PanelContent};
 use crossterm::{
     cursor, queue,

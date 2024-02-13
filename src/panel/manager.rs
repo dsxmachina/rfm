@@ -121,6 +121,7 @@ pub struct PanelManager {
 }
 
 impl PanelManager {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         parser: CommandParser,
         directory_cache: PanelCache<DirPanel>,
