@@ -200,6 +200,6 @@ A list of features that are planned to be implemented:
 - [ ] Multiple Tabs with separate histories but a shared clipboard to move files around
 - [X] Easy "cd" mode with smart autocompletion
 - [X] Searchable panels + highlight items matching search patterns
-- [ ] Syntax highlighting in text previews
+- [x] Syntax highlighting in text previews
 - [ ] Bulkrename with smart security checks
 - [ ] Undo-Stack, that can undo every operation of the file-manager (even delete and other shell operations)
