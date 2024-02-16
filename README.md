@@ -203,3 +203,4 @@ A list of features that are planned to be implemented:
 - [x] Syntax highlighting in text previews
 - [ ] Bulkrename with smart security checks
 - [ ] Undo-Stack, that can undo every operation of the file-manager (even delete and other shell operations)
+- [ ] config for custom shell commands
