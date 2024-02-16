@@ -5,7 +5,7 @@ use crossterm::{
     style::{Color, PrintStyledContent, Stylize},
     QueueableCommand,
 };
-use log::info;
+use log::debug;
 
 pub struct Input {
     input: String,
@@ -29,8 +29,46 @@ impl Input {
         }
     }
 
+    /// Helper function to safely decrease the cursor by one.
+    ///
+    /// Checks if the cursor lies on a char-boundary
+    fn decrease_cursor(&mut self) {
+        self.cursor = self.cursor.saturating_sub(1);
+        // A character can be up to four bytes - so we have to decrease the
+        // cursor up to 4 times (and we increased it by one already)
+        for _ in 0..3 {
+            if !self.input.is_char_boundary(self.cursor) {
+                self.cursor = self.cursor.saturating_sub(1);
+            }
+        }
+        assert!(self.input.is_char_boundary(self.cursor));
+    }
+
+    /// Helper function to safely increase the cursor by one.
+    ///
+    /// Checks if the cursor lies on a char-boundary
+    fn increase_cursor(&mut self) {
+        self.cursor += 1;
+        // A character can be up to four bytes - so we have to increase the
+        // cursor up to 4 times (and we increased it by one already)
+        for _ in 0..3 {
+            if !self.input.is_char_boundary(self.cursor) {
+                self.cursor += 1;
+            }
+        }
+        // Saturate cursor at input length
+        self.cursor = self.cursor.min(self.input.len());
+        assert!(self.input.is_char_boundary(self.cursor));
+    }
+
     /// Updates the input field
     pub fn update(&mut self, key_code: KeyCode, modifiers: KeyModifiers) {
+        debug!(
+            "input-update: {}, input-len: {}, cursor: {}",
+            self.input,
+            self.input.len(),
+            self.cursor
+        );
         match key_code {
             KeyCode::Char(c) => {
                 let insert_char = if modifiers.contains(KeyModifiers::SHIFT) {
@@ -43,15 +81,15 @@ impl Input {
                 } else {
                     self.input.insert(self.cursor, insert_char);
                 }
-                self.cursor += 1;
+                self.increase_cursor();
             }
             KeyCode::Backspace => {
+                self.decrease_cursor();
                 if self.cursor == self.input.len() {
                     self.input.pop();
                 } else if self.cursor > 0 {
-                    self.input.remove(self.cursor.saturating_sub(1));
+                    self.input.remove(self.cursor);
                 }
-                self.cursor = self.cursor.saturating_sub(1);
             }
             KeyCode::Delete => {
                 if self.cursor < self.input.len() {
@@ -59,10 +97,10 @@ impl Input {
                 }
             }
             KeyCode::Left => {
-                self.cursor = self.cursor.saturating_sub(1);
+                self.decrease_cursor();
             }
             KeyCode::Right => {
-                self.cursor = self.cursor.saturating_add(1).min(self.input.len());
+                self.increase_cursor();
             }
             _ => (),
         }
@@ -77,12 +115,12 @@ impl Input {
     }
 
     pub fn print(&self, stdout: &mut Stdout, color: Color) -> crossterm::Result<()> {
-        let left: String = self.input.chars().take(self.cursor).collect();
-        let right: String = self.input.chars().skip(self.cursor).collect();
+        let (left, right) = self.input.as_str().split_at(self.cursor);
+        // let left: String = self.input.chars().take(self.cursor).collect();
+        // let right: String = self.input.chars().skip(self.cursor).collect();
 
         let first = right.chars().next().unwrap_or(' ');
         let remainder: String = right.chars().skip(1).collect();
-        info!("{left}|{first}|{remainder}");
 
         stdout
             .queue(PrintStyledContent(left.bold().with(color)))?
