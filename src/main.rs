@@ -11,7 +11,7 @@ use crossterm::{
     },
     QueueableCommand,
 };
-use log::{info, warn};
+use log::{error, info, warn};
 use logger::LogBuffer;
 use notify_rust::Notification;
 use opener::OpenEngine;
@@ -60,27 +60,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
     std::panic::set_hook(Box::new(|panic_info| {
-        let body = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
-            format!("panic occurred: {s:?}")
-        } else {
-            "panic occurred".to_string()
-        };
-        let summary = if let Some(location) = panic_info.location() {
-            format!(
-                "panic occurred in file '{}' at line {}",
-                location.file(),
-                location.line(),
-            )
-        } else {
-            "panic occurred somewhere".to_string()
-        };
+        error!("{panic_info}");
+        let output = format!("{panic_info}");
+        let summary = "panic occured";
         if Notification::new()
             .summary(&summary)
-            .body(&body)
+            .body(&output)
             .show()
             .is_err()
         {
-            eprintln!("{summary}: {body}");
+            warn!("failed to generate notification");
         }
     }));
 
@@ -182,7 +171,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         prev_rx,
         directory_tx,
         preview_tx,
-        logger,
+        logger.clone(),
         opener,
     )?;
     let panel_handle = tokio::spawn(panel_manager.run());
@@ -228,21 +217,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         }
         Ok(Err(e)) => {
-            eprintln!("{}", ERROR_MSG);
-            eprintln!("PanelManager returned an error: {e}");
+            error!("PanelManager returned an error: {e}");
         }
         Err(e) => {
-            eprintln!("{}", ERROR_MSG);
-            eprintln!("PanelManager task encountered an error: {e}")
+            error!("PanelManager-task: {e}")
         }
     }
     if let Err(e) = dir_mngr_result {
-        eprintln!("{}", ERROR_MSG);
-        eprintln!("Error in dir-mngr-task: {e}");
+        error!("dir-mngr-task: {e}");
     }
     if let Err(e) = prev_mngr_result {
+        error!("preview-mngr-task: {e}");
+    }
+    // Print all errors
+    let errors = logger.get_errors();
+    if !errors.is_empty() {
         eprintln!("{}", ERROR_MSG);
-        eprintln!("Error in preview-mngr-task: {e}");
+        eprintln!("Error:");
+    }
+    for e in errors {
+        eprintln!("{e}");
     }
     Ok(())
 }

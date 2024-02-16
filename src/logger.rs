@@ -39,6 +39,16 @@ impl LogBuffer {
         self.buffer.lock().clone()
     }
 
+    pub fn get_errors(&self) -> Vec<String> {
+        self.buffer
+            .lock()
+            .iter()
+            .filter(|(level, _)| *level == Level::Error)
+            .map(|(_, msg)| msg)
+            .cloned()
+            .collect()
+    }
+
     pub async fn update(&self) {
         self.notify.notified().await
     }
