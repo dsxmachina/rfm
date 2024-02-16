@@ -84,7 +84,7 @@ impl DirElem {
         self.normalize();
         // Prepare output
         let name_len = usize::from(max_len)
-            .saturating_sub(self.suffix.len())
+            .saturating_sub(self.suffix.chars().count())
             .saturating_sub(6);
         let name = self.name.exact_width(name_len);
 

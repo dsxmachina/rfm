@@ -26,7 +26,7 @@ pub trait ExactWidth: std::fmt::Display {
     fn exact_width(&self, len: usize) -> String {
         let mut out = format!("{:len$}", self);
         // We have to truncate the name
-        if out.len() > len {
+        if out.chars().count() > len {
             // FIX: If name_len does not lie on a char boundary,
             // the truncate function will panic
             if out.is_char_boundary(len) {
