@@ -7,6 +7,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use crate::util::truncate_with_color_codes;
+
 use super::{BasePanel, DirPanel, Draw, PanelContent};
 use crossterm::{
     cursor, queue,
@@ -118,6 +120,7 @@ impl Draw for FilePreview {
                 }
                 for line in lines.iter().take(height as usize) {
                     let cy = idx + y_range.start;
+                    let line = truncate_with_color_codes(line, width.saturating_sub(1) as usize);
                     // let line = line
                     //     // .replace('\r', "")
                     //     .exact_width(width.saturating_sub(1) as usize);
@@ -204,7 +207,9 @@ impl FilePreview {
                 };
                 Preview::Text { lines }
             }
-            _ => {
+            _ext => {
+                // TODO: Check if bat can highlight the extension
+
                 // Use bat for preview generation (if present)
                 let lines = match std::process::Command::new("bat")
                     .arg("--color=always")
@@ -213,7 +218,13 @@ impl FilePreview {
                     .arg(&path)
                     .output()
                 {
-                    Ok(output) => output.stdout.lines().take(128).flatten().collect(),
+                    Ok(output) => output
+                        .stdout
+                        .lines()
+                        .take(128)
+                        .flatten()
+                        .map(|l| l.replace('\r', "").replace('\n', ""))
+                        .collect(),
                     Err(_e) => {
                         // Otherwise default to just reading the file
                         match File::open(&path) {

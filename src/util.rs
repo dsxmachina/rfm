@@ -44,6 +44,55 @@ pub trait ExactWidth: std::fmt::Display {
     }
 }
 
+// lazy_static! {
+//     static ref RE: Regex = Regex::new("\x1B\\[[0-9;]*m").expect("Failed to compile regex");
+// }
+
+// /// Counts the actual characters in a string with ansi escape codes
+// pub fn count_actual_chars(input: &str) -> usize {
+//     let stripped_string = RE.replace_all(input, "");
+//     stripped_string.chars().count()
+// }
+pub fn truncate_with_color_codes(input: &str, limit: usize) -> String {
+    let mut result = String::new();
+    let mut char_count = 0;
+    let mut escape = false;
+    let mut codes = Vec::new();
+
+    for c in input.chars() {
+        if c == '\x1B' {
+            escape = true;
+        }
+
+        if escape {
+            if c == 'm' {
+                escape = false;
+                let code = &input[result.len()..result.len() + c.len_utf8()];
+                if code != "\x1B[0m" {
+                    // Not a reset code
+                    codes.push(code);
+                } else {
+                    codes.clear(); // Reset code clears the stack
+                }
+            }
+            result.push(c);
+        } else if char_count < limit {
+            result.push(c);
+            char_count += 1;
+        } else {
+            break; // Reached the limit
+        }
+    }
+
+    if char_count >= limit {
+        // Append a reset code if we have any codes in the stack to close them
+        if !codes.is_empty() {
+            result.push_str("\x1B[0m");
+        }
+    }
+    result
+}
+
 impl<T: std::fmt::Display> ExactWidth for T {}
 
 /// Calculates the destination path when we want to copy or move items from 'source' to 'destination'.
