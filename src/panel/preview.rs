@@ -182,120 +182,23 @@ impl FilePreview {
                     Preview::Image { img: None }
                 }
             }
-            ("audio", _) | ("video", _) => {
-                let lines = match std::process::Command::new("mediainfo").arg(&path).output() {
-                    Ok(output) => output.stdout.lines().take(128).flatten().collect(),
-                    Err(e) => {
-                        vec![
-                            "Error: Could not run mediainfo".to_string(),
-                            e.to_string(),
-                            "".to_string(),
-                            "You must have mediainfo installed to get a preview for this file-type.".to_string(),
-                        ]
-                    }
-                };
-                Preview::Text { lines }
-            }
-            ("application", "gzip") => {
-                let lines = match tar_preview(&path) {
-                    Ok(l) => l,
-                    Err(e) => vec![
-                        format!("Failed to call 'tar --list -f {}'", path.display()),
-                        e.to_string(),
-                        "".to_string(),
-                        "You must have tar installed to get a preview for this file-type."
-                            .to_string(),
-                    ],
-                };
-                Preview::Text { lines }
-            }
-            ("application", "octet-stream") => {
-                // Use bat for preview generation (if present)
-                let lines = match std::process::Command::new("bat")
-                    .arg("--color=always")
-                    .arg("--style=plain")
-                    .arg("--line-range=0:128")
-                    .arg("--show-all")
+            ("audio", _) | ("video", _) => cmd_to_preview(
+                "mediainfo",
+                std::process::Command::new("mediainfo")
                     .arg(&path)
                     .output()
-                {
-                    Ok(output) => output
-                        .stdout
-                        .lines()
-                        .take(128)
-                        .flatten()
-                        .map(|l| l.replace('\r', "").replace('\n', ""))
-                        .collect(),
-                    Err(_e) => {
-                        // Otherwise default to just reading the file
-                        match File::open(&path) {
-                            Ok(file) => io::BufReader::new(file)
-                                .lines()
-                                .take(128)
-                                .flatten()
-                                .collect(),
-                            Err(e) => vec![
-                                format!("Failed to open '{}'", path.display()),
-                                "".to_string(),
-                                format!("{}", e),
-                            ],
-                        }
-                    }
-                };
-                // info!("printing text: {}", lines[0]);
-                Preview::Text { lines }
-            }
-            ("application", _) => {
-                let lines = match std::process::Command::new("mediainfo").arg(&path).output() {
-                    Ok(output) => output.stdout.lines().take(128).flatten().collect(),
-                    Err(e) => {
-                        vec![
-                            "Error: Could not run mediainfo".to_string(),
-                            e.to_string(),
-                            "".to_string(),
-                            "You must have mediainfo installed to get a preview for this file-type.".to_string(),
-                        ]
-                    }
-                };
-                Preview::Text { lines }
-            }
-            _ext => {
-                // TODO: Check if bat can highlight the extension
-
-                // Use bat for preview generation (if present)
-                let lines = match std::process::Command::new("bat")
-                    .arg("--color=always")
-                    .arg("--style=plain")
-                    .arg("--line-range=0:128")
+                    .and_then(|o| o.stdout.lines().take(128).collect()),
+            ),
+            ("application", "gzip") => cmd_to_preview("tar", tar_list(&path)),
+            ("application", "octet-stream") => bat_preview(&path, true),
+            ("application", _) => cmd_to_preview(
+                "mediainfo",
+                std::process::Command::new("mediainfo")
                     .arg(&path)
                     .output()
-                {
-                    Ok(output) => output
-                        .stdout
-                        .lines()
-                        .take(128)
-                        .flatten()
-                        .map(|l| l.replace('\r', "").replace('\n', ""))
-                        .collect(),
-                    Err(_e) => {
-                        // Otherwise default to just reading the file
-                        match File::open(&path) {
-                            Ok(file) => io::BufReader::new(file)
-                                .lines()
-                                .take(128)
-                                .flatten()
-                                .collect(),
-                            Err(e) => vec![
-                                format!("Failed to open '{}'", path.display()),
-                                "".to_string(),
-                                format!("{}", e),
-                            ],
-                        }
-                    }
-                };
-                // info!("printing text: {}", lines[0]);
-                Preview::Text { lines }
-            }
+                    .and_then(|o| o.stdout.lines().take(128).collect()),
+            ),
+            _ext => bat_preview(&path, false),
         };
 
         FilePreview {
@@ -306,8 +209,60 @@ impl FilePreview {
     }
 }
 
+fn bat_preview<P: AsRef<Path>>(path: P, binary: bool) -> Preview {
+    // Use bat for preview generation (if present)
+    let mut cmd = std::process::Command::new("bat");
+    cmd.arg("--color=always")
+        .arg("--style=plain")
+        .arg("--line-range=0:128");
+
+    // If binary, use --show-all
+    if binary {
+        cmd.arg("--show-all");
+    }
+
+    let lines = match cmd.arg(path.as_ref()).output() {
+        Ok(output) => output
+            .stdout
+            .lines()
+            .take(128)
+            .flatten()
+            .map(|l| l.replace('\r', "").replace('\n', ""))
+            .collect(),
+        Err(_e) => {
+            // Otherwise default to just reading the file
+            match File::open(&path) {
+                Ok(file) => io::BufReader::new(file)
+                    .lines()
+                    .take(128)
+                    .flatten()
+                    .collect(),
+                Err(e) => vec![
+                    format!("Failed to open '{}'", path.as_ref().display()),
+                    "".to_string(),
+                    format!("{}", e),
+                ],
+            }
+        }
+    };
+    Preview::Text { lines }
+}
+
+fn cmd_to_preview(cmd_name: &'static str, result: std::io::Result<Vec<String>>) -> Preview {
+    let lines = match result {
+        Ok(l) => l,
+        Err(e) => vec![
+            format!("Error: Could not run {cmd_name}"),
+            e.to_string(),
+            "".to_string(),
+            format!("You must have {cmd_name} installed to get a preview for this file-type."),
+        ],
+    };
+    Preview::Text { lines }
+}
+
 // Helper function to generate a preview from tar output
-fn tar_preview(path: &Path) -> std::io::Result<Vec<String>> {
+fn tar_list(path: &Path) -> std::io::Result<Vec<String>> {
     let tar = std::process::Command::new("tar")
         .arg("--list")
         .arg("-f")
