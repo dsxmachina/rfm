@@ -19,7 +19,7 @@ use panel::manager::PanelManager;
 use std::{
     error::Error,
     fs::OpenOptions,
-    io::{stdout, Write},
+    io::{stdout, IsTerminal, Write},
     path::PathBuf,
 };
 use symbols::SymbolEngine;
@@ -57,6 +57,15 @@ const ERROR_MSG: &str = "\
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // Check if we run from a terminal
+    let mut stdout = stdout();
+    if !stdout.is_terminal() {
+        eprintln!("Error: Stdout handle does not refer to a terminal/tty");
+        eprintln!("");
+        eprintln!("Please note: The output of rfm can be neither piped nor redirected.");
+        std::process::exit(1);
+    }
+
     let args = Args::parse();
 
     std::panic::set_hook(Box::new(|panic_info| {
@@ -85,8 +94,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     enable_raw_mode()?;
 
-    // Initialize terminal
-    let mut stdout = stdout();
     stdout
         .queue(DisableMouseCapture)?
         .queue(DisableLineWrap)?
@@ -246,6 +253,5 @@ async fn main() -> Result<(), Box<dyn Error>> {
     for e in errors {
         eprintln!("{e}");
     }
-
     Ok(())
 }
