@@ -163,7 +163,6 @@ impl FilePreview {
         let extension = path
             .extension()
             .and_then(|s| s.to_str())
-            .map(|s| s.to_ascii_lowercase())
             .unwrap_or_default();
 
         let modified = path
@@ -172,8 +171,10 @@ impl FilePreview {
             .and_then(|m| m.modified().ok())
             .unwrap_or_else(SystemTime::now);
 
-        let preview = match extension.as_str() {
-            "png" | "bmp" | "jpg" | "jpeg" => {
+        let mime = mime_guess::from_ext(extension).first_or_text_plain();
+
+        let preview = match (mime.type_().as_str(), mime.subtype().as_str()) {
+            ("image", _) => {
                 if let Ok(img_bytes) = image::io::Reader::open(&path) {
                     let img = img_bytes.decode().ok();
                     Preview::Image { img }
@@ -181,8 +182,7 @@ impl FilePreview {
                     Preview::Image { img: None }
                 }
             }
-            "wav" | "aiff" | "au" | "flac" | "m4a" | "mp3" | "opus" | "mov" | "pdf" | "doc"
-            | "docx" | "ppt" | "pptx" | "xls" | "xlsx" | "zip" => {
+            ("audio", _) | ("video", _) => {
                 let lines = match std::process::Command::new("mediainfo").arg(&path).output() {
                     Ok(output) => output.stdout.lines().take(128).flatten().collect(),
                     Err(e) => {
@@ -196,14 +196,66 @@ impl FilePreview {
                 };
                 Preview::Text { lines }
             }
-            "tar" | "tar.gz" | "gz" => {
+            ("application", "gzip") => {
                 let lines = match tar_preview(&path) {
                     Ok(l) => l,
                     Err(e) => vec![
                         format!("Failed to call 'tar --list -f {}'", path.display()),
+                        e.to_string(),
                         "".to_string(),
-                        format!("{}", e),
+                        "You must have tar installed to get a preview for this file-type."
+                            .to_string(),
                     ],
+                };
+                Preview::Text { lines }
+            }
+            ("application", "octet-stream") => {
+                // Use bat for preview generation (if present)
+                let lines = match std::process::Command::new("bat")
+                    .arg("--color=always")
+                    .arg("--style=plain")
+                    .arg("--line-range=0:128")
+                    .arg("--show-all")
+                    .arg(&path)
+                    .output()
+                {
+                    Ok(output) => output
+                        .stdout
+                        .lines()
+                        .take(128)
+                        .flatten()
+                        .map(|l| l.replace('\r', "").replace('\n', ""))
+                        .collect(),
+                    Err(_e) => {
+                        // Otherwise default to just reading the file
+                        match File::open(&path) {
+                            Ok(file) => io::BufReader::new(file)
+                                .lines()
+                                .take(128)
+                                .flatten()
+                                .collect(),
+                            Err(e) => vec![
+                                format!("Failed to open '{}'", path.display()),
+                                "".to_string(),
+                                format!("{}", e),
+                            ],
+                        }
+                    }
+                };
+                // info!("printing text: {}", lines[0]);
+                Preview::Text { lines }
+            }
+            ("application", _) => {
+                let lines = match std::process::Command::new("mediainfo").arg(&path).output() {
+                    Ok(output) => output.stdout.lines().take(128).flatten().collect(),
+                    Err(e) => {
+                        vec![
+                            "Error: Could not run mediainfo".to_string(),
+                            e.to_string(),
+                            "".to_string(),
+                            "You must have mediainfo installed to get a preview for this file-type.".to_string(),
+                        ]
+                    }
                 };
                 Preview::Text { lines }
             }
