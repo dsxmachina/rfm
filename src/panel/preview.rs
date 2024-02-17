@@ -121,9 +121,6 @@ impl Draw for FilePreview {
                 for line in lines.iter().take(height as usize) {
                     let cy = idx + y_range.start;
                     let line = truncate_with_color_codes(line, width.saturating_sub(1) as usize);
-                    // let line = line
-                    //     // .replace('\r', "")
-                    //     .exact_width(width.saturating_sub(1) as usize);
                     queue!(
                         stdout,
                         cursor::MoveTo(x_range.start + 1, cy),
@@ -131,26 +128,7 @@ impl Draw for FilePreview {
                         cursor::MoveTo(x_range.start + 2, cy),
                         Print(line)
                     )?;
-                    // for i in (line.len() as u16)..x_range.end {
-                    //     queue!(
-                    //         stdout,
-                    //         cursor::MoveTo(x_range.start + 2 + i as u16, cy),
-                    //         Print(" "),
-                    //     )?;
-                    // }
-                    // for (i, c) in line.escape_default().enumerate() {
-                    //     queue!(
-                    //         stdout,
-                    //         cursor::MoveTo(x_range.start + 2 + i as u16, cy),
-                    //         Print(c),
-                    //     )?;
-                    // }
                     idx += 1;
-                }
-                for cy in idx + 1..y_range.end {
-                    for cx in x_range.start + 1..x_range.end {
-                        queue!(stdout, cursor::MoveTo(cx, cy), Print(" "),)?;
-                    }
                 }
             }
         }

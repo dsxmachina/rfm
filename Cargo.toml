@@ -1,6 +1,6 @@
 [package]
 name = "rfm"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2021"
 authors = ["Christian Hammermeister <christian.hammermeister@protonmail.com>"]
 description = "A super fast file-manager written in rust"
