@@ -161,6 +161,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 OpenEngine::with_config(open_config)
             }
             Err(e) => {
+                if Notification::new()
+                    .summary("Configuration Error")
+                    .body(&format!("{e}"))
+                    .show()
+                    .is_err()
+                {
+                    warn!("failed to generate notification");
+                }
                 warn!("Configuration error: {e}. Using default open engine");
                 OpenEngine::default()
             }
