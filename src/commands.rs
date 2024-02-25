@@ -55,6 +55,8 @@ struct Manipulation {
     delete: Vec<String>,
     paste: Vec<String>,
     paste_overwrite: Vec<String>,
+    zip: Vec<String>,
+    unzip: Vec<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -125,6 +127,8 @@ pub enum Command {
     ToggleHidden,
     ToggleLog,
     ViewTrash,
+    Zip,
+    Unzip,
     Cd,
     Search,
     Rename,
@@ -214,6 +218,8 @@ impl CommandParser {
         parser.insert(config.manipulation.cut, Command::Cut);
         parser.insert(config.manipulation.copy, Command::Copy);
         parser.insert(config.manipulation.delete, Command::Delete);
+        parser.insert(config.manipulation.zip, Command::Zip);
+        parser.insert(config.manipulation.unzip, Command::Unzip);
         parser.insert(
             config.manipulation.paste,
             Command::Paste { overwrite: false },

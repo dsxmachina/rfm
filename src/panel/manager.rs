@@ -955,6 +955,12 @@ impl PanelManager {
                             self.right.reload();
                             self.redraw_panels();
                         }
+                        Command::Zip => {
+                            todo!()
+                        }
+                        Command::Unzip => {
+                            todo!()
+                        }
                         Command::Quit => {
                             return Ok(Some(CloseCmd::QuitWithPath {
                                 path: self.center.panel().path().to_path_buf(),
