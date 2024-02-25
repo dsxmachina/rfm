@@ -440,11 +440,33 @@ impl Draw for DirPanel {
                 ),
             )?;
         } else if self.elements.is_empty() {
-            queue!(
-                stdout,
-                cursor::MoveTo(x_range.start + 1, y_range.start),
-                PrintStyledContent("(empty)".dark_grey().italic()),
-            )?;
+            if let Some((new_element, is_dir)) = &self.new_element {
+                if !new_element.is_empty() {
+                    let symbol = if *is_dir { "\u{1F4C1}" } else { "\u{1F5B9} " };
+                    queue!(
+                        stdout,
+                        cursor::MoveTo(x_range.start + 1, y_range.start),
+                        PrintStyledContent(format!(" {symbol}").red()),
+                        PrintStyledContent(
+                            new_element
+                                .exact_width(width.saturating_sub(4) as usize)
+                                .red()
+                        ),
+                    )?;
+                } else {
+                    queue!(
+                        stdout,
+                        cursor::MoveTo(x_range.start + 1, y_range.start),
+                        PrintStyledContent("(empty)".dark_grey().italic()),
+                    )?;
+                }
+            } else {
+                queue!(
+                    stdout,
+                    cursor::MoveTo(x_range.start + 1, y_range.start),
+                    PrintStyledContent("(empty)".dark_grey().italic()),
+                )?;
+            }
         }
         Ok(())
     }
