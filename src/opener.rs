@@ -13,6 +13,8 @@ use log::{debug, error, info};
 use mime::Mime;
 use serde::{Deserialize, Serialize};
 
+use crate::util::check_filename;
+
 /// Uses mime_guess to extract the mime-type.
 ///
 /// However: There are a few exceptions,
@@ -158,33 +160,78 @@ impl OpenEngine {
                 error!("Cannot open '{}' - unknown mime-type", absolute.display());
             }
         }
-
-        // if let Some(ext) = absolute.extension().and_then(|ext| ext.to_str()) {
-        //     match ext {
-        //         "png" | "bmp" | "jpg" | "jpeg" | "svg" => {
-        //             Command::new("sxiv")
-        //                 .stderr(Stdio::null())
-        //                 .stdin(Stdio::null())
-        //                 .stdout(Stdio::null())
-        //                 .arg(absolute.clone())
-        //                 .spawn()?;
-        //         }
-        //         "wav" | "aiff" | "au" | "flac" | "m4a" | "mp3" | "opus" => {
-        //             Command::new("mpv").arg(absolute).spawn()?.wait()?;
-        //         }
-        //         "pdf" => {
-        //             Command::new("zathura").arg(absolute).spawn()?;
-        //         }
-        //         _ => {
-        //             // Everything else with vim
-        //             Command::new("nvim").arg(absolute).spawn()?.wait()?;
-        //         }
-        //     }
-        // } else {
-        //     // Try to open things without extensions with vim
-        //     Command::new("nvim").arg(absolute).spawn()?.wait()?;
-        // }
         terminal::enable_raw_mode()?;
+        Ok(())
+    }
+
+    pub fn zip(&self, items: Vec<PathBuf>) -> Result<()> {
+        info!("Creating zip archive from {} files", items.len());
+        let mut process = std::process::Command::new("zip");
+        let archive_path = check_filename("output", ".", "zip")?;
+        process.arg(archive_path.as_os_str());
+        for path in items.iter().flat_map(|p| p.file_name()) {
+            process.arg(path);
+        }
+        process
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .stdin(std::process::Stdio::null());
+        let mut handle = process.spawn()?;
+        handle.wait()?;
+        Ok(())
+    }
+
+    pub fn tar(&self, items: Vec<PathBuf>) -> Result<()> {
+        info!("Creating tar.gz archive from {} files", items.len());
+        let mut process = std::process::Command::new("tar");
+        process.arg("-czf");
+        let archive_path = check_filename("output", ".", "tar.gz")?;
+        process.arg(archive_path.as_os_str());
+        for path in items.iter().flat_map(|p| p.file_name()) {
+            process.arg(path);
+        }
+        process
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .stdin(std::process::Stdio::null());
+        let mut handle = process.spawn()?;
+        handle.wait()?;
+        Ok(())
+    }
+
+    pub fn extract(&self, archive: PathBuf) -> Result<()> {
+        info!("Extracting archive '{}'", archive.display());
+        let extension = archive
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+
+        let mime = mime_guess::from_ext(extension).first_or_text_plain();
+
+        match (mime.type_().as_str(), mime.subtype().as_str()) {
+            ("application", "gzip") => {
+                std::process::Command::new("tar")
+                    .arg("-xzf")
+                    .arg(archive.as_os_str())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .stdin(std::process::Stdio::null())
+                    .spawn()?
+                    .wait()?;
+            }
+            ("application", "zip") => {
+                std::process::Command::new("unzip")
+                    .arg(archive.as_os_str())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .stdin(std::process::Stdio::null())
+                    .spawn()?
+                    .wait()?;
+            }
+            _ => {
+                log::warn!("{} is not an archive", archive.display());
+            }
+        }
         Ok(())
     }
 }

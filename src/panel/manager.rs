@@ -770,7 +770,7 @@ impl PanelManager {
                         self.redraw_left();
                         self.redraw_console();
                     } else {
-                        error!("unknown panel update: {:?}", state);
+                        warn!("unknown panel update: {:?}", state);
                     }
                 }
                 // Check incoming new preview-panels
@@ -956,10 +956,45 @@ impl PanelManager {
                             self.redraw_panels();
                         }
                         Command::Zip => {
-                            todo!()
+                            let items = self.marked_or_selected();
+                            if let Err(e) = std::env::set_current_dir(self.center.panel().path()) {
+                                error!("Failed to set working-directory for process: {e}");
+                            }
+                            self.center.freeze();
+                            if let Err(e) = self.opener.zip(items) {
+                                warn!("Failed to create zip-archive: {e}");
+                            }
+                            self.center.unfreeze();
+                            self.redraw_center();
                         }
-                        Command::Unzip => {
-                            todo!()
+                        Command::Tar => {
+                            let items = self.marked_or_selected();
+                            if let Err(e) = std::env::set_current_dir(self.center.panel().path()) {
+                                error!("Failed to set working-directory for process: {e}");
+                            }
+                            self.center.freeze();
+                            if let Err(e) = self.opener.tar(items) {
+                                warn!("Failed to create tar-archive: {e}");
+                            }
+                            self.center.unfreeze();
+                            self.redraw_center();
+                        }
+                        Command::Extract => {
+                            self.center.freeze();
+                            if let Some(archive) = self.center.panel().selected_path() {
+                                if let Err(e) =
+                                    std::env::set_current_dir(self.center.panel().path())
+                                {
+                                    error!("Failed to set working-directory for process: {e}");
+                                }
+                                if let Err(e) = self.opener.extract(archive.to_owned()) {
+                                    warn!("Failed to extract archive: {e}");
+                                }
+                                self.redraw_center();
+                            } else {
+                                warn!("Nothing extractable is selected");
+                            }
+                            self.center.unfreeze();
                         }
                         Command::Quit => {
                             return Ok(Some(CloseCmd::QuitWithPath {

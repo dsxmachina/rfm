@@ -247,14 +247,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Print all errors
     let errors = logger.get_errors();
     if !errors.is_empty() {
-        // // Write error.log
-        // let log_output: String = logger
-        //     .get()
-        //     .into_iter()
-        //     .map(|(level, msg)| format!("{level}: {msg}\n"))
-        //     .collect();
-        // let mut log = std::fs::File::create("./error.log")?;
-        // log.write_all(log_output.as_bytes())?;
+        // Write error.log
+        let log_output: String = logger
+            .get()
+            .into_iter()
+            .map(|(level, msg)| format!("{level}: {msg}\n"))
+            .collect();
+        let mut log = std::fs::File::create("./error.log")?;
+        log.write_all(log_output.as_bytes())?;
         eprintln!("{}", ERROR_MSG);
         eprintln!("Error:");
     }

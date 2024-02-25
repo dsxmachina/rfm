@@ -326,6 +326,7 @@ impl Draw for DirPanel {
                 y_offset += 1;
             }
         } else {
+            // TODO: This does not respect hidden elements
             if let Some((new_element, is_dir)) = &self.new_element {
                 let (partition, symbol) = if *is_dir {
                     (
@@ -346,6 +347,7 @@ impl Draw for DirPanel {
                         "\u{1F5B9} ",
                     )
                 };
+                log::debug!("new_element: {new_element}, partition-point: {partition}");
 
                 // Write "height" items to the screen
                 for (idx, entry) in self
