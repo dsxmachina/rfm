@@ -826,6 +826,7 @@ impl PanelManager {
                 self.mode = Mode::Normal;
                 self.parser.clear();
                 self.center.panel_mut().clear_search();
+                self.center.panel_mut().clear_new_element();
                 self.redraw_panels();
                 self.redraw_footer();
                 self.unmark_all_items();
@@ -1017,6 +1018,7 @@ impl PanelManager {
                             }
                             // self.stack.push(Operation::Mkdir { path: new_dir.clone() });
                             self.mode = Mode::Normal;
+                            self.center.panel_mut().clear_new_element();
                             self.redraw_panels();
                         }
                         KeyCode::Tab => {
@@ -1025,6 +1027,10 @@ impl PanelManager {
                         }
                         key_code => {
                             input.update(key_code, key_event.modifiers);
+                            self.center
+                                .panel_mut()
+                                .inject_new_element(input.get().to_string(), *is_dir);
+                            self.redraw_center();
                         }
                     }
                 }
