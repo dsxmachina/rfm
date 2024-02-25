@@ -169,6 +169,7 @@ impl OpenEngine {
         let mut process = std::process::Command::new("zip");
         let archive_path = check_filename("output", ".", "zip")?;
         process.arg(archive_path.as_os_str());
+        process.arg("--");
         for path in items.iter().flat_map(|p| p.file_name()) {
             process.arg(path);
         }
@@ -187,6 +188,7 @@ impl OpenEngine {
         process.arg("-czf");
         let archive_path = check_filename("output", ".", "tar.gz")?;
         process.arg(archive_path.as_os_str());
+        process.arg("--");
         for path in items.iter().flat_map(|p| p.file_name()) {
             process.arg(path);
         }
