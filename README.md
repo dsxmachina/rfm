@@ -248,4 +248,4 @@ A list of features that are planned to be implemented:
 - [ ] Bulkrename with smart security checks
 - [ ] Undo-Stack, that can undo every operation of the file-manager (even delete and other shell operations)
 - [ ] config for custom shell commands
-- [ ] basic interaction with archives
+- [x] basic interaction with archives
