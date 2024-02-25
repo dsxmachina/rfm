@@ -89,6 +89,8 @@ impl Input {
                     self.input.pop();
                 } else if self.cursor > 0 {
                     self.input.remove(self.cursor);
+                } else if self.input.chars().count() == 1 {
+                    self.input.pop();
                 }
             }
             KeyCode::Delete => {
