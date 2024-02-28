@@ -218,6 +218,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     // Write output to file
                     let mut file = OpenOptions::new()
                         .write(true)
+                        .truncate(true) // FIX: Use existing choosedir file instead of tmpfile
                         .open(choosedir.canonicalize()?)?;
                     file.write_all(format!("{}", path.display()).as_bytes())?;
                 }
