@@ -190,7 +190,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Be a good citizen, cleanup
     stdout
         .queue(EnableLineWrap)?
-        .queue(Clear(ClearType::Purge))?
+        .queue(Clear(ClearType::All))?
         .queue(LeaveAlternateScreen)?
         .queue(cursor::RestorePosition)?
         .queue(cursor::Show)?
