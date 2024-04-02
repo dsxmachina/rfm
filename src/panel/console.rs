@@ -10,6 +10,7 @@ pub struct DirConsole {
     rec_idx: usize,
     rec_total: usize,
     tmp_input: String,
+    // TODO: Use StringPatriciaSet
     recommendations: PatriciaSet,
 }
 

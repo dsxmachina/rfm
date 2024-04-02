@@ -168,6 +168,7 @@ impl FilePreview {
                     .and_then(|o| o.stdout.lines().take(128).collect()),
             ),
             ("application", "gzip") => cmd_to_preview("tar", tar_list(&path)),
+            ("application", "x-tar") => cmd_to_preview("tar", tar_list(&path)),
             ("application", "zip") => cmd_to_preview(
                 "unzip",
                 std::process::Command::new("unzip")
@@ -176,11 +177,19 @@ impl FilePreview {
                     .output()
                     .and_then(|o| o.stdout.lines().take(128).collect()),
             ),
-            ("application", "octet-stream")
+            // Text based application/* types
+            ("application", "x-sh")
             | ("application", "json")
             | ("application", "javascript")
             | ("application", "javascript; charset=utf-8")
-            | ("application", "msgpack") => bat_preview(&path, true),
+            | ("application", "rtf")
+            | ("application", "xml")
+            | ("application", "xhtml+xml") => bat_preview(&path, false),
+            // Binary based application/* types
+            ("application", "octet-stream") | ("application", "msgpack") => {
+                bat_preview(&path, true)
+            }
+            // Use mediainfo for everything else
             ("application", _) => cmd_to_preview(
                 "mediainfo",
                 std::process::Command::new("mediainfo")
@@ -188,7 +197,9 @@ impl FilePreview {
                     .output()
                     .and_then(|o| o.stdout.lines().take(128).collect()),
             ),
-            _ext => bat_preview(&path, false),
+            ("text", _) => bat_preview(&path, false),
+            // Default to bat with binary mode enabled
+            _ext => bat_preview(&path, true),
         };
 
         FilePreview {
