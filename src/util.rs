@@ -125,6 +125,42 @@ where
     Ok(result)
 }
 
+pub fn check_filename<P, Q, S>(
+    source: P,
+    destination: Q,
+    extension: S,
+) -> Result<PathBuf, std::io::Error>
+where
+    P: AsRef<Path>,
+    Q: AsRef<Path>,
+    S: AsRef<str>,
+{
+    let from = source.as_ref();
+    let to = destination.as_ref();
+    let extension = extension.as_ref();
+    if !to.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("{} is not a directory", to.display()),
+        ));
+    }
+    let mut dest_base = from
+        .file_stem()
+        .and_then(|p| p.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    let dest_name = format!("{dest_base}.{extension}");
+    let mut result = to.join(&dest_name);
+
+    // Append underscores until the name exists
+    while result.exists() {
+        dest_base.push('_');
+        let dest_name = format!("{dest_base}.{extension}");
+        result = to.join(&dest_name);
+    }
+    Ok(result)
+}
+
 pub fn move_item<P, Q>(source: P, destination: Q) -> Result<(), Box<dyn Error>>
 where
     P: AsRef<Path>,

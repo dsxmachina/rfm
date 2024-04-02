@@ -168,7 +168,19 @@ impl FilePreview {
                     .and_then(|o| o.stdout.lines().take(128).collect()),
             ),
             ("application", "gzip") => cmd_to_preview("tar", tar_list(&path)),
-            ("application", "octet-stream") => bat_preview(&path, true),
+            ("application", "zip") => cmd_to_preview(
+                "unzip",
+                std::process::Command::new("unzip")
+                    .arg("-l")
+                    .arg(&path)
+                    .output()
+                    .and_then(|o| o.stdout.lines().take(128).collect()),
+            ),
+            ("application", "octet-stream")
+            | ("application", "json")
+            | ("application", "javascript")
+            | ("application", "javascript; charset=utf-8")
+            | ("application", "msgpack") => bat_preview(&path, true),
             ("application", _) => cmd_to_preview(
                 "mediainfo",
                 std::process::Command::new("mediainfo")

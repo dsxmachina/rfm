@@ -227,6 +227,11 @@ pub struct DirPanel {
     /// Active search term
     search: Option<String>,
 
+    /// New element - e.g. when creating a new directory
+    ///
+    /// If boolean is true - the new element is going to be a directory.
+    new_element: Option<(String, bool)>,
+
     /// Selected element
     selected_idx: usize,
 
@@ -321,23 +326,93 @@ impl Draw for DirPanel {
                 y_offset += 1;
             }
         } else {
-            // Write "height" items to the screen
-            for (idx, entry) in self
-                .elements
-                .iter_mut()
-                .enumerate()
-                .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
-                .skip(scroll)
-                .take(height as usize)
-            {
-                let y = y_range.start + y_offset;
-                queue!(
-                    stdout,
-                    cursor::MoveTo(x_range.start, y),
-                    PrintStyledContent("│".dark_green().bold()),
-                    entry.print_styled(self.selected_idx == idx, width),
-                )?;
-                y_offset += 1;
+            // TODO: This does not respect hidden elements
+            if let Some((new_element, is_dir)) = &self.new_element {
+                let (partition, symbol) = if *is_dir {
+                    (
+                        self.elements
+                            // NOTE: This only works, because everything is sorted by name
+                            .partition_point(|elem| {
+                                elem.path().is_dir() && (&elem.name < new_element)
+                            }),
+                        "\u{1F4C1}",
+                    )
+                } else {
+                    (
+                        self.elements
+                            // NOTE: This only works, because everything is sorted by name
+                            .partition_point(|elem| {
+                                elem.path().is_dir() || (&elem.name < new_element)
+                            }),
+                        "\u{1F5B9} ",
+                    )
+                };
+                log::debug!("new_element: {new_element}, partition-point: {partition}");
+
+                // Write "height" items to the screen
+                for (idx, entry) in self
+                    .elements
+                    .iter_mut()
+                    .enumerate()
+                    .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
+                    .skip(scroll)
+                    .take(height.saturating_sub(1) as usize)
+                {
+                    if y_offset as usize == partition && !new_element.is_empty() {
+                        queue!(
+                            stdout,
+                            cursor::MoveTo(x_range.start, y_range.start + y_offset),
+                            PrintStyledContent("│".dark_green().bold()),
+                            PrintStyledContent(format!(" {symbol}").red()),
+                            PrintStyledContent(
+                                new_element
+                                    .exact_width(width.saturating_sub(4) as usize)
+                                    .red()
+                            ),
+                        )?;
+                        y_offset += 1;
+                    }
+                    queue!(
+                        stdout,
+                        cursor::MoveTo(x_range.start, y_range.start + y_offset),
+                        PrintStyledContent("│".dark_green().bold()),
+                        entry.print_styled(self.selected_idx == idx, width),
+                    )?;
+                    y_offset += 1;
+                }
+                if y_offset as usize == partition && !new_element.is_empty() {
+                    queue!(
+                        stdout,
+                        cursor::MoveTo(x_range.start, y_range.start + y_offset),
+                        PrintStyledContent("│".dark_green().bold()),
+                        PrintStyledContent(format!(" {symbol}").red()),
+                        PrintStyledContent(
+                            new_element
+                                .exact_width(width.saturating_sub(4) as usize)
+                                .red()
+                        ),
+                    )?;
+                    y_offset += 1;
+                }
+            } else {
+                // Write "height" items to the screen
+                for (idx, entry) in self
+                    .elements
+                    .iter_mut()
+                    .enumerate()
+                    .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
+                    .skip(scroll)
+                    .take(height as usize)
+                {
+                    let y = y_range.start + y_offset;
+                    queue!(
+                        stdout,
+                        cursor::MoveTo(x_range.start, y),
+                        PrintStyledContent("│".dark_green().bold()),
+                        entry.print_styled(self.selected_idx == idx, width),
+                    )?;
+                    y_offset += 1;
+                }
             }
         }
 
@@ -367,11 +442,33 @@ impl Draw for DirPanel {
                 ),
             )?;
         } else if self.elements.is_empty() {
-            queue!(
-                stdout,
-                cursor::MoveTo(x_range.start + 1, y_range.start),
-                PrintStyledContent("(empty)".dark_grey().italic()),
-            )?;
+            if let Some((new_element, is_dir)) = &self.new_element {
+                if !new_element.is_empty() {
+                    let symbol = if *is_dir { "\u{1F4C1}" } else { "\u{1F5B9} " };
+                    queue!(
+                        stdout,
+                        cursor::MoveTo(x_range.start + 1, y_range.start),
+                        PrintStyledContent(format!(" {symbol}").red()),
+                        PrintStyledContent(
+                            new_element
+                                .exact_width(width.saturating_sub(4) as usize)
+                                .red()
+                        ),
+                    )?;
+                } else {
+                    queue!(
+                        stdout,
+                        cursor::MoveTo(x_range.start + 1, y_range.start),
+                        PrintStyledContent("(empty)".dark_grey().italic()),
+                    )?;
+                }
+            } else {
+                queue!(
+                    stdout,
+                    cursor::MoveTo(x_range.start + 1, y_range.start),
+                    PrintStyledContent("(empty)".dark_grey().italic()),
+                )?;
+            }
         }
         Ok(())
     }
@@ -444,11 +541,20 @@ impl DirPanel {
             selected_idx: selected,
             non_hidden_idx: 0,
             search: None,
+            new_element: None,
             path,
             modified,
             loading: false,
             show_hidden: false,
         }
+    }
+
+    pub fn inject_new_element(&mut self, new_element: String, is_dir: bool) {
+        self.new_element = Some((new_element, is_dir));
+    }
+
+    pub fn clear_new_element(&mut self) {
+        self.new_element = None;
     }
 
     pub fn update_search(&mut self, pattern: String) {
@@ -600,6 +706,7 @@ impl DirPanel {
             selected_idx: 0,
             non_hidden_idx: 0,
             search: None,
+            new_element: None,
             path,
             modified: SystemTime::now(),
             loading: true,
@@ -617,6 +724,7 @@ impl DirPanel {
             selected_idx: 0,
             non_hidden_idx: 0,
             search: None,
+            new_element: None,
             modified: SystemTime::now(),
             path: "path-of-empty-panel".into(),
             loading: false,

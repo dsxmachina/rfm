@@ -42,11 +42,16 @@ $: echo $PATH | tr ":" "\n"
 And pick one of those.
 
 
-### Mediainfo
+### Advanced Previews
 
-To get a preview for audio- and video-files (and some application/something mime-types), you must install `mediainfo`.
+rfm delivers text-file and image previews out-of-the-box without any additional dependencies.
+However, for some file-types you can automatically get previews aswell, if certain programs are installed on your system.
 
-Use your package-manager to install it:
+#### Audio- & Video-Files
+
+To display information about audio- and video-files, rfm relies on `mediainfo`.
+
+You can install it via your distribution's package-manager:
 
 ``` shell
 # Ubuntu
@@ -57,6 +62,45 @@ sudo pacman -S mediainfo
 
 # Nix
 nix-env -iA nixpkgs.mediainfo
+```
+
+Note: `mediainfo` is also used as a preview engine for some `application/*` mime-types.
+
+#### Syntax highlighting in Text-Previews
+
+To get syntax highlighting in text-file previews, you can install `bat` via your package manager:
+
+``` shell
+# Ubuntu
+sudo apt install bat
+
+# Arch
+sudo pacman -S bat
+
+# Nix
+nix-env -iA nixpkgs.bat
+```
+
+If `bat` is not present, text previews are generated with rfm's internal preview engine.
+
+#### Tar- & Zip-Archives
+
+For previews of `.tar.gz` or `.tar` files, `tar` must be present on your system.
+Similarly, for previews of `.zip` files, `zip` must be installed.
+
+You can install both via your distribution's package-manager:
+``` shell
+# Ubuntu
+sudo apt install tar
+sudo apt install zip
+
+# Arch
+sudo pacman -S tar
+sudo pacman -S zip
+
+# Nix
+nix-env -iA nixpkgs.gnutar
+nix-env -iA nixpkgs.zip
 ```
 
 ## &#128462; Configuration 
@@ -204,3 +248,4 @@ A list of features that are planned to be implemented:
 - [ ] Bulkrename with smart security checks
 - [ ] Undo-Stack, that can undo every operation of the file-manager (even delete and other shell operations)
 - [ ] config for custom shell commands
+- [x] basic interaction with archives
