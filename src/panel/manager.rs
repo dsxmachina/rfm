@@ -5,7 +5,7 @@ use crossterm::{
     style::PrintStyledContent,
 };
 use futures::{FutureExt, StreamExt};
-use log::{debug, error, info, trace};
+use log::{debug, error, info, trace, Level};
 use tempfile::TempDir;
 use time::OffsetDateTime;
 use users::{get_group_by_gid, get_user_by_uid};
@@ -243,30 +243,51 @@ impl PanelManager {
     }
 
     fn draw_log(&mut self) -> Result<()> {
-        if !self.redraw.log || !self.show_log {
+        if !self.redraw.log {
             return Ok(());
         }
 
         let mut y = self.layout.footer().saturating_sub(2);
 
-        for (level, line) in self.logger.get().into_iter().rev() {
-            let content = match level {
-                log::Level::Error => PrintStyledContent("error".red().bold()),
-                log::Level::Warn => PrintStyledContent("warn".yellow().bold()),
-                log::Level::Info => PrintStyledContent("info".dark_green().bold()),
-                log::Level::Debug => PrintStyledContent("debug".dark_blue()),
-                log::Level::Trace => PrintStyledContent("trace".grey()),
-            };
-            queue!(
-                self.stdout,
-                cursor::MoveTo(0, y),
-                Clear(ClearType::CurrentLine),
-                content,
-                style::Print(": "),
-                style::PrintStyledContent(line.grey()),
-                style::Print("  "),
-            )?;
-            y = y.saturating_sub(1);
+        let print_level = |level| match level {
+            log::Level::Error => PrintStyledContent("error".red().bold()),
+            log::Level::Warn => PrintStyledContent("warn".yellow().bold()),
+            log::Level::Info => PrintStyledContent("info".dark_green().bold()),
+            log::Level::Debug => PrintStyledContent("debug".dark_blue()),
+            log::Level::Trace => PrintStyledContent("trace".grey()),
+        };
+
+        if self.show_log {
+            for (level, line) in self.logger.get().into_iter().rev() {
+                queue!(
+                    self.stdout,
+                    cursor::MoveTo(0, y),
+                    Clear(ClearType::CurrentLine),
+                    print_level(level),
+                    style::Print(": "),
+                    style::PrintStyledContent(line.grey()),
+                    style::Print("  "),
+                )?;
+                y = y.saturating_sub(1);
+            }
+        } else {
+            if let Some((level, line)) = self
+                .logger
+                .get()
+                .into_iter()
+                .rev()
+                .find(|(level, _)| *level <= Level::Warn)
+            {
+                queue!(
+                    self.stdout,
+                    cursor::MoveTo(0, y),
+                    Clear(ClearType::CurrentLine),
+                    print_level(level),
+                    style::Print(": "),
+                    style::PrintStyledContent(line.grey()),
+                    style::Print("  "),
+                )?;
+            }
         }
         self.redraw.log = false;
         Ok(())
