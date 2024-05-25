@@ -3,6 +3,8 @@ use std::{fs::OpenOptions, os::unix::prelude::MetadataExt};
 use crossterm::{
     event::{Event, EventStream, KeyCode},
     style::PrintStyledContent,
+    terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate},
+    ExecutableCommand,
 };
 use futures::{FutureExt, StreamExt};
 use log::{debug, error, info, trace, Level};
@@ -441,13 +443,15 @@ impl PanelManager {
         if !self.redraw.any() {
             return Ok(());
         }
+        self.stdout.execute(BeginSynchronizedUpdate)?;
         self.stdout.queue(cursor::Hide)?;
         self.draw_footer()?;
         self.draw_header()?;
         self.draw_panels()?;
         self.draw_console()?;
         self.draw_log()?;
-        self.stdout.flush()
+        self.stdout.execute(EndSynchronizedUpdate)?;
+        Ok(())
     }
 
     fn draw_panels(&mut self) -> Result<()> {
