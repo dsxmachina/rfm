@@ -27,6 +27,7 @@ mime_guess = "2.0.5"
 notify = {version = "5.2.0", default-features = false, features = ["macos_fsevent"]}
 notify-rust = "4.11.3"
 once_cell = { version = "1.20.2", features = ["parking_lot"] }
+opener = "0.7.2"
 parking_lot = "0.12.3"
 patricia_tree = "0.6"
 rand = "0.8.5"

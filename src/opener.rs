@@ -9,7 +9,7 @@ use crossterm::{
     terminal::{self, Clear, ClearType},
     QueueableCommand, Result,
 };
-use log::{debug, error, info};
+use log::{debug, info, warn};
 use mime::Mime;
 use serde::{Deserialize, Serialize};
 
@@ -120,7 +120,10 @@ impl OpenEngine {
                 if let Some(engine) = &self.config.text {
                     engine.open(absolute)?;
                 } else {
-                    error!("Unset config value for mime-type 'text'");
+                    info!("Unset config value for mime-type 'text', using default opener");
+                    if let Err(e) = opener::open(&absolute) {
+                        warn!("Error while opening {}: {e}", absolute.display());
+                    }
                 }
             }
             "image" => {
@@ -128,7 +131,10 @@ impl OpenEngine {
                 if let Some(engine) = &self.config.image {
                     engine.open(absolute)?;
                 } else {
-                    error!("Unset config value for mime-type 'image'");
+                    info!("Unset config value for mime-type 'image', using default opener");
+                    if let Err(e) = opener::open(&absolute) {
+                        warn!("Error while opening {}: {e}", absolute.display());
+                    }
                 }
             }
             "audio" => {
@@ -136,7 +142,10 @@ impl OpenEngine {
                 if let Some(engine) = &self.config.audio {
                     engine.open(absolute)?;
                 } else {
-                    error!("Unset config value for mime-type 'audio'");
+                    info!("Unset config value for mime-type 'audio', using default opener");
+                    if let Err(e) = opener::open(&absolute) {
+                        warn!("Error while opening {}: {e}", absolute.display());
+                    }
                 }
             }
             "video" => {
@@ -144,7 +153,10 @@ impl OpenEngine {
                 if let Some(engine) = &self.config.video {
                     engine.open(absolute)?;
                 } else {
-                    error!("Unset config value for mime-type 'video'");
+                    info!("Unset config value for mime-type 'video', using default opener");
+                    if let Err(e) = opener::open(&absolute) {
+                        warn!("Error while opening {}: {e}", absolute.display());
+                    }
                 }
             }
             "application" => {
@@ -152,12 +164,21 @@ impl OpenEngine {
                 if let Some(app) = &self.config.application {
                     app.open(absolute)?
                 } else {
-                    error!("Unset config value for mime-type 'application'");
+                    info!("Unset config value for mime-type 'application', using default opener");
+                    if let Err(e) = opener::open(&absolute) {
+                        warn!("Error while opening {}: {e}", absolute.display());
+                    }
                 }
             }
             _ => {
                 // Otherwise print error
-                error!("Cannot open '{}' - unknown mime-type", absolute.display());
+                info!(
+                    "unknown mime-type for {}, trying to use default opener",
+                    absolute.display()
+                );
+                if let Err(e) = opener::open(&absolute) {
+                    warn!("Error while opening {}: {e}", absolute.display());
+                }
             }
         }
         terminal::enable_raw_mode()?;

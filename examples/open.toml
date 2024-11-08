@@ -26,25 +26,31 @@
 # If you are not sure what mime-type of a specific file is, you can look at the bottom line of "rfm".
 # It shows the mime-type for the current selection.
 #
-[text]
-default = { name = "nvim", args = [], terminal = true }
 
-[image]
-default = { name = "sxiv", args = [], terminal = true }
+# --- Uncomment to configure mime-type 'text'
+#[text]
+#default = { name = "nvim", args = [], terminal = true }
 
-[audio]
-default = { name = "mpv", args = [], terminal = true }
+# --- Uncomment to configure mime-type 'image'
+#[image]
+#default = { name = "sxiv", args = [], terminal = true }
 
-[video]
-default = { name = "mpv", args = [], terminal = true }
+# --- Uncomment to configure mime-type 'audio'
+#[audio]
+#default = { name = "mpv", args = [], terminal = true }
 
-[application]
-default = { name = "nvim", args = [], terminal = true }
-extensions = [ 
-  ["pdf",   { name = "zathura",     args = [], terminal = false } ], 
-  ["docx",  { name = "libreoffice", args = [], terminal = false } ],
-  ["xlsx",  { name = "libreoffice", args = [], terminal = false } ],
-  ["xls",   { name = "libreoffice", args = [], terminal = false } ],
-  ["pptx",  { name = "libreoffice", args = [], terminal = false } ],
-  ["ppt",   { name = "libreoffice", args = [], terminal = false } ] 
-]
+# --- Uncomment to configure mime-type 'video'
+#[video]
+#default = { name = "mpv", args = [], terminal = true }
+
+# --- Uncomment to configure mime-type 'application'
+#[application]
+#default = { name = "nvim", args = [], terminal = true }
+#extensions = [ 
+#  ["pdf",   { name = "zathura",     args = [], terminal = false } ], 
+#  ["docx",  { name = "libreoffice", args = [], terminal = false } ],
+#  ["xlsx",  { name = "libreoffice", args = [], terminal = false } ],
+#  ["xls",   { name = "libreoffice", args = [], terminal = false } ],
+#  ["pptx",  { name = "libreoffice", args = [], terminal = false } ],
+#  ["ppt",   { name = "libreoffice", args = [], terminal = false } ] 
+#]
