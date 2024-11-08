@@ -4,6 +4,9 @@ version = "0.2.8"
 edition = "2021"
 authors = ["Christian Hammermeister <christian.hammermeister@protonmail.com>"]
 description = "A super fast file-manager written in rust"
+repository = "https://github.com/dsxmachina/rfm"
+keywords = ["filemanager", "ranger", "vifm", "terminal"]
+categories = ["command-line-utilities", "filesystem"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
