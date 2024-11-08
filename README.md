@@ -2,45 +2,36 @@
 
 ## &#9993; Brief description
 
-**rfm** is a console file manager with VI-bindings (although you can configure the keybindings to whatever you like).
+**rfm** is a terminal file manager with VI-bindings (although you can configure the keybindings to whatever you like).
 It shares a lot of similarity with [*ranger*](https://github.com/ranger/ranger), but also has some major differences in handling.
 
-Please note: rfm is considered beta. Testing is much apprechiated,
-if you see something suspicious, please open an issue.
+You can find a detailed list of features below.
+
+Please note: rfm is considered beta. However, I use it as my daily filemanager for over a year now, without any problems. 
+But in case you encounter something suspicious while using it, please open an issue or pull request.
 
 ## &#128187; Installation
+
+You can directly install `rfm` via cargo:
+``` shell
+cargo install rfm-bin
+```
+
+Alternatively you can ofc build everything from scratch:
 
 Clone this repository:
 ``` shell
 git clone https://github.com/dsxmachina/rfm
-```
-
-Build the application with cargo:
-``` shell
 cd rfm
 cargo build --release
+# Grab a coffee, while cargo is building: ☕
 ```
-
-Grab a coffee, while cargo is building: ☕
 
 Copy the binary from the build directory to some directory in your `$PATH`:
 
 ``` shell
 cp target/release/rfm /usr/local/bin/rfm
 ```
-
-
-If you are not sure where to place the binary, you can inspect your `$PATH` variable:
-``` shell
-$: echo $PATH | tr ":" "\n"
-/bin
-/usr/bin
-/usr/local/bin
-/home/$USER/.scripts
-/home/$USER/.cargo/bin
-```
-And pick one of those.
-
 
 ### Advanced Previews
 
@@ -185,6 +176,7 @@ or execute a cut, copy or delete operation on them).
 ### Fast cd
 
 Type `cd` and see what happens. You can use `tab` to toggle the recommendation.
+The completion is quite similar to the one you find in`emacs`, so if you are used to that you should feel at home.
 
 ### cd into the current directory on exit
 
@@ -241,11 +233,11 @@ A list of features that are planned to be implemented:
 
 - [X] Basic Preview Engine for images without adding extra dependencies
 - [X] Basic shell operations (move, delete, rename, touch, mkdir) on files and directories
-- [ ] Multiple Tabs with separate histories but a shared clipboard to move files around
 - [X] Easy "cd" mode with smart autocompletion
 - [X] Searchable panels + highlight items matching search patterns
 - [x] Syntax highlighting in text previews
 - [ ] Bulkrename with smart security checks
 - [ ] Undo-Stack, that can undo every operation of the file-manager (even delete and other shell operations)
-- [ ] config for custom shell commands
+- [ ] config for custom shell commands / invoking external programs
 - [x] basic interaction with archives
+- [ ] execution of external commands (like zip and tar) in a separate thread
