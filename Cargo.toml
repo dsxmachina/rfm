@@ -1,5 +1,5 @@
 [package]
-name = "rfm"
+name = "rfm-bin" # someone else already registered rfm as a crate-name :S
 version = "0.2.9"
 edition = "2021"
 authors = ["Christian Hammermeister <christian.hammermeister@protonmail.com>"]
@@ -8,6 +8,10 @@ repository = "https://github.com/dsxmachina/rfm"
 keywords = ["filemanager", "ranger", "vifm", "terminal"]
 categories = ["command-line-utilities", "filesystem"]
 license = "GPL-3.0"
+
+[[bin]]
+name = "rfm"
+path = "src/main.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
