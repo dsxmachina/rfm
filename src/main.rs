@@ -61,7 +61,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut stdout = stdout();
     if !stdout.is_terminal() {
         eprintln!("Error: Stdout handle does not refer to a terminal/tty");
-        eprintln!("");
+        eprintln!();
         eprintln!("Please note: The output of rfm can be neither piped nor redirected.");
         std::process::exit(1);
     }
@@ -73,7 +73,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let output = format!("{panic_info}");
         let summary = "panic occured";
         if Notification::new()
-            .summary(&summary)
+            .summary(summary)
             .body(&output)
             .show()
             .is_err()

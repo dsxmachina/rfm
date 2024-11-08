@@ -150,7 +150,7 @@ where
         .map(|s| s.to_string())
         .unwrap_or_default();
     let dest_name = format!("{dest_base}.{extension}");
-    let mut result = to.join(&dest_name);
+    let mut result = to.join(dest_name);
 
     // Append underscores until the name exists
     while result.exists() {

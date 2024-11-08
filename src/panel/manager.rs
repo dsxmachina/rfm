@@ -272,24 +272,22 @@ impl PanelManager {
                 )?;
                 y = y.saturating_sub(1);
             }
-        } else {
-            if let Some((level, line)) = self
-                .logger
-                .get()
-                .into_iter()
-                .rev()
-                .find(|(level, _)| *level <= Level::Warn)
-            {
-                queue!(
-                    self.stdout,
-                    cursor::MoveTo(0, y),
-                    Clear(ClearType::CurrentLine),
-                    print_level(level),
-                    style::Print(": "),
-                    style::PrintStyledContent(line.grey()),
-                    style::Print("  "),
-                )?;
-            }
+        } else if let Some((level, line)) = self
+            .logger
+            .get()
+            .into_iter()
+            .rev()
+            .find(|(level, _)| *level <= Level::Warn)
+        {
+            queue!(
+                self.stdout,
+                cursor::MoveTo(0, y),
+                Clear(ClearType::CurrentLine),
+                print_level(level),
+                style::Print(": "),
+                style::PrintStyledContent(line.grey()),
+                style::Print("  "),
+            )?;
         }
         self.redraw.log = false;
         Ok(())

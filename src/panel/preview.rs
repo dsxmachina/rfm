@@ -228,7 +228,7 @@ fn bat_preview<P: AsRef<Path>>(path: P, binary: bool) -> Preview {
             .lines()
             .take(128)
             .flatten()
-            .map(|l| l.replace('\r', "").replace('\n', ""))
+            .map(|l| l.replace(['\r', '\n'], ""))
             .collect(),
         Err(_e) => {
             // Otherwise default to just reading the file
