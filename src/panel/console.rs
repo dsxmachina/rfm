@@ -31,9 +31,9 @@ impl Draw for DirConsole {
         if !path.ends_with('/') {
             path.push('/');
         }
-        let path_len = path.len() as u16;
+        let path_len = path.chars().count() as u16;
 
-        let text_len = path_len + self.input.len() as u16;
+        let text_len = path_len + self.input.chars().count() as u16;
         let offset = if text_len < (width / 2) {
             width / 4
         } else if text_len < width {
@@ -361,17 +361,18 @@ impl Draw for SearchConsole {
         let x_start = x_range.start;
         let y_center = y_range.end.saturating_add(y_range.start) / 2;
 
-        let text = self.input.to_string();
+        let text = self.input.clone();
+        let text_len = text.chars().count();
 
-        let offset = if self.input.len() < (width / 2).into() {
+        let offset = if text_len < (width / 2).into() {
             width / 4
-        } else if self.input.len() < width.into() {
-            ((width as usize - self.input.len()).saturating_sub(1) / 2) as u16
+        } else if text_len < width as usize {
+            ((width as usize - text_len).saturating_sub(1) / 2) as u16
         } else {
             0
         };
 
-        let rec_offset = offset.saturating_add(text.len() as u16);
+        let rec_offset = offset.saturating_add(text_len as u16);
         let rec_text = self
             .recommendation()
             .strip_prefix(&self.input)
