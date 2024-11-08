@@ -101,18 +101,15 @@ There are two configuration files
 - `keys.toml` for keyboard configuration and jump-marks
 - `open.toml` to configure how to open files based on mime-type and/or extension
 
-Both files must be placed under `$HOME/.config/rfm/` in order to start the executable.
-You can find examples of these two inside the `examples/` directory of this repo. 
+Both files are located under `$XDG_CONFIG_DIR/rfm/` (which is usually `$HOME/.config/rfm`).
+In case they are not present, they will be created automatically on the first start of rfm.
 
-```shell
-mkdir -p $HOME/.config/rfm
-cp examples/* $HOME/.config/rfm/
-```
+You can take a look at the config files, they contain a lot of comments and examples.
 
-If you are lazy, you can use the provided shell script to create the config directory and copy the two example files over:
-```shell
-./create-default-config.sh
-```
+In the `open.toml`, eveything is commented out by default. If you don't set a specific application
+in the `open.toml` for some mime-type, `rfm` will use the default application that is configured by your system.
+In case you use a lot of terminal applications, it is highly recommended that you change the configuration to your liking.
+Terminal applications can be inlined into your current terminal session if configured correctly.
 
 ## &#9000; Basic functions
 
