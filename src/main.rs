@@ -16,9 +16,10 @@ use logger::LogBuffer;
 use notify_rust::Notification;
 use opener::OpenEngine;
 use panel::manager::PanelManager;
+use rust_embed::Embed;
 use std::{
     error::Error,
-    fs::OpenOptions,
+    fs::{File, OpenOptions},
     io::{stdout, IsTerminal, Write},
     path::PathBuf,
 };
@@ -54,6 +55,10 @@ const ERROR_MSG: &str = "\
 | and include the error message below.                             |
 +------------------------------------------------------------------+
 ";
+
+#[derive(Embed)]
+#[folder = "examples/"]
+struct Examples;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -130,7 +135,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Read keybinding config
     let config_dir = xdg_config_home()?.join("rfm");
+
+    // Create config files and config directory, if they are not present
+    if !config_dir.exists() {
+        info!("Creating config directory: {}", config_dir.display());
+        std::fs::create_dir(&config_dir)?;
+    }
+
     let key_config_file = config_dir.join("keys.toml");
+    if !key_config_file.exists() {
+        info!("Creating default config file for keys.toml");
+        let default = Examples::get("keys.toml").expect("embedded keys.toml");
+        let mut file = File::create(&key_config_file)?;
+        file.write_all(&default.data)?;
+    }
 
     let parser = if let Ok(content) = std::fs::read_to_string(&key_config_file) {
         match toml::from_str(&content) {
@@ -153,6 +171,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Read opener config
     let open_config_file = config_dir.join("open.toml");
+    if !open_config_file.exists() {
+        info!("Creating default config file for open.toml");
+        let default = Examples::get("open.toml").expect("embedded open.toml");
+        let mut file = File::create(&open_config_file)?;
+        file.write_all(&default.data)?;
+    }
 
     let opener = if let Ok(content) = std::fs::read_to_string(&open_config_file) {
         match toml::from_str(&content) {
@@ -263,4 +287,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         eprintln!("{e}");
     }
     Ok(())
+}
+
+#[test]
+fn embedded_key_config() {
+    assert!(Examples::get("keys.toml").is_some());
+}
+
+#[test]
+fn embedded_open_config() {
+    assert!(Examples::get("open.toml").is_some());
 }

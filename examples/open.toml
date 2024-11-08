@@ -42,7 +42,7 @@ default = { name = "mpv", args = [], terminal = true }
 default = { name = "nvim", args = [], terminal = true }
 extensions = [ 
   ["pdf",   { name = "zathura",     args = [], terminal = false } ], 
-  ["docx",  { name = "read2pdf",    args = [], terminal = false } ],
+  ["docx",  { name = "libreoffice", args = [], terminal = false } ],
   ["xlsx",  { name = "libreoffice", args = [], terminal = false } ],
   ["xls",   { name = "libreoffice", args = [], terminal = false } ],
   ["pptx",  { name = "libreoffice", args = [], terminal = false } ],
