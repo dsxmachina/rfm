@@ -300,7 +300,11 @@ impl PanelManager {
         if !self.redraw.header {
             return Ok(());
         }
-        let prompt = format!("{}@{}", whoami::username(), whoami::hostname());
+        let prompt = format!(
+            "{}@{}",
+            whoami::username(),
+            whoami::fallible::hostname().unwrap_or_else(|e| e.to_string())
+        );
         let absolute = self
             .center
             .panel()
