@@ -795,7 +795,8 @@ impl PanelManager {
                         self.redraw_left();
                         self.redraw_console();
                     } else {
-                        warn!("unknown panel update: {:?}", state);
+                        // Reduce log level here, this is not that important
+                        debug!("unknown panel update: {:?}", state);
                     }
                 }
                 // Check incoming new preview-panels
