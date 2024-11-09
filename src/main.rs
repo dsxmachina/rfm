@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use clap::Parser;
 use commands::{CloseCmd, CommandParser};
-use content::PanelCache;
+use content::{PanelCache, SHUTDOWN_FLAG};
 use crossterm::{
     cursor,
     event::DisableMouseCapture,
@@ -215,7 +215,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     )?;
     let panel_handle = tokio::spawn(panel_manager.run());
 
+    // If the panel manager returns, we essentially want to shutdown the entire program.
     let panel_result = panel_handle.await;
+
+    // Stop all blocking tasks by setting the shutdown handle to "true":
+    SHUTDOWN_FLAG.store(true, std::sync::atomic::Ordering::Relaxed);
+
+    // The .await here is okay, because the PanelManager dropped the queue sender,
+    // which makes these two guys instantly return:
     let dir_mngr_result = dir_mngr_handle.await;
     let prev_mngr_result = prev_mngr_handle.await;
 
@@ -282,9 +289,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         log.write_all(log_output.as_bytes())?;
         eprintln!("{}", ERROR_MSG);
         eprintln!("Error:");
-    }
-    for e in errors {
-        eprintln!("{e}");
+        for e in errors {
+            eprintln!("{e}");
+        }
     }
     Ok(())
 }

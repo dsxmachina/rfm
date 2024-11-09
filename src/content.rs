@@ -1,13 +1,23 @@
 use cached::{Cached, SizedCache};
-use log::{debug, error};
+use log::debug;
+use once_cell::sync::Lazy;
 use parking_lot::Mutex;
-use std::{path::PathBuf, sync::Arc, time::SystemTime};
+use std::{
+    path::{Path, PathBuf},
+    sync::{atomic::AtomicBool, Arc},
+    time::SystemTime,
+};
 use tokio::{sync::mpsc, task::spawn_blocking};
 use walkdir::WalkDir;
 
 use crate::panel::{
     DirElem, DirPanel, FilePreview, PanelContent, PanelState, PanelUpdate, PreviewPanel,
 };
+
+/// Shutdown flag
+///
+/// This is used to abort long running blocking tasks like `fill_cache`
+pub static SHUTDOWN_FLAG: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false));
 
 /// Cache that is shared by the content-manager and the panel-manager.
 #[derive(Clone)]
@@ -68,22 +78,20 @@ pub struct PreviewManager {
     preview_cache: PanelCache<PreviewPanel>,
 }
 
-pub fn dir_content(path: PathBuf) -> Vec<DirElem> {
+pub fn dir_content(path: impl AsRef<Path>) -> Vec<DirElem> {
     // read directory
     match std::fs::read_dir(path) {
-        Ok(dir) => {
-            let mut out = Vec::new();
-            for item in dir.into_iter().flatten() {
-                out.push(DirElem::from(item.path()))
-            }
-            out
-        }
+        Ok(dir) => dir
+            .into_iter()
+            .flatten()
+            .map(|p| DirElem::from(p.path()))
+            .collect(),
         Err(_) => Vec::new(),
     }
 }
 
 // TODO: Benchmark this guy
-async fn fill_cache(
+fn fill_cache(
     path: PathBuf,
     directory_cache: PanelCache<DirPanel>,
     preview_cache: PanelCache<PreviewPanel>,
@@ -93,46 +101,38 @@ async fn fill_cache(
     }
     let file_capacity = preview_cache.capacity() / 16;
     let dir_capacity = directory_cache.capacity() / 16;
-    let mut dir_handles = Vec::new();
-    let mut file_handles = Vec::new();
+    let mut n_dir_previews = 0;
+    let mut n_file_previews = 0;
     for entry in WalkDir::new(&path).max_depth(2).into_iter().flatten() {
-        if entry.file_type().is_dir() && dir_handles.len() < dir_capacity {
-            let handle_path = entry.into_path();
-            if directory_cache.requires_update(&handle_path) {
-                dir_handles.push((
-                    handle_path.clone(),
-                    spawn_blocking(move || dir_content(handle_path)),
-                ));
+        if entry.file_type().is_dir() && n_dir_previews < dir_capacity {
+            let dir_path = entry.into_path();
+            if directory_cache.requires_update(&dir_path) {
+                let content = dir_content(&dir_path);
+                let panel = DirPanel::new(content, dir_path.clone());
+                directory_cache.insert(dir_path.clone(), panel.clone());
+                preview_cache.insert(dir_path, PreviewPanel::Dir(panel));
+                n_dir_previews += 1;
             }
         } else if entry.file_type().is_file()
             && entry.depth() == 1
-            && file_handles.len() < file_capacity
+            && n_file_previews < file_capacity
         {
-            let handle_path = entry.into_path();
-            if preview_cache.requires_update(&handle_path) {
-                file_handles.push((
-                    handle_path.clone(),
-                    spawn_blocking(move || FilePreview::new(handle_path)),
-                ));
+            let file_path = entry.into_path();
+            if preview_cache.requires_update(&file_path) {
+                let preview = FilePreview::new(file_path.clone());
+                preview_cache.insert(file_path, PreviewPanel::File(preview));
+                n_file_previews += 1;
             }
         }
         // If we reached the max capacity that we want to fill the cache up with,
         // stop traversing the directory any further.
-        if dir_handles.len() >= dir_capacity && file_handles.len() >= file_capacity {
+        if n_dir_previews >= dir_capacity && n_file_previews >= file_capacity {
             break;
         }
-    }
-    for (handle_path, handle) in file_handles {
-        if let Ok(content) = handle.await {
-            let panel = PreviewPanel::File(content);
-            preview_cache.insert(handle_path, panel);
-        }
-    }
-    for (handle_path, handle) in dir_handles {
-        if let Ok(content) = handle.await {
-            let panel = DirPanel::new(content, handle_path.clone());
-            directory_cache.insert(handle_path.clone(), panel.clone());
-            preview_cache.insert(handle_path, PreviewPanel::Dir(panel));
+
+        if SHUTDOWN_FLAG.load(std::sync::atomic::Ordering::Relaxed) {
+            debug!("Shutdown requested");
+            break;
         }
     }
 }
@@ -169,8 +169,8 @@ impl DirManager {
                     .send((panel.clone(), update.state.increased().increased()))
                     .await
                 {
-                    error!("Cannot send panel-update: {e}");
-                    break;
+                    debug!("Cannot send panel-update: {e}");
+                    continue;
                 };
                 self.directory_cache
                     .insert(update.state.path().clone(), panel.clone());
@@ -179,11 +179,10 @@ impl DirManager {
             }
             if update.state.path() != last_cache_path.as_path() {
                 last_cache_path = update.state.path().to_path_buf();
-                tokio::task::spawn(fill_cache(
-                    update.state.path(),
-                    self.directory_cache.clone(),
-                    self.preview_cache.clone(),
-                ));
+                let path = update.state.path();
+                let dir_cache = self.directory_cache.clone();
+                let prev_cache = self.preview_cache.clone();
+                tokio::task::spawn_blocking(move || fill_cache(path, dir_cache, prev_cache));
             }
         }
     }
@@ -215,8 +214,8 @@ impl PreviewManager {
                         .send((panel.clone(), update.state.increased()))
                         .await
                     {
-                        error!("Cannot send panel-update: {e}");
-                        break;
+                        debug!("Cannot send panel-update: {e}");
+                        continue;
                     }
                     self.preview_cache.insert(update.state.path(), panel);
                 }
@@ -231,8 +230,8 @@ impl PreviewManager {
                         .send((panel.clone(), update.state.increased()))
                         .await
                     {
-                        error!("Cannot send panel-update: {e}");
-                        break;
+                        debug!("Cannot send panel-update: {e}");
+                        continue;
                     }
                     self.preview_cache.insert(update.state.path(), panel);
                 }
