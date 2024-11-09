@@ -600,14 +600,28 @@ impl DirPanel {
         if self.selected_path() == Some(selection) {
             return;
         }
-        self.selected_idx = self
+        self.selected_idx = match self
             .elements
             .iter()
             .enumerate()
             .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
             .find(|(_, elem)| elem.path() == selection)
             .map(|(idx, _)| idx)
-            .unwrap_or(self.selected_idx);
+        {
+            Some(idx) => {
+                log::debug!("selecting {}, idx={}", selection.display(), idx);
+                idx
+            }
+            None => {
+                log::info!(
+                    "selection not found {}, using old idx={}, n-elements={}",
+                    selection.display(),
+                    self.selected_idx,
+                    self.elements.len()
+                );
+                self.selected_idx
+            }
+        };
         if !self.show_hidden {
             self.set_non_hidden_idx();
         }

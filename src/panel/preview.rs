@@ -350,7 +350,18 @@ impl PanelContent for PreviewPanel {
         }
     }
 
-    fn update_content(&mut self, content: Self) {
+    fn update_content(&mut self, mut content: Self) {
+        match self {
+            PreviewPanel::Dir(panel) => {
+                // If the content is for the same path, also select the correct item
+                if panel.path() == content.path() {
+                    if let Some(path) = panel.selected_path() {
+                        content.select_path(path);
+                    }
+                }
+            }
+            _ => (),
+        }
         *self = content;
     }
 }
@@ -381,6 +392,13 @@ impl PreviewPanel {
             PreviewPanel::Dir(panel) => Some(panel.path().to_path_buf()),
             PreviewPanel::File(panel) => Some(panel.path().to_path_buf()),
             PreviewPanel::Empty => None,
+        }
+    }
+
+    pub fn select_path(&mut self, selection: &Path) {
+        if let PreviewPanel::Dir(panel) = self {
+            log::debug!("preview-panel: selecting {}", selection.display());
+            panel.select_path(selection);
         }
     }
 }
