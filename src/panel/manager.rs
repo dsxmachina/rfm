@@ -285,7 +285,7 @@ impl PanelManager {
             .into_iter()
             .rev()
             .find(|(level, _)| *level <= Level::Warn)
-        e
+        {
             queue!(
                 self.stdout,
                 cursor::MoveTo(0, y),

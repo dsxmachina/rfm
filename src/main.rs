@@ -20,7 +20,8 @@ use std::{
     error::Error,
     fs::{File, OpenOptions},
     io::{stdout, IsTerminal, Write},
-    path::PathBuf, time::Duration,
+    path::PathBuf,
+    time::Duration,
 };
 use symbols::SymbolEngine;
 use tokio::sync::mpsc;
