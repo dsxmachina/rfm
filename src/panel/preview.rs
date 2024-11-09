@@ -398,7 +398,7 @@ impl PreviewPanel {
     pub fn select_path(&mut self, selection: &Path) {
         if let PreviewPanel::Dir(panel) = self {
             log::debug!("preview-panel: selecting {}", selection.display());
-            panel.select_path(selection);
+            panel.select_path(selection, None);
         }
     }
 }

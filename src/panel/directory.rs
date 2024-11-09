@@ -490,7 +490,7 @@ impl PanelContent for DirPanel {
         if content.path == self.path {
             // Set the selection accordingly
             if let Some(path) = self.selected_path() {
-                content.select_path(path);
+                content.select_path(path, Some(self.selected_idx));
             }
         }
         *self = content;
@@ -595,7 +595,7 @@ impl DirPanel {
     /// Changes the selection to the given path.
     ///
     /// If the path is not found, the selection remains unchanged.
-    pub fn select_path(&mut self, selection: &Path) {
+    pub fn select_path(&mut self, selection: &Path, alt_idx: Option<usize>) {
         // Do nothing if the path is already selected
         if self.selected_path() == Some(selection) {
             return;
@@ -613,13 +613,16 @@ impl DirPanel {
                 idx
             }
             None => {
+                // In this case use the alt index, if given
+                let new_idx = alt_idx.unwrap_or(self.selected_idx);
                 log::info!(
-                    "selection not found {}, using old idx={}, n-elements={}",
+                    "selection not found {}, using new idx={}, n-elements={}",
                     selection.display(),
-                    self.selected_idx,
+                    new_idx,
                     self.elements.len()
                 );
-                self.selected_idx
+                // Clamp the index, just in case
+                new_idx.min(self.elements.len().saturating_sub(1))
             }
         };
         if !self.show_hidden {
@@ -800,11 +803,16 @@ impl DirPanel {
         true
     }
 
-    /// Returns the selcted path of the panel.
+    /// Returns the selected path of the panel.
     ///
     /// If the panel is empty `None` is returned.
     pub fn selected_path(&self) -> Option<&Path> {
         self.selected().map(|elem| elem.path())
+    }
+
+    /// Returns the index of the selected item
+    pub fn selected_idx(&self) -> usize {
+        self.selected_idx
     }
 
     /// Returns either the selected-idx or non-hidden-idx,

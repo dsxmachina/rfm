@@ -155,7 +155,8 @@ impl PanelManager {
         right.new_panel_instant(center.panel().selected_path());
 
         // select the correct directory for the left panel
-        left.panel_mut().select_path(center.panel().path());
+        left.panel_mut()
+            .select_path(center.panel().path(), Some(center.panel().selected_idx()));
 
         // TODO: If the user has multiple disks, the temp-dir may be on another disk,
         // so deleting would effectively be a copy - which is not what we want here.
@@ -519,9 +520,10 @@ impl PanelManager {
         };
         // FIX: Re-selecting path. If we are in a hidden directory, we want to re-select the
         // correct path in the left panel.
-        self.left
-            .panel_mut()
-            .select_path(self.center.panel().path());
+        self.left.panel_mut().select_path(
+            self.center.panel().path(),
+            Some(self.center.panel().selected_idx()),
+        );
         self.redraw_everything();
     }
 
@@ -602,7 +604,7 @@ impl PanelManager {
                         self.rev_history.len()
                     );
                     info!("set-center-panel selection");
-                    self.center.panel_mut().select_path(&path);
+                    self.center.panel_mut().select_path(&path, None);
                 }
 
                 self.right
@@ -676,7 +678,7 @@ impl PanelManager {
                 );
                 self.left.new_panel_instant(Some(previous));
                 info!("set-left-panel selection");
-                self.left.panel_mut().select_path(&selected);
+                self.left.panel_mut().select_path(&selected, None);
             }
             None => {
                 let parent = self.center.panel().path().parent();
@@ -685,7 +687,7 @@ impl PanelManager {
                 info!("set-left-panel selection");
                 self.left
                     .panel_mut()
-                    .select_path(self.center.panel().path());
+                    .select_path(self.center.panel().path(), None);
             }
         }
 
@@ -707,7 +709,7 @@ impl PanelManager {
             self.rev_history.clear();
             self.previous = self.center.panel().path().to_path_buf();
             self.left.new_panel_instant(path.parent());
-            self.left.panel_mut().select_path(&path);
+            self.left.panel_mut().select_path(&path, None);
             self.center.new_panel_instant(Some(&path));
             self.right
                 .new_panel_delayed(self.center.panel().selected_path());
@@ -823,7 +825,7 @@ impl PanelManager {
                     } else if self.left.check_update(&state) {
                         // Notification::new().summary("update-left").body(&format!("{:?}", state)).show().unwrap();
                         self.left.update_panel(panel);
-                        self.left.panel_mut().select_path(self.center.panel().path());
+                        self.left.panel_mut().select_path(self.center.panel().path(), Some(self.center.panel().selected_idx()));
                         self.redraw_left();
                         self.redraw_console();
                     } else {
