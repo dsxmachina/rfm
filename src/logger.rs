@@ -49,6 +49,12 @@ impl LogBuffer {
             .collect()
     }
 
+    /// Removes the oldest log line
+    pub fn remove_oldest(&self) {
+        let mut buffer = self.buffer.lock();
+        buffer.pop_front();
+    }
+
     pub async fn update(&self) {
         self.notify.notified().await
     }

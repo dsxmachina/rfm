@@ -212,6 +212,7 @@ impl PanelManager {
         self.redraw.right = true;
         self.redraw.header = true;
         self.redraw.footer = true;
+        self.redraw.log = true;
     }
 
     fn redraw_left(&mut self) {
@@ -284,7 +285,7 @@ impl PanelManager {
             .into_iter()
             .rev()
             .find(|(level, _)| *level <= Level::Warn)
-        {
+        e
             queue!(
                 self.stdout,
                 cursor::MoveTo(0, y),
@@ -980,7 +981,7 @@ impl PanelManager {
                                     get_destination(&file, self.trash_dir.path()).unwrap();
                                 let result = std::fs::rename(&file, &destination);
                                 if let Err(e) = result {
-                                    error!("{e}");
+                                    error!("Cannot delete {}: {e}", file.display());
                                 }
                             }
                             self.left.reload();
@@ -999,13 +1000,14 @@ impl PanelManager {
                                         overwrite
                                     );
                                     for file in clipboard.files.iter() {
-                                        let result = if clipboard.cut {
-                                            move_item(file, &current_path)
+                                        if clipboard.cut {
+                                            if let Err(e) = move_item(file, &current_path) {
+                                                error!("Failed to move {}: {e}", file.display());
+                                            }
                                         } else {
-                                            copy_item(file, &current_path)
-                                        };
-                                        if let Err(e) = result {
-                                            error!("{e}");
+                                            if let Err(e) = copy_item(file, &current_path) {
+                                                error!("Failed to copy {}: {e}", file.display());
+                                            }
                                         }
                                     }
                                 }

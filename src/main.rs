@@ -20,7 +20,7 @@ use std::{
     error::Error,
     fs::{File, OpenOptions},
     io::{stdout, IsTerminal, Write},
-    path::PathBuf,
+    path::PathBuf, time::Duration,
 };
 use symbols::SymbolEngine;
 use tokio::sync::mpsc;
@@ -95,6 +95,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_capacity(15);
     log::set_boxed_logger(Box::new(logger.clone())).expect("failed to initialize logger");
     log::set_max_level(log::LevelFilter::Info);
+
+    // Spawn a task that periodically removes the oldest log line
+    //
+    // This automatically ensures that any error message will be removed after 2 * LOG_CAPACITY seconds
+    let periodic_logger = logger.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            periodic_logger.remove_oldest();
+        }
+    });
 
     enable_raw_mode()?;
 
@@ -238,8 +249,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
     match panel_result {
         Ok(Ok(close_cmd)) => {
             if let CloseCmd::QuitErr { error } = &close_cmd {
-                eprintln!("{}", ERROR_MSG);
-                eprintln!("{error}");
+                error!("{error}");
+                // Print all errors
+                let errors = logger.get_errors();
+                if !errors.is_empty() {
+                    // Write error.log
+                    let log_output: String = logger
+                        .get()
+                        .into_iter()
+                        .map(|(level, msg)| format!("{level}: {msg}\n"))
+                        .collect();
+                    let mut log = std::fs::File::create("./error.log")?;
+                    log.write_all(log_output.as_bytes())?;
+                    eprintln!("{}", ERROR_MSG);
+                    eprintln!("Error:");
+                    for e in errors {
+                        eprintln!("{e}");
+                    }
+                }
                 return Ok(());
             }
             if let Some(choosedir) = args.choosedir {
@@ -274,23 +301,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     if let Err(e) = prev_mngr_result {
         error!("preview-mngr-task: {e}");
-    }
-    // Print all errors
-    let errors = logger.get_errors();
-    if !errors.is_empty() {
-        // Write error.log
-        let log_output: String = logger
-            .get()
-            .into_iter()
-            .map(|(level, msg)| format!("{level}: {msg}\n"))
-            .collect();
-        let mut log = std::fs::File::create("./error.log")?;
-        log.write_all(log_output.as_bytes())?;
-        eprintln!("{}", ERROR_MSG);
-        eprintln!("Error:");
-        for e in errors {
-            eprintln!("{e}");
-        }
     }
     Ok(())
 }
