@@ -112,10 +112,6 @@ impl Input {
         &self.input
     }
 
-    pub fn cursor(&self) -> u16 {
-        self.cursor as u16
-    }
-
     pub fn print(&self, stdout: &mut Stdout, color: Color) -> crossterm::Result<()> {
         let (left, right) = self.input.as_str().split_at(self.cursor);
         // let left: String = self.input.chars().take(self.cursor).collect();

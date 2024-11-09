@@ -803,13 +803,6 @@ impl DirPanel {
         }
     }
 
-    /// Returns the selcted path of the panel as an owned `PathBuf`.
-    ///
-    /// If the panel is empty `None` is returned.
-    pub fn selected_path_owned(&self) -> Option<PathBuf> {
-        self.selected_path().map(|p| p.to_path_buf())
-    }
-
     /// Returns a reference to the selected [`DirElem`].
     ///
     /// If the panel is empty `None` is returned.

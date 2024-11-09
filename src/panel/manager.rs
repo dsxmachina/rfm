@@ -192,9 +192,9 @@ impl PanelManager {
         })
     }
 
-    fn redraw_header(&mut self) {
-        self.redraw.header = true;
-    }
+    // fn redraw_header(&mut self) {
+    //     self.redraw.header = true;
+    // }
 
     fn redraw_footer(&mut self) {
         self.redraw.footer = true;
@@ -505,40 +505,6 @@ impl PanelManager {
         Ok(())
     }
 
-    // TODO: Think about new concept for this
-    // fn undo(&mut self) {
-    //     let last_operation = self.stack.pop();
-    //     if last_operation.is_none() {
-    //         return;
-    //     }
-    //     match last_operation.unwrap() {
-    //         Operation::MoveItems { from, to } => {
-    //             // This is harder than initially thought;
-    //             // whenever we overwrite something while moving,
-    //             // there is no way of undoing this.
-    //             // In this case, we must forbid that something can be overwritten at all,
-    //             // and instead before writing the new file to the location, we have to move the
-    //             // old one to the trash.
-    //             // But if we then undo this - we would again overwrite the file we want to "un-move".
-    //             //
-    //             // So we need more thoughts on that.
-    //             for item in from {
-    //                 let current_path = item.components().last().map(|p| to.join(p));
-    //             }
-    //             todo!("move items back");
-    //         }
-    //         Operation::CopyItems { from, to } => {
-    //             todo!("delete items");
-    //         }
-    //         Operation::Mkdir { path } => {
-    //             todo!("remove directory");
-    //         }
-    //         Operation::Move(_) => {
-    //             todo!("unmove");
-    //         }
-    //     }
-    // }
-
     fn toggle_hidden(&mut self) {
         self.show_hidden = !self.show_hidden;
         self.left.panel_mut().set_hidden(self.show_hidden);
@@ -564,16 +530,16 @@ impl PanelManager {
         }
     }
 
-    fn select(&mut self, path: &Path) {
-        if self.center.panel().selected_path() == Some(path) {
-            return;
-        }
-        self.center.panel_mut().select_path(path);
-        self.right
-            .new_panel_delayed(self.center.panel().selected_path());
-        self.redraw_center();
-        self.redraw_right();
-    }
+    // fn select(&mut self, path: &Path) {
+    //     if self.center.panel().selected_path() == Some(path) {
+    //         return;
+    //     }
+    //     self.center.panel_mut().select_path(path);
+    //     self.right
+    //         .new_panel_delayed(self.center.panel().selected_path());
+    //     self.redraw_center();
+    //     self.redraw_right();
+    // }
 
     fn move_up(&mut self, step: usize) {
         trace!("move-up");
@@ -597,7 +563,6 @@ impl PanelManager {
         }
     }
 
-    // TODO: Make this more efficient - the swapping was too nice to give it up
     fn move_right(&mut self) {
         trace!("move-right");
         if let Some(selected) = self.center.panel().selected_path().map(|p| p.to_path_buf()) {
@@ -642,7 +607,6 @@ impl PanelManager {
         }
     }
 
-    // TODO: Make this more efficient - the swapping was too nice to give it up
     fn move_left(&mut self) {
         trace!("move-left");
         // If the left panel is empty, we cannot move left:

@@ -121,10 +121,6 @@ impl PanelState {
         }
     }
 
-    pub fn id(&self) -> u64 {
-        self.panel_id
-    }
-
     pub fn path(&self) -> PathBuf {
         self.path.clone()
     }

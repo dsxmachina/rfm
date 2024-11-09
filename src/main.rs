@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use clap::Parser;
 use commands::{CloseCmd, CommandParser};
 use content::{PanelCache, SHUTDOWN_FLAG};
