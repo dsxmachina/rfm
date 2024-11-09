@@ -94,7 +94,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_level(log::Level::Debug)
         .with_capacity(15);
     log::set_boxed_logger(Box::new(logger.clone())).expect("failed to initialize logger");
-    log::set_max_level(log::LevelFilter::Debug);
+    log::set_max_level(log::LevelFilter::Info);
 
     enable_raw_mode()?;
 

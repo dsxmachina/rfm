@@ -104,6 +104,8 @@ pub struct PanelManager {
     event_reader: EventStream,
 
     // TODO: Implement "history"
+    history: Vec<(PathBuf, PathBuf)>,
+
     /// Previous path
     previous: PathBuf,
     pre_console_path: PathBuf,
@@ -182,6 +184,7 @@ impl PanelManager {
                 footer: true,
             },
             event_reader,
+            history: Vec::new(),
             previous: ".".into(),
             pre_console_path: ".".into(),
             trash_dir,
@@ -569,6 +572,21 @@ impl PanelManager {
             // If the selected item is a directory, all panels will shift to the left
             if selected.is_dir() {
                 self.previous = self.center.panel().path().to_path_buf();
+                info!(
+                    "push to history: {}, len={}",
+                    self.previous.display(),
+                    self.history.len()
+                );
+
+                // Remember forward history
+                self.history.push((
+                    self.left.panel().path().to_owned(),
+                    self.left
+                        .panel()
+                        .selected_path()
+                        .map(|p| p.to_owned())
+                        .unwrap_or_default(),
+                ));
                 self.left.update_panel(self.center.panel().clone());
                 self.center
                     .new_panel_instant(self.right.panel().maybe_path());
@@ -619,11 +637,26 @@ impl PanelManager {
         self.center.update_panel(self.left.panel().clone());
         // | m | l | m |
         // TODO: When we followed some symlink we don't want to take the parent here.
-        self.left
-            .new_panel_instant(self.center.panel().path().parent());
-        self.left
-            .panel_mut()
-            .select_path(self.center.panel().path());
+        match self.history.pop() {
+            Some((previous, selected)) => {
+                info!(
+                    "using history: {}, selected={}, len={}",
+                    previous.display(),
+                    selected.display(),
+                    self.history.len()
+                );
+                self.left.new_panel_instant(Some(previous));
+                self.left.panel_mut().select_path(&selected);
+            }
+            None => {
+                let parent = self.center.panel().path().parent();
+                info!("using parent: {:?}", parent);
+                self.left.new_panel_instant(parent);
+                self.left
+                    .panel_mut()
+                    .select_path(self.center.panel().path());
+            }
+        }
 
         self.unmark_left_right();
 
@@ -639,6 +672,7 @@ impl PanelManager {
             return;
         }
         if path.exists() {
+            self.history.clear(); // Delete history when jumping
             self.previous = self.center.panel().path().to_path_buf();
             self.left.new_panel_instant(path.parent());
             self.left.panel_mut().select_path(&path);

@@ -4,7 +4,7 @@ use crossterm::{
     terminal::{self, Clear, ClearType},
     QueueableCommand, Result,
 };
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use notify::{RecommendedWatcher, Watcher};
 use parking_lot::Mutex;
 use std::{
@@ -132,7 +132,7 @@ fn unwatch_path<P: AsRef<Path>>(watcher: &mut RecommendedWatcher, path: P) {
     if path.exists() && path.is_dir() {
         match watcher.unwatch(path) {
             Ok(_) => {
-                debug!("unwatching {}", path.display());
+                trace!("unwatching {}", path.display());
             }
             Err(e) => {
                 warn!("unwatch-error: {}", e);
@@ -147,7 +147,7 @@ fn watch_path<P: AsRef<Path>>(watcher: &mut RecommendedWatcher, path: P) {
     if path.exists() && path.is_dir() {
         match watcher.watch(path, notify::RecursiveMode::NonRecursive) {
             Ok(_) => {
-                debug!("watching {}", path.display());
+                trace!("watching {}", path.display());
             }
             Err(e) => {
                 warn!("watch-error: {}", e);
