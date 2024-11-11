@@ -5,7 +5,7 @@ use std::{
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use log::trace;
-use patricia_tree::PatriciaMap;
+use patricia_tree::StringPatriciaMap;
 use serde::Deserialize;
 
 const CTRL_C: KeyEvent = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
@@ -155,11 +155,11 @@ pub enum CloseCmd {
 
 /// Takes the incoming key-events, and returns the corresponding command.
 ///
-/// Uses a `PatriciaMap` to match patterns of keystrokes,
+/// Uses a `StringPatriciaMap` to match patterns of keystrokes,
 /// and a normal `HashMap` to match "oneshot"-commands,
 /// that don't require any key combinations but may require a modifier.
 pub struct CommandParser {
-    key_commands: PatriciaMap<Command>,
+    key_commands: StringPatriciaMap<Command>,
     mod_commands: HashMap<KeyEvent, Command>,
     buffer: String,
 }
@@ -263,7 +263,7 @@ impl CommandParser {
             Command::Move(Move::PageForward),
         );
         CommandParser {
-            key_commands: PatriciaMap::new(),
+            key_commands: StringPatriciaMap::new(),
             mod_commands,
             buffer: "".to_string(),
         }
@@ -316,7 +316,7 @@ impl CommandParser {
 
     pub fn default_bindings() -> Self {
         // --- Commands for "normal" keys:
-        let mut key_commands = PatriciaMap::new();
+        let mut key_commands = StringPatriciaMap::new();
         // Basic movement commands
         key_commands.insert("h", Command::Move(Move::Left));
         key_commands.insert("j", Command::Move(Move::Down));
@@ -447,6 +447,10 @@ impl CommandParser {
         self.buffer.clone()
     }
 
+    // pub fn matching_commands(&self) -> Vec<String> {
+    //     self.key_commands.iter_prefix(self.buffer.as_bytes()).map(|(_, v)| )
+    // }
+
     pub fn clear(&mut self) {
         self.buffer.clear();
     }
@@ -472,18 +476,13 @@ impl CommandParser {
                 }
 
                 // Check if there are commands with that prefix
-                if self
-                    .key_commands
-                    .iter_prefix(self.buffer.as_bytes())
-                    .count()
-                    == 0
-                {
+                if self.key_commands.iter_prefix(&self.buffer).count() == 0 {
                     self.buffer.clear();
                     return Command::None;
                 }
 
                 // Check if we have a valid command
-                if let Some(command) = self.key_commands.get(self.buffer.as_bytes()) {
+                if let Some(command) = self.key_commands.get(&self.buffer) {
                     self.buffer.clear();
                     trace!("Command: {:?}", command);
                     return command.clone();
