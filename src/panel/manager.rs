@@ -1,4 +1,4 @@
-use std::{fs::OpenOptions, os::unix::prelude::MetadataExt};
+use std::fs::OpenOptions;
 
 use crossterm::{
     event::{Event, EventStream, KeyCode},
@@ -9,14 +9,12 @@ use crossterm::{
 use futures::{FutureExt, StreamExt};
 use log::{debug, error, info, trace, Level};
 use tempfile::TempDir;
-use time::OffsetDateTime;
-use users::{get_group_by_gid, get_user_by_uid};
 
 use crate::{
     commands::{CloseCmd, Command, CommandParser},
     logger::LogBuffer,
     opener::OpenEngine,
-    util::{copy_item, file_size_str, get_destination, move_item},
+    util::{copy_item, get_destination, move_item, print_metadata},
 };
 
 use super::{console::DirConsole, input::Input, *};
@@ -103,8 +101,10 @@ pub struct PanelManager {
     /// Event-stream from the terminal
     event_reader: EventStream,
 
-    // TODO: Implement "history"
+    /// History when going "forward"
     fwd_history: Vec<(PathBuf, PathBuf)>,
+
+    /// History when going "backwards"
     rev_history: Vec<PathBuf>,
 
     /// Previous path
@@ -376,55 +376,16 @@ impl PanelManager {
             }
             return self.stdout.flush();
         }
-        if let Some(selection) = self.center.panel().selected() {
-            let path = selection.path();
-            let permissions;
-            let other;
-            // TODO: Maybe we can put all of this into the DirElem and be done with it.
-            if let Ok(metadata) = path.metadata() {
-                permissions = unix_mode::to_string(metadata.permissions().mode());
-                let modified = metadata
-                    .modified()
-                    .map(OffsetDateTime::from)
-                    .map(|t| {
-                        format!(
-                            "{}-{:02}-{:02} {:02}:{:02}:{:02}",
-                            t.year(),
-                            u8::from(t.month()),
-                            t.day(),
-                            t.hour(),
-                            t.minute(),
-                            t.second()
-                        )
-                    })
-                    .unwrap_or_else(|_| String::from("cannot read timestamp"));
-                let user = get_user_by_uid(metadata.uid())
-                    .and_then(|u| u.name().to_str().map(String::from))
-                    .unwrap_or_default();
-                let group = get_group_by_gid(metadata.gid())
-                    .and_then(|g| g.name().to_str().map(String::from))
-                    .unwrap_or_default();
-                let size_str = file_size_str(metadata.size());
-                let mime_type = mime_guess::from_path(path).first_raw().unwrap_or_default();
-                other = format!("{user} {group} {size_str} {modified} {mime_type}");
-            } else {
-                permissions = String::from("------------");
-                other = String::from("");
-            }
+        let (permissions, metadata) = print_metadata(self.center.panel().selected_path());
 
-            queue!(
-                self.stdout,
-                style::PrintStyledContent(permissions.dark_cyan()),
-                Print("   "),
-                Print(other)
-            )?;
-        } else {
-            queue!(
-                self.stdout,
-                style::PrintStyledContent("------------".dark_cyan()),
-            )?;
-        }
+        queue!(
+            self.stdout,
+            style::PrintStyledContent(permissions.dark_cyan()),
+            Print("   "),
+            Print(metadata)
+        )?;
 
+        // TODO: We could place this into its own line, and also print some recommendations
         let key_buffer = self.parser.buffer();
         let (n, m) = self.center.panel().index_vs_total();
         let n_files_string = format!("{n}/{m} ");

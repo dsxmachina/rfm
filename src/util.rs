@@ -1,10 +1,13 @@
 use std::{
     error::Error,
+    os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
 use fs_extra::dir::CopyOptions;
 use notify_rust::Notification;
+use time::OffsetDateTime;
+use users::{get_group_by_gid, get_user_by_uid};
 
 pub fn file_size_str(file_size: u64) -> String {
     match file_size {
@@ -212,5 +215,46 @@ pub fn xdg_config_home() -> Result<PathBuf, Box<dyn Error>> {
                     .to_string(),
             )?,
         },
+    }
+}
+
+/// Returns the permissions and metadata for some selected path, if any.
+///
+/// The output is ready to be printed in the footer of the filemanager.
+pub fn print_metadata(selected_path: Option<&Path>) -> (String, String) {
+    if let Some(path) = selected_path {
+        // TODO: Maybe we can put all of this into the DirElem and be done with it.
+        if let Ok(metadata) = path.metadata() {
+            let permissions = unix_mode::to_string(metadata.permissions().mode());
+            let modified = metadata
+                .modified()
+                .map(OffsetDateTime::from)
+                .map(|t| {
+                    format!(
+                        "{}-{:02}-{:02} {:02}:{:02}:{:02}",
+                        t.year(),
+                        u8::from(t.month()),
+                        t.day(),
+                        t.hour(),
+                        t.minute(),
+                        t.second()
+                    )
+                })
+                .unwrap_or_else(|_| String::from("cannot read timestamp"));
+            let user = get_user_by_uid(metadata.uid())
+                .and_then(|u| u.name().to_str().map(String::from))
+                .unwrap_or_default();
+            let group = get_group_by_gid(metadata.gid())
+                .and_then(|g| g.name().to_str().map(String::from))
+                .unwrap_or_default();
+            let size_str = file_size_str(metadata.size());
+            let mime_type = mime_guess::from_path(path).first_raw().unwrap_or_default();
+            let other = format!("{user} {group} {size_str} {modified} {mime_type}");
+            (permissions, other)
+        } else {
+            ("------------".to_string(), "".to_string())
+        }
+    } else {
+        ("------------".to_string(), "".to_string())
     }
 }
