@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    fmt::Display,
     path::{Path, PathBuf},
 };
 
@@ -84,7 +85,7 @@ struct General {
     previous: Vec<String>,
     view_trash: Vec<String>,
     toggle_hidden: Vec<String>,
-    toggle_log: Vec<String>,
+    toggle_log: Option<Vec<String>>,
     quit: Vec<String>,
     quit_no_cd: Option<Vec<String>>,
 }
@@ -146,6 +147,54 @@ pub enum Command {
     None,
 }
 
+impl Display for Command {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Command::Move(m) => match m {
+                Move::Up => write!(f, "move up"),
+                Move::Down => write!(f, "move down"),
+                Move::Left => write!(f, "move left"),
+                Move::Right => write!(f, "move right"),
+                Move::Top => write!(f, "move to top"),
+                Move::Bottom => write!(f, "move to bottom"),
+                Move::PageForward => write!(f, "page forward"),
+                Move::PageBackward => write!(f, "page backward"),
+                Move::HalfPageForward => write!(f, "half page forward"),
+                Move::HalfPageBackward => write!(f, "half page backward"),
+                Move::JumpTo(path) => write!(f, "{}", path.0.display()),
+                Move::JumpPrevious => write!(f, "jump back"),
+            },
+            Command::Next => write!(f, "next match"),
+            Command::Previous => write!(f, "previous match"),
+            Command::ToggleHidden => write!(f, "toggle hidden files"),
+            Command::ToggleLog => write!(f, "toggle developer log"),
+            Command::ViewTrash => write!(f, "go to trash"),
+            Command::Zip => write!(f, "zip selected items"),
+            Command::Tar => write!(f, "tar selected items"),
+            Command::Extract => write!(f, "extract selected archive"),
+            Command::Cd => write!(f, "enter 'cd' mode"),
+            Command::Search => write!(f, "search for items"),
+            Command::Rename => write!(f, "rename selected items"),
+            Command::Mkdir => write!(f, "create a new directory"),
+            Command::Touch => write!(f, "create a new file"),
+            Command::Cut => write!(f, "cut selected items"),
+            Command::Copy => write!(f, "copy selected items"),
+            Command::Delete => write!(f, "delete selected items"),
+            Command::Paste { overwrite } => {
+                if *overwrite {
+                    write!(f, "paste and overwrite")
+                } else {
+                    write!(f, "paste without overwrite")
+                }
+            }
+            Command::Mark => write!(f, "mark selected item"),
+            Command::Quit => write!(f, "quit"),
+            Command::QuitWithoutPath => write!(f, "quit without changing path"),
+            Command::None => write!(f, "no command"),
+        }
+    }
+}
+
 /// Set of commands that the filemanager should perform just before closing
 pub enum CloseCmd {
     QuitWithPath { path: PathBuf },
@@ -173,7 +222,10 @@ impl CommandParser {
         parser.insert(config.general.next, Command::Next);
         parser.insert(config.general.previous, Command::Previous);
         parser.insert(config.general.toggle_hidden, Command::ToggleHidden);
-        parser.insert(config.general.toggle_log, Command::ToggleLog);
+        parser.insert(
+            config.general.toggle_log.unwrap_or_default(),
+            Command::ToggleLog,
+        );
         parser.insert(config.general.view_trash, Command::ViewTrash);
         parser.insert(config.general.quit, Command::Quit);
         if let Some(quit_cmd) = config.general.quit_no_cd {
@@ -447,9 +499,16 @@ impl CommandParser {
         self.buffer.clone()
     }
 
-    // pub fn matching_commands(&self) -> Vec<String> {
-    //     self.key_commands.iter_prefix(self.buffer.as_bytes()).map(|(_, v)| )
-    // }
+    pub fn matching_commands(&self) -> Vec<(String, String)> {
+        if self.buffer.is_empty() {
+            Vec::new()
+        } else {
+            self.key_commands
+                .iter_prefix(&self.buffer)
+                .map(|(k, v)| (k.clone(), v.to_string()))
+                .collect()
+        }
+    }
 
     pub fn clear(&mut self) {
         self.buffer.clear();

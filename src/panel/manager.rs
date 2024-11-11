@@ -256,7 +256,7 @@ impl PanelManager {
             return Ok(());
         }
 
-        let mut y = self.layout.footer().saturating_sub(2);
+        let mut y = self.layout.footer().saturating_sub(2); // or 3, if we have the advanced command preview
 
         let print_level = |level| match level {
             log::Level::Error => PrintStyledContent("error".red().bold()),
@@ -377,7 +377,6 @@ impl PanelManager {
             return self.stdout.flush();
         }
         let (permissions, metadata) = print_metadata(self.center.panel().selected_path());
-
         queue!(
             self.stdout,
             style::PrintStyledContent(permissions.dark_cyan()),
@@ -390,13 +389,44 @@ impl PanelManager {
         let (n, m) = self.center.panel().index_vs_total();
         let n_files_string = format!("{n}/{m} ");
 
+        // Okay, we CAN print the matching commands, but currently I am not very happy with this.
+        if false {
+            queue!(
+                self.stdout,
+                cursor::MoveTo(
+                    // (self.layout.width() / 2).saturating_sub(key_buffer.len() as u16 / 2),
+                    0,
+                    self.layout.footer().saturating_sub(2),
+                ),
+                Clear(ClearType::CurrentLine),
+                style::PrintStyledContent(key_buffer.clone().white().on_dark_grey()),
+                Print("    "),
+            )?;
+            let key_buffer_len = key_buffer.chars().count();
+            for (cmd, desc) in self.parser.matching_commands() {
+                let sub_cmd: String = cmd.chars().skip(key_buffer_len).collect();
+                queue!(
+                    self.stdout,
+                    style::PrintStyledContent(key_buffer.clone().white().on_dark_grey()),
+                    style::PrintStyledContent(sub_cmd.dark_grey()),
+                    Print(": "),
+                    style::PrintStyledContent(desc.dark_grey()),
+                    Print("   "),
+                )?;
+            }
+        } else {
+            queue!(
+                self.stdout,
+                cursor::MoveTo(
+                    (self.layout.width() / 2).saturating_sub(key_buffer.len() as u16 / 2),
+                    self.layout.footer()
+                ),
+                style::PrintStyledContent(key_buffer.dark_grey()),
+            )?;
+        }
+        // ---
         queue!(
             self.stdout,
-            cursor::MoveTo(
-                (self.layout.width() / 2).saturating_sub(key_buffer.len() as u16 / 2),
-                self.layout.footer()
-            ),
-            style::PrintStyledContent(key_buffer.dark_grey()),
             cursor::MoveTo(
                 self.layout
                     .width()
@@ -1027,8 +1057,10 @@ impl PanelManager {
                         Command::QuitWithoutPath => {
                             return Ok(Some(CloseCmd::Quit));
                         }
-                        Command::None => self.redraw_footer(),
+                        Command::None => {}
                     }
+                    // Always redraw footer
+                    self.redraw_footer();
                 }
                 Mode::Console { console } => match key_event.code {
                     KeyCode::Backspace => {
