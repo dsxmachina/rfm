@@ -27,9 +27,9 @@
 # It shows the mime-type for the current selection.
 #
 
-# --- Uncomment to configure mime-type 'text'
-#[text]
-#default = { name = "nvim", args = [], terminal = true }
+# --- Configure mime-type 'text'
+[text]
+default = { name = "vim", args = [], terminal = true }
 
 # --- Uncomment to configure mime-type 'image'
 #[image]
