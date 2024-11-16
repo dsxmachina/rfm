@@ -1,6 +1,15 @@
 # The color configuration is pretty basic
 #
+# For normal text, rfm uses the foreground and background color of your terminal.
+# Apart from that, there are only four colors in use, which can be configured to any
+# of the 16 base colors, that are available for all terminals.
+#
+# Available options are:
 # 
+# black    , dark-red, dark-green, dark-yellow, dark-blue, dark-magenta, dark-cyan, grey
+# dark-grey,      red,      green,      yellow,      blue,      magenta,      cyan, white
+#
+#
 main = "dark-green"
 marked = "dark-yellow"
 highlight = "red"
