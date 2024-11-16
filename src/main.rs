@@ -360,3 +360,8 @@ fn embedded_key_config() {
 fn embedded_open_config() {
     assert!(Examples::get("open.toml").is_some());
 }
+
+#[test]
+fn embedded_color_config() {
+    assert!(Examples::get("colors.toml").is_some());
+}
