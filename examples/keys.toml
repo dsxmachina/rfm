@@ -5,7 +5,7 @@
 # [category]
 # command = [ "k" , "sk", "thirdkeybinding" ]
 #    ^        ^^^   ^^^^   ^^^^^^^^^^^^^^^^^
-#    |      single   |       or even words
+#    |      single   |       or even words (without spaces)
 #    |       key   multiple
 #    |              keys
 #    |
@@ -49,11 +49,10 @@ jump_previous      = [ "''" ]
 #
 jump_to = [ ["gh", "~"],
             ["gc", "~/.config"],
-            ["gs", "~/.scripts"],
-            ["gb", "~/Bilder"],
-            ["gd", "~/Dokumente"],
+            ["gp", "~/Pictures"],
+            ["gd", "~/Documents"],
             ["gD", "~/Downloads"],
-            ["gm", "~/Musik"],
+            ["gm", "~/Music"],
             ["gr", "/"],
             ["ge", "/etc"],
             ["gu", "/usr"]]
