@@ -27,6 +27,7 @@ use symbols::SymbolEngine;
 use tokio::sync::mpsc;
 use util::xdg_config_home;
 
+mod color;
 mod commands;
 mod content;
 mod logger;
