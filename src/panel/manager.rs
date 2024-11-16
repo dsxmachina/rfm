@@ -1002,10 +1002,8 @@ impl PanelManager {
                                             if let Err(e) = move_item(file, &current_path) {
                                                 error!("Failed to move {}: {e}", file.display());
                                             }
-                                        } else {
-                                            if let Err(e) = copy_item(file, &current_path) {
-                                                error!("Failed to copy {}: {e}", file.display());
-                                            }
+                                        } else if let Err(e) = copy_item(file, &current_path) {
+                                            error!("Failed to copy {}: {e}", file.display());
                                         }
                                     }
                                 }

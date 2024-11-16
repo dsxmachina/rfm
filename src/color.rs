@@ -17,7 +17,7 @@ pub struct ColorConfig {
 }
 
 fn extract_color(string: String) -> Result<Color> {
-    let converted = string.to_ascii_lowercase().replace("-", "_");
+    let converted = string.to_ascii_lowercase().replace('-', "_");
     let color = converted
         .as_str()
         .try_into()

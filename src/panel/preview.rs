@@ -351,16 +351,13 @@ impl PanelContent for PreviewPanel {
     }
 
     fn update_content(&mut self, mut content: Self) {
-        match self {
-            PreviewPanel::Dir(panel) => {
-                // If the content is for the same path, also select the correct item
-                if panel.path() == content.path() {
-                    if let Some(path) = panel.selected_path() {
-                        content.select_path(path);
-                    }
+        if let PreviewPanel::Dir(panel) = self {
+            // If the content is for the same path, also select the correct item
+            if panel.path() == content.path() {
+                if let Some(path) = panel.selected_path() {
+                    content.select_path(path);
                 }
             }
-            _ => (),
         }
         *self = content;
     }
