@@ -7,7 +7,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::util::truncate_with_color_codes;
+use crate::{color::print_vertical_bar, util::truncate_with_color_codes};
 
 use super::{BasePanel, DirPanel, Draw, PanelContent};
 use crossterm::{
@@ -45,7 +45,7 @@ impl Draw for FilePreview {
             queue!(
                 stdout,
                 cursor::MoveTo(x_range.start, y),
-                PrintStyledContent("│".dark_green().bold()),
+                print_vertical_bar(),
             )?;
         }
 
@@ -321,7 +321,7 @@ impl Draw for PreviewPanel {
                     queue!(
                         stdout,
                         cursor::MoveTo(x_range.start, y),
-                        PrintStyledContent("│".dark_green().bold()),
+                        print_vertical_bar(),
                     )?;
                     for x in x_range.start + 1..x_range.end {
                         queue!(stdout, cursor::MoveTo(x, y), Print(" "),)?;

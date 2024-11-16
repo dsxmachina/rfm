@@ -5,10 +5,11 @@ use std::{
     time::SystemTime,
 };
 
-use crossterm::style::{ContentStyle, StyledContent};
+use crossterm::style::{Color, ContentStyle, StyledContent};
 use unix_mode::is_allowed;
 
 use crate::{
+    color::{color_highlight, color_main, color_marked, print_vertical_bar},
     content::dir_content,
     symbols::SymbolEngine,
     util::{file_size_str, ExactWidth},
@@ -91,7 +92,7 @@ impl DirElem {
         let string: String;
         let mut style = ContentStyle::new();
         if self.path.is_dir() {
-            style = style.dark_green().bold();
+            style = style.with(color_main()).bold();
             string = format!(" \u{1F4C1}{name} {} ", self.suffix);
         } else if self.is_executable {
             style = style.green().bold();
@@ -103,7 +104,7 @@ impl DirElem {
             string = format!(" {symbol} {name} {} ", self.suffix);
         }
         if self.is_marked {
-            style = style.dark_yellow();
+            style = style.with(color_marked());
         }
         if selected {
             style = style.negative().bold();
@@ -295,7 +296,7 @@ impl Draw for DirPanel {
                     queue!(
                         stdout,
                         cursor::MoveTo(x_range.start, y),
-                        PrintStyledContent("│".dark_green().bold()),
+                        print_vertical_bar(),
                         entry.print_styled(false, width),
                     )?;
                     let pattern_x = x_range.start + 4 + offset as u16;
@@ -303,7 +304,7 @@ impl Draw for DirPanel {
                         queue!(
                             stdout,
                             cursor::MoveTo(pattern_x, y),
-                            PrintStyledContent(pattern.clone().red().bold())
+                            PrintStyledContent(pattern.clone().with(color_highlight()).bold())
                         )?;
                     }
                 } else {
@@ -315,11 +316,11 @@ impl Draw for DirPanel {
                 queue!(
                     stdout,
                     cursor::MoveTo(x_range.start, y_range.start),
-                    PrintStyledContent("│".dark_green().bold()),
+                    print_vertical_bar(),
                     PrintStyledContent(
                         " (no match)"
                             .exact_width(width.saturating_sub(2) as usize)
-                            .red()
+                            .with(color_highlight())
                             .italic()
                     ),
                 )?;
@@ -362,12 +363,12 @@ impl Draw for DirPanel {
                         queue!(
                             stdout,
                             cursor::MoveTo(x_range.start, y_range.start + y_offset),
-                            PrintStyledContent("│".dark_green().bold()),
-                            PrintStyledContent(format!(" {symbol}").red()),
+                            print_vertical_bar(),
+                            PrintStyledContent(format!(" {symbol}").with(color_highlight())),
                             PrintStyledContent(
                                 new_element
                                     .exact_width(width.saturating_sub(4) as usize)
-                                    .red()
+                                    .with(color_highlight())
                             ),
                         )?;
                         y_offset += 1;
@@ -375,7 +376,7 @@ impl Draw for DirPanel {
                     queue!(
                         stdout,
                         cursor::MoveTo(x_range.start, y_range.start + y_offset),
-                        PrintStyledContent("│".dark_green().bold()),
+                        print_vertical_bar(),
                         entry.print_styled(self.selected_idx == idx, width),
                     )?;
                     y_offset += 1;
@@ -384,12 +385,12 @@ impl Draw for DirPanel {
                     queue!(
                         stdout,
                         cursor::MoveTo(x_range.start, y_range.start + y_offset),
-                        PrintStyledContent("│".dark_green().bold()),
-                        PrintStyledContent(format!(" {symbol}").red()),
+                        print_vertical_bar(),
+                        PrintStyledContent(format!(" {symbol}").with(color_highlight())),
                         PrintStyledContent(
                             new_element
                                 .exact_width(width.saturating_sub(4) as usize)
-                                .red()
+                                .with(color_highlight())
                         ),
                     )?;
                     y_offset += 1;
@@ -408,7 +409,7 @@ impl Draw for DirPanel {
                     queue!(
                         stdout,
                         cursor::MoveTo(x_range.start, y),
-                        PrintStyledContent("│".dark_green().bold()),
+                        print_vertical_bar(),
                         entry.print_styled(self.selected_idx == idx, width),
                     )?;
                     y_offset += 1;
@@ -420,7 +421,7 @@ impl Draw for DirPanel {
             queue!(
                 stdout,
                 cursor::MoveTo(x_range.start, y),
-                PrintStyledContent("│".dark_green().bold()),
+                print_vertical_bar(),
             )?;
             for x in x_range.start + 1..x_range.end {
                 queue!(stdout, cursor::MoveTo(x, y), Print(" "),)?;
@@ -432,12 +433,12 @@ impl Draw for DirPanel {
             queue!(
                 stdout,
                 cursor::MoveTo(x_range.start + 2, y_range.start + 1),
-                PrintStyledContent("Loading...".dark_green().bold().italic()),
+                PrintStyledContent("Loading...".with(color_main()).bold().italic()),
                 cursor::MoveTo(x_range.start + 2, y_range.start + 2),
                 PrintStyledContent(
                     format!("{}", self.path.display())
                         .exact_width(width.saturating_sub(2) as usize)
-                        .dark_green()
+                        .with(color_main())
                         .italic()
                 ),
             )?;
@@ -448,11 +449,11 @@ impl Draw for DirPanel {
                     queue!(
                         stdout,
                         cursor::MoveTo(x_range.start + 1, y_range.start),
-                        PrintStyledContent(format!(" {symbol}").red()),
+                        PrintStyledContent(format!(" {symbol}").with(color_highlight())),
                         PrintStyledContent(
                             new_element
                                 .exact_width(width.saturating_sub(4) as usize)
-                                .red()
+                                .with(color_highlight())
                         ),
                     )?;
                 } else {

@@ -10,6 +10,10 @@ You can find a detailed list of features below.
 Please note: rfm is considered beta. However, I use it as my daily filemanager for over a year now, without any problems. 
 But in case you encounter something suspicious while using it, please open an issue or pull request.
 
+## Workflow demonstration
+
+TODO
+
 ## &#128187; Installation
 
 You can directly install `rfm` via cargo:
@@ -100,6 +104,7 @@ There are two configuration files
 
 - `keys.toml` for keyboard configuration and jump-marks
 - `open.toml` to configure how to open files based on mime-type and/or extension
+- TODO: Color configuration
 
 Both files are located under `$XDG_CONFIG_DIR/rfm/` (which is usually `$HOME/.config/rfm`).
 In case they are not present, they will be created automatically on the first start of rfm.
@@ -125,17 +130,6 @@ The following commands are accessible as basic keybindings (meaning you can just
 - Delete a file or directory (delete)
 
 Note: You can change the keybindings for this.
-
-### Preview-Engine
-
-There is a simple preview engine, that generates text previews of the currently selected file.
-For images and text there is an inbuilt system to do it - for other mime-types the application relies on *mediainfo*.
-
-### Trash
-
-Deleting a file does not really delete it, instead it will be moved into a temporary *trash* directory.
-This allows you to "undo" the delete operation, because you can always copy the files or directory from the trash to their original location.
-The trash diretory will be deleted automatically if you close rfm, so you don't accidentely clutter your file-system with a lot of trash files.
 
 ### Jump-marks
 
@@ -174,6 +168,17 @@ or execute a cut, copy or delete operation on them).
 
 Type `cd` and see what happens. You can use `tab` to toggle the recommendation.
 The completion is quite similar to the one you find in`emacs`, so if you are used to that you should feel at home.
+
+### Preview-Engine
+
+There is a simple preview engine, that generates text previews of the currently selected file.
+For images and text there is an inbuilt system to do it - for other mime-types the application relies on *mediainfo*.
+
+### Trash
+
+Deleting a file does not really delete it, instead it will be moved into a temporary *trash* directory.
+This allows you to "undo" the delete operation, because you can always copy the files or directory from the trash to their original location.
+The trash diretory will be deleted automatically if you close rfm, so you don't accidentely clutter your file-system with a lot of trash files.
 
 ### cd into the current directory on exit
 
@@ -219,6 +224,7 @@ The main design goals behind **rfm** are speed and simplicity:
 
 I absolutely *love* ranger and have a lot of admiration for it. 
 However, if you work with large directories, ranger tends to become slow and unresponsive (because it is written in python) - which bugs me a lot.
+
 Another thing that I found unintuitive is the seperation between console commands and normal commands that you can use with keybindings.
 In my opinion, all the standard features should be accessible in the same way to reduce the overall mental load
 (e.g. if you want to create a directory in ranger - which is a common task if you work with a file-manager - you have to enter console mode by hitting ":" and then type

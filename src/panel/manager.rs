@@ -11,6 +11,7 @@ use log::{debug, error, info, trace, Level};
 use tempfile::TempDir;
 
 use crate::{
+    color::{color_dir_path, color_main},
     commands::{CloseCmd, Command, CommandParser},
     logger::LogBuffer,
     opener::OpenEngine,
@@ -261,7 +262,7 @@ impl PanelManager {
         let print_level = |level| match level {
             log::Level::Error => PrintStyledContent("error".red().bold()),
             log::Level::Warn => PrintStyledContent("warn".yellow().bold()),
-            log::Level::Info => PrintStyledContent("info".dark_green().bold()),
+            log::Level::Info => PrintStyledContent("info".with(color_main()).bold()),
             log::Level::Debug => PrintStyledContent("debug".dark_blue()),
             log::Level::Trace => PrintStyledContent("trace".grey()),
         };
@@ -329,10 +330,10 @@ impl PanelManager {
             self.stdout,
             cursor::MoveTo(0, 0),
             Clear(ClearType::CurrentLine),
-            style::PrintStyledContent(prompt.dark_green().bold()),
+            style::PrintStyledContent(prompt.with(color_main()).bold()),
             style::Print(" "),
-            style::PrintStyledContent(prefix.to_string().dark_blue().bold()),
-            style::PrintStyledContent(suffix.to_string().white().bold()),
+            style::PrintStyledContent(prefix.to_string().with(color_dir_path()).bold()),
+            style::PrintStyledContent(suffix.to_string().bold()),
         )?;
         self.redraw.header = false;
         Ok(())
@@ -352,14 +353,18 @@ impl PanelManager {
 
         if let Mode::Search { input } = &self.mode {
             self.stdout
-                .queue(PrintStyledContent("Search".bold().dark_green().reverse()))?
+                .queue(PrintStyledContent(
+                    "Search".bold().with(color_main()).reverse(),
+                ))?
                 .queue(Print(" "))?;
             input.print(&mut self.stdout, style::Color::Red)?;
             return self.stdout.flush();
         }
         if let Mode::Rename { input } = &self.mode {
             self.stdout
-                .queue(PrintStyledContent("Rename:".bold().dark_green().reverse()))?
+                .queue(PrintStyledContent(
+                    "Rename:".bold().with(color_main()).reverse(),
+                ))?
                 .queue(Print(" "))?;
             input.print(&mut self.stdout, style::Color::Yellow)?;
             return self.stdout.flush();
@@ -367,10 +372,12 @@ impl PanelManager {
         if let Mode::CreateItem { input, is_dir } = &self.mode {
             let prompt = if *is_dir { "Make Directory:" } else { "Touch:" };
             self.stdout
-                .queue(PrintStyledContent(prompt.bold().dark_green().reverse()))?
+                .queue(PrintStyledContent(
+                    prompt.bold().with(color_main()).reverse(),
+                ))?
                 .queue(Print(" "))?;
             if *is_dir {
-                input.print(&mut self.stdout, style::Color::DarkGreen)?;
+                input.print(&mut self.stdout, color_main())?;
             } else {
                 input.print(&mut self.stdout, style::Color::Grey)?;
             }
@@ -399,7 +406,7 @@ impl PanelManager {
                     self.layout.footer().saturating_sub(2),
                 ),
                 Clear(ClearType::CurrentLine),
-                style::PrintStyledContent(key_buffer.clone().white().on_dark_grey()),
+                style::PrintStyledContent(key_buffer.clone().on_dark_grey()),
                 Print("    "),
             )?;
             let key_buffer_len = key_buffer.chars().count();
@@ -407,7 +414,7 @@ impl PanelManager {
                 let sub_cmd: String = cmd.chars().skip(key_buffer_len).collect();
                 queue!(
                     self.stdout,
-                    style::PrintStyledContent(key_buffer.clone().white().on_dark_grey()),
+                    style::PrintStyledContent(key_buffer.clone().on_dark_grey()),
                     style::PrintStyledContent(sub_cmd.dark_grey()),
                     Print(": "),
                     style::PrintStyledContent(desc.dark_grey()),
@@ -433,7 +440,7 @@ impl PanelManager {
                     .saturating_sub(n_files_string.len() as u16),
                 self.layout.footer(),
             ),
-            style::PrintStyledContent(n_files_string.white()),
+            style::Print(n_files_string),
         )?;
         self.redraw.footer = false;
         Ok(())

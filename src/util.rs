@@ -1,11 +1,10 @@
+use anyhow::anyhow;
+use fs_extra::dir::CopyOptions;
+use notify_rust::Notification;
 use std::{
-    error::Error,
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
 };
-
-use fs_extra::dir::CopyOptions;
-use notify_rust::Notification;
 use time::OffsetDateTime;
 use users::{get_group_by_gid, get_user_by_uid};
 
@@ -164,7 +163,7 @@ where
     Ok(result)
 }
 
-pub fn move_item<P, Q>(source: P, destination: Q) -> Result<(), Box<dyn Error>>
+pub fn move_item<P, Q>(source: P, destination: Q) -> anyhow::Result<()>
 where
     P: AsRef<Path>,
     Q: AsRef<Path>,
@@ -188,7 +187,7 @@ where
     Ok(())
 }
 
-pub fn copy_item<P, Q>(source: P, destination: Q) -> Result<(), Box<dyn Error>>
+pub fn copy_item<P, Q>(source: P, destination: Q) -> anyhow::Result<()>
 where
     P: AsRef<Path>,
     Q: AsRef<Path>,
@@ -205,15 +204,14 @@ where
 
 /// Query the XDG Config Home (usually ~/.config) according to
 /// https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
-pub fn xdg_config_home() -> Result<PathBuf, Box<dyn Error>> {
+pub fn xdg_config_home() -> anyhow::Result<PathBuf> {
     match std::env::var("XDG_CONFIG_HOME") {
         Ok(xdg_config) => Ok(PathBuf::from(xdg_config)),
         Err(_) => match std::env::var("HOME") {
             Ok(home) => Ok(PathBuf::from(home).join(".config")),
-            Err(_) => Err(
+            Err(_) => Err(anyhow!(
                 "Neither the XDG_CONFIG_HOME nor the HOME environment variable was set."
-                    .to_string(),
-            )?,
+            ))?,
         },
     }
 }

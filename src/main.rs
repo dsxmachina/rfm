@@ -1,3 +1,4 @@
+use anyhow::Context;
 use clap::Parser;
 use commands::{CloseCmd, CommandParser};
 use content::{PanelCache, SHUTDOWN_FLAG};
@@ -17,7 +18,6 @@ use opener::OpenEngine;
 use panel::manager::PanelManager;
 use rust_embed::Embed;
 use std::{
-    error::Error,
     fs::{File, OpenOptions},
     io::{stdout, IsTerminal, Write},
     path::PathBuf,
@@ -26,6 +26,8 @@ use std::{
 use symbols::SymbolEngine;
 use tokio::sync::mpsc;
 use util::xdg_config_home;
+
+use crate::color::{colors_from_config, colors_from_default};
 
 mod color;
 mod commands;
@@ -62,7 +64,7 @@ const ERROR_MSG: &str = "\
 struct Examples;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> anyhow::Result<()> {
     // Check if we run from a terminal
     let mut stdout = stdout();
     if !stdout.is_terminal() {
@@ -89,13 +91,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }));
 
     // Remember starting path
-    let starting_path = std::env::current_dir()?;
+    let starting_path =
+        std::env::current_dir().context("failed to get current directory from env")?;
 
     // Initialize logger
     let logger = LogBuffer::default()
         .with_level(log::Level::Debug)
         .with_capacity(15);
-    log::set_boxed_logger(Box::new(logger.clone())).expect("failed to initialize logger");
+    log::set_boxed_logger(Box::new(logger.clone())).context("failed to initialize logger")?;
     log::set_max_level(log::LevelFilter::Info);
 
     // Spawn a task that periodically removes the oldest log line
@@ -108,6 +111,116 @@ async fn main() -> Result<(), Box<dyn Error>> {
             periodic_logger.remove_oldest();
         }
     });
+
+    // --- Read config directory
+    let config_dir = xdg_config_home()
+        .context("failed to get $XDG_CONFIG_HOME")?
+        .join("rfm");
+
+    // Create config files and config directory, if they are not present
+    if !config_dir.exists() {
+        info!("Creating config directory: {}", config_dir.display());
+        std::fs::create_dir(&config_dir).context("failed to create config directory")?;
+    }
+
+    // --- Set or generate color configuration
+    let color_config_file = config_dir.join("colors.toml");
+    if !color_config_file.exists() {
+        info!("Creating default config file for colors.toml");
+        let default = Examples::get("colors.toml").expect("embedded colors.toml");
+        let mut file = File::create(&color_config_file)
+            .context(format!("failed to create {}", color_config_file.display()))?;
+        file.write_all(&default.data)?;
+    }
+
+    if let Ok(content) = std::fs::read_to_string(&color_config_file) {
+        match toml::from_str(&content) {
+            Ok(color_config) => {
+                info!("Using color config: {}", color_config_file.display());
+                colors_from_config(color_config)?;
+            }
+            Err(e) => {
+                if Notification::new()
+                    .summary("Configuration Error")
+                    .body(&format!("{e}"))
+                    .show()
+                    .is_err()
+                {
+                    warn!("failed to generate notification");
+                }
+                warn!("Configuration error: {e}. Using default color config");
+                colors_from_default();
+            }
+        }
+    } else {
+        info!("Using default color config");
+        colors_from_default();
+    }
+
+    // --- Keyboard configuration
+    let key_config_file = config_dir.join("keys.toml");
+    if !key_config_file.exists() {
+        info!("Creating default config file for keys.toml");
+        let default = Examples::get("keys.toml").expect("embedded keys.toml");
+        let mut file = File::create(&key_config_file)
+            .context(format!("failed to create {}", key_config_file.display()))?;
+        file.write_all(&default.data)?;
+    }
+
+    let parser = if let Ok(content) = std::fs::read_to_string(&key_config_file) {
+        match toml::from_str(&content) {
+            Ok(key_config) => {
+                info!("Using keyboard config: {}", key_config_file.display());
+                CommandParser::from_config(key_config)
+            }
+            Err(e) => {
+                warn!("Configuration error: {e}. Using default keyboard bindings");
+                CommandParser::default_bindings()
+            }
+        }
+    } else {
+        warn!(
+            "Cannot find keyboard config '{}'. Using default keyboard bindings",
+            key_config_file.display()
+        );
+        CommandParser::default_bindings()
+    };
+
+    // --- Opener configuration
+    let open_config_file = config_dir.join("open.toml");
+    if !open_config_file.exists() {
+        info!("Creating default config file for open.toml");
+        let default = Examples::get("open.toml").expect("embedded open.toml");
+        let mut file = File::create(&open_config_file)
+            .context(format!("failed to create {}", open_config_file.display()))?;
+        file.write_all(&default.data)?;
+    }
+
+    let opener = if let Ok(content) = std::fs::read_to_string(&open_config_file) {
+        match toml::from_str(&content) {
+            Ok(open_config) => {
+                info!("Using open-engine config: {}", open_config_file.display());
+                OpenEngine::with_config(open_config)
+            }
+            Err(e) => {
+                if Notification::new()
+                    .summary("Configuration Error")
+                    .body(&format!("{e}"))
+                    .show()
+                    .is_err()
+                {
+                    warn!("failed to generate notification");
+                }
+                warn!("Configuration error: {e}. Using default open engine");
+                OpenEngine::default()
+            }
+        }
+    } else {
+        info!("Using default open engine");
+        OpenEngine::default()
+    };
+
+    println!("hello");
 
     enable_raw_mode()?;
 
@@ -144,75 +257,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let dir_mngr_handle = tokio::spawn(dir_manager.run());
     let prev_mngr_handle = tokio::spawn(preview_manager.run());
-
-    // Read keybinding config
-    let config_dir = xdg_config_home()?.join("rfm");
-
-    // Create config files and config directory, if they are not present
-    if !config_dir.exists() {
-        info!("Creating config directory: {}", config_dir.display());
-        std::fs::create_dir(&config_dir)?;
-    }
-
-    let key_config_file = config_dir.join("keys.toml");
-    if !key_config_file.exists() {
-        info!("Creating default config file for keys.toml");
-        let default = Examples::get("keys.toml").expect("embedded keys.toml");
-        let mut file = File::create(&key_config_file)?;
-        file.write_all(&default.data)?;
-    }
-
-    let parser = if let Ok(content) = std::fs::read_to_string(&key_config_file) {
-        match toml::from_str(&content) {
-            Ok(key_config) => {
-                info!("Using keyboard config: {}", key_config_file.display());
-                CommandParser::from_config(key_config)
-            }
-            Err(e) => {
-                warn!("Configuration error: {e}. Using default keyboard bindings");
-                CommandParser::default_bindings()
-            }
-        }
-    } else {
-        warn!(
-            "Cannot find keyboard config '{}'. Using default keyboard bindings",
-            key_config_file.display()
-        );
-        CommandParser::default_bindings()
-    };
-
-    // Read opener config
-    let open_config_file = config_dir.join("open.toml");
-    if !open_config_file.exists() {
-        info!("Creating default config file for open.toml");
-        let default = Examples::get("open.toml").expect("embedded open.toml");
-        let mut file = File::create(&open_config_file)?;
-        file.write_all(&default.data)?;
-    }
-
-    let opener = if let Ok(content) = std::fs::read_to_string(&open_config_file) {
-        match toml::from_str(&content) {
-            Ok(open_config) => {
-                info!("Using open-engine config: {}", open_config_file.display());
-                OpenEngine::with_config(open_config)
-            }
-            Err(e) => {
-                if Notification::new()
-                    .summary("Configuration Error")
-                    .body(&format!("{e}"))
-                    .show()
-                    .is_err()
-                {
-                    warn!("failed to generate notification");
-                }
-                warn!("Configuration error: {e}. Using default open engine");
-                OpenEngine::default()
-            }
-        }
-    } else {
-        info!("Using default open engine");
-        OpenEngine::default()
-    };
 
     let panel_manager = PanelManager::new(
         parser,

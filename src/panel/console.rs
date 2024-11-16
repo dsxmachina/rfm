@@ -1,7 +1,7 @@
 use patricia_tree::{PatriciaMap, PatriciaSet};
 
 use super::*;
-use crate::content::dir_content;
+use crate::{color::print_horizontal_bar, content::dir_content};
 
 #[derive(Default)]
 pub struct DirConsole {
@@ -53,9 +53,9 @@ impl Draw for DirConsole {
                 queue!(
                     stdout,
                     cursor::MoveTo(x, y_center.saturating_sub(1)),
-                    PrintStyledContent("―".dark_green().bold()),
+                    print_horizontal_bar(),
                     cursor::MoveTo(x, y_center.saturating_add(1)),
-                    PrintStyledContent("―".dark_green().bold()),
+                    print_horizontal_bar(),
                 )?;
             }
         }
@@ -331,9 +331,9 @@ impl Draw for SearchConsole {
                 queue!(
                     stdout,
                     cursor::MoveTo(x, y_center.saturating_sub(1)),
-                    PrintStyledContent("―".dark_green().bold()),
+                    print_horizontal_bar(),
                     cursor::MoveTo(x, y_center.saturating_add(1)),
-                    PrintStyledContent("―".dark_green().bold()),
+                    print_horizontal_bar(),
                 )?;
             }
         }

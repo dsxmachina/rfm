@@ -1,0 +1,7 @@
+# The color configuration is pretty basic
+#
+# 
+main = "dark-green"
+marked = "dark-yellow"
+highlight = "red"
+dir_path = "dark-blue"
