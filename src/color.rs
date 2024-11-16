@@ -27,7 +27,6 @@ fn extract_color(string: String) -> Result<Color> {
 
 pub fn colors_from_config(config: ColorConfig) -> Result<()> {
     let main = extract_color(config.main).context("Failed to set 'main' color")?;
-    log::info!("{:#?}", main);
     let marked = extract_color(config.marked).context("Failed to set 'marked' color")?;
     let highlight = extract_color(config.highlight).context("Failed to set 'highlight' color")?;
     let dir_path = extract_color(config.dir_path).context("Failed to set 'dir_path' color")?;
