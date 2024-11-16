@@ -327,14 +327,14 @@ impl Draw for DirPanel {
                 y_offset += 1;
             }
         } else {
-            // TODO: This does not respect hidden elements
             if let Some((new_element, is_dir)) = &self.new_element {
+                let lowercase_name = new_element.to_lowercase();
                 let (partition, symbol) = if *is_dir {
                     (
                         self.elements
                             // NOTE: This only works, because everything is sorted by name
                             .partition_point(|elem| {
-                                elem.path().is_dir() && (&elem.name < new_element)
+                                elem.path().is_dir() && (elem.lowercase < lowercase_name)
                             }),
                         "\u{1F4C1}",
                     )
@@ -343,7 +343,7 @@ impl Draw for DirPanel {
                         self.elements
                             // NOTE: This only works, because everything is sorted by name
                             .partition_point(|elem| {
-                                elem.path().is_dir() || (&elem.name < new_element)
+                                elem.path().is_dir() || (elem.lowercase < lowercase_name)
                             }),
                         "\u{1F5B9} ",
                     )
@@ -359,7 +359,7 @@ impl Draw for DirPanel {
                     .skip(scroll)
                     .take(height.saturating_sub(1) as usize)
                 {
-                    if y_offset as usize == partition && !new_element.is_empty() {
+                    if idx == partition && !new_element.is_empty() {
                         queue!(
                             stdout,
                             cursor::MoveTo(x_range.start, y_range.start + y_offset),
