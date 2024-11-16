@@ -12,7 +12,7 @@ use crate::{color::print_vertical_bar, util::truncate_with_color_codes};
 use super::{BasePanel, DirPanel, Draw, PanelContent};
 use crossterm::{
     cursor, queue,
-    style::{self, Colors, Print, PrintStyledContent, ResetColor, SetColors, Stylize},
+    style::{self, Colors, Print, ResetColor, SetColors},
     Result,
 };
 use image::{DynamicImage, GenericImageView};

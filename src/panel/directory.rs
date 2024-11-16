@@ -5,7 +5,7 @@ use std::{
     time::SystemTime,
 };
 
-use crossterm::style::{Color, ContentStyle, StyledContent};
+use crossterm::style::{ContentStyle, StyledContent};
 use unix_mode::is_allowed;
 
 use crate::{
