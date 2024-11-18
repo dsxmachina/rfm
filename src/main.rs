@@ -220,8 +220,6 @@ async fn main() -> anyhow::Result<()> {
         OpenEngine::default()
     };
 
-    println!("hello");
-
     enable_raw_mode()?;
 
     stdout
