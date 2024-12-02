@@ -244,3 +244,4 @@ A list of features that are planned to be implemented:
 - [ ] config for custom shell commands / invoking external programs
 - [x] basic interaction with archives
 - [ ] execution of external commands (like zip and tar) in a separate thread
+- [x] simple color configuration
