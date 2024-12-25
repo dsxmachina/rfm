@@ -10,7 +10,15 @@
 # dark-grey,      red,      green,      yellow,      blue,      magenta,      cyan, white
 #
 #
+
+# the 'main' color is used for things like the borders, directory names, and the cursor
 main = "dark-green"
+
+# color of 'marked' items
 marked = "dark-yellow"
+
+# the 'highlight' color is used to highlight search results, or in the creation of new items
 highlight = "red"
+
+# color of the top-row directory path
 dir_path = "dark-blue"

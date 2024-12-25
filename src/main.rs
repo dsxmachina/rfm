@@ -349,17 +349,38 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test]
-fn embedded_key_config() {
-    assert!(Examples::get("keys.toml").is_some());
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{color::ColorConfig, commands::KeyConfig, opener::OpenerConfig};
 
-#[test]
-fn embedded_open_config() {
-    assert!(Examples::get("open.toml").is_some());
-}
+    #[test]
+    fn embedded_key_config() {
+        let config = Examples::get("keys.toml");
+        assert!(config.is_some(), "missing embedded keys.toml config");
+        let config = config.unwrap();
+        let content = std::str::from_utf8(&config.data).expect("config must be valid utf-8");
+        let parsed: Result<KeyConfig, _> = toml::from_str(content);
+        assert!(parsed.is_ok(), "invalid keys.toml example");
+    }
 
-#[test]
-fn embedded_color_config() {
-    assert!(Examples::get("colors.toml").is_some());
+    #[test]
+    fn embedded_open_config() {
+        let config = Examples::get("open.toml");
+        assert!(config.is_some(), "missing embedded keys.toml config");
+        let config = config.unwrap();
+        let content = std::str::from_utf8(&config.data).expect("config must be valid utf-8");
+        let parsed: Result<OpenerConfig, _> = toml::from_str(content);
+        assert!(parsed.is_ok(), "invalid keys.toml example");
+    }
+
+    #[test]
+    fn embedded_color_config() {
+        let config = Examples::get("colors.toml");
+        assert!(config.is_some(), "missing embedded keys.toml config");
+        let config = config.unwrap();
+        let content = std::str::from_utf8(&config.data).expect("config must be valid utf-8");
+        let parsed: Result<ColorConfig, _> = toml::from_str(content);
+        assert!(parsed.is_ok(), "invalid keys.toml example");
+    }
 }

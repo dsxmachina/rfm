@@ -100,11 +100,11 @@ nix-env -iA nixpkgs.zip
 
 ## &#128462; Configuration 
 
-There are two configuration files 
+There are three configuration files 
 
 - `keys.toml` for keyboard configuration and jump-marks
 - `open.toml` to configure how to open files based on mime-type and/or extension
-- TODO: Color configuration
+- `colors.toml` to configure the colors used by rfm
 
 Both files are located under `$XDG_CONFIG_DIR/rfm/` (which is usually `$HOME/.config/rfm`).
 In case they are not present, they will be created automatically on the first start of rfm.

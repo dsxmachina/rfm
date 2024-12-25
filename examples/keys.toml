@@ -17,35 +17,39 @@
 # meta-X (for meta-key    + X)
 # Where X can be any key you like ofc.
 
+# General keybindings
 [general]
-search        = [ "/", "search", "f" ]
-mark          = [ " " ]
-next          = [ "n" ]
-previous      = [ "N" ]
-view_trash    = [ "gT" ]
-toggle_hidden = [ "zh" ]
-quit          = [ "q", "Q", "exit" ]
+search        = [ "/", "search", "f" ] # search for items
+mark          = [ " " ]                # mark the selected item
+next          = [ "n" ]                # select the next marked item
+previous      = [ "N" ]                # select the previous marked item
+view_trash    = [ "gT" ]               # jump to 'trash' directory
+toggle_hidden = [ "zh" ]               # toggle visibility of hidden files
+quit          = [ "q", "Q", "exit" ]   # quit rfm
 # Use this, if you want to quit without changing directories if --choose-dir is specified:
 # quit_no_cd    = [ "alt+q" ]
 
+# Movement related keybindings
 [movement]
-up                 = [ "k" ]
-down               = [ "j" ]
-left               = [ "h" ]
-right              = [ "l" ]
-top                = [ "gg" ]
-bottom             = [ "G" ]
-page_forward       = [ "ctrl-f" ]
-page_backward      = [ "ctrl-b" ]
-half_page_forward  = [ "ctrl-d" ]
-half_page_backward = [ "ctrl-u" ]
-jump_previous      = [ "''" ]
+up                 = [ "k" ]           # additional keybindings for moving the cursor "up"
+down               = [ "j" ]           # additional keybindings for moving the cursor "down"
+left               = [ "h" ]           # additional keybindings for moving the cursor "left"
+right              = [ "l" ]           # additional keybindings for moving the cursor "right"
+top                = [ "gg" ]          # move cursor to the top
+bottom             = [ "G" ]           # move cursor to the bottom
+page_forward       = [ "ctrl-f" ]      # move cursor one page forward
+page_backward      = [ "ctrl-b" ]      # move cursor one page backward
+half_page_forward  = [ "ctrl-d" ]      # move cursor half-page forward
+half_page_backward = [ "ctrl-u" ]      # move cursor half-page backward
+jump_previous      = [ "''" ]          # jump to previous directory
 #
-# You can define custom jumpmarks.
+# You can define custom jump-marks.
 #
 # On the left side, you put the keybinding or key-combination,
 # and on the right side, the directory you want to jump into.
 # You can use "~" for "$HOME".
+# 
+# Note: Environment variables are *not* supported !
 #
 jump_to = [ ["gh", "~"],
             ["gc", "~/.config"],
@@ -57,16 +61,17 @@ jump_to = [ ["gh", "~"],
             ["ge", "/etc"],
             ["gu", "/usr"]]
 
+# Keybindings related to directory and file manipulation
 [manipulation]
-change_directory = [ "cd" ]
-rename           = [ "rename" ]
-mkdir            = [ "mkdir" ]
-touch            = [ "touch" ]
-cut              = [ "cut", "dd", "ctrl-x" ]
-copy             = [ "copy", "yy", "ctrl-c" ]
-delete           = [ "delete" ]
-paste            = [ "paste", "pp", "ctrl-v" ]
-paste_overwrite  = [ "po", "ctrl-V" ]
-zip              = [ "zip" ]
-tar              = [ "tar" ]
-extract          = [ "extract", "unzip" ]
+change_directory = [ "cd" ]                    # enter "cd" mode (similar to emacs)
+rename           = [ "rename" ]                # rename selected item
+mkdir            = [ "mkdir" ]                 # create new directory
+touch            = [ "touch" ]                 # create new file
+cut              = [ "cut", "dd", "ctrl-x" ]   # cut selected items
+copy             = [ "copy", "yy", "ctrl-c" ]  # copy selected items
+delete           = [ "delete" ]                # delete selected items ( which moves them to the trash )
+paste            = [ "paste", "pp", "ctrl-v" ] # paste previously cut or copied items (does not overwrite)
+paste_overwrite  = [ "po", "ctrl-V" ]          # paste items and overwrite existing elements
+zip              = [ "zip" ]                   # create a zip archive from selected items (requires 'zip')
+tar              = [ "tar" ]                   # create a tar archive from selected items (requires 'tar')
+extract          = [ "extract", "unzip" ]      # extract archive in place (requires archive program)
