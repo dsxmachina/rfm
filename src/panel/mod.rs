@@ -135,7 +135,7 @@ fn unwatch_path<P: AsRef<Path>>(watcher: &mut RecommendedWatcher, path: P) {
                 trace!("unwatching {}", path.display());
             }
             Err(e) => {
-                warn!("unwatch-error: {}", e);
+                debug!("unwatch-error: {}", e);
             }
         }
     }
@@ -150,7 +150,7 @@ fn watch_path<P: AsRef<Path>>(watcher: &mut RecommendedWatcher, path: P) {
                 trace!("watching {}", path.display());
             }
             Err(e) => {
-                warn!("watch-error: {}", e);
+                debug!("watch-error: {}", e);
             }
         }
     }
