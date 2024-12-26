@@ -256,3 +256,26 @@ pub fn print_metadata(selected_path: Option<&Path>) -> (String, String) {
         ("------------".to_string(), "".to_string())
     }
 }
+
+// TODO: Use the device-id to check, if deletion actually just moves the file on the same disk.
+// If not, the operation would be quite expensive, and we should then find another strategy.
+//
+// Trait to extract device ID in a cross-platform way
+pub trait CheckDeviceId {
+    fn device_id(&self) -> u64;
+}
+
+#[cfg(unix)]
+impl CheckDeviceId for std::fs::Metadata {
+    fn device_id(&self) -> u64 {
+        self.dev()
+    }
+}
+
+#[cfg(windows)]
+impl CheckDeviceId for std::fs::Metadata {
+    fn device_id(&self) -> u64 {
+        use std::os::windows::fs::MetadataExt;
+        self.volume_serial_number().unwrap_or(0)
+    }
+}
