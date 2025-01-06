@@ -1,5 +1,8 @@
 # &#128448; rfm - A fast file-manager written in pure rust
 
+[![Build](https://github.com/dsxmachina/rfm/actions/workflows/build.yml/badge.svg)](https://github.com/dsxmachina/rfm/actions/workflows/build.yml)
+[![crates.io](https://badgers.space/crates/info/rfm-bin)](https://crates.io/crates/rfm-bin)
+
 ## &#9993; Brief description
 
 **rfm** is a terminal file manager with VI-bindings (although you can configure the keybindings to whatever you like).
