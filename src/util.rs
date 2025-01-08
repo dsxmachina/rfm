@@ -2,10 +2,12 @@ use anyhow::anyhow;
 use fs_extra::dir::CopyOptions;
 use notify_rust::Notification;
 use std::{
+    cmp::Ordering,
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 use time::OffsetDateTime;
+use unicode_display_width::width as unicode_width;
 use users::{get_group_by_gid, get_user_by_uid};
 
 pub fn file_size_str(file_size: u64) -> String {
@@ -24,23 +26,53 @@ pub fn file_size_str(file_size: u64) -> String {
     }
 }
 
+#[test]
+fn test_width() {
+    let test_str = "Ｈｅｌｌｏ, ｗｏｒｌｄ!";
+    println!("test-str={test_str}, width={}", unicode_width(&test_str));
+    assert!(unicode_width("asdf") == 4);
+    assert_eq!(unicode_width(&test_str.exact_width(4)), 4);
+    let longer = test_str.exact_width(9);
+    assert_eq!(unicode_width(&longer), 9, "{longer}");
+    assert_eq!(unicode_width(&test_str.exact_width(2)), 2);
+}
+
 pub trait ExactWidth: std::fmt::Display {
     fn exact_width(&self, len: usize) -> String {
-        let mut out = format!("{:len$}", self);
-        // We have to truncate the name
-        if out.chars().count() > len {
-            // FIX: If name_len does not lie on a char boundary,
-            // the truncate function will panic
-            if out.is_char_boundary(len) {
-                out.truncate(len);
-            } else {
-                // This is stupidly inefficient, but cannot panic.
-                while out.len() > len {
+        // Prepare output
+        let mut out = format!("{}", self);
+        let mut truncated = false;
+        loop {
+            let current_width = unicode_width(&out);
+            match current_width.cmp(&(len as u64)) {
+                Ordering::Less => {
+                    // Pad with " " and return
+                    let diff = (len as u64) - current_width;
+                    if !truncated {
+                        for _ in 0..diff {
+                            out.push(' ');
+                        }
+                    } else {
+                        for _ in 0..diff.saturating_sub(1) {
+                            out.push(' ');
+                        }
+                        out.push('~');
+                    }
+                    break;
+                }
+                Ordering::Equal => {
+                    if !truncated {
+                        break;
+                    } else {
+                        out.pop();
+                    }
+                }
+                Ordering::Greater => {
+                    // remove character and check again
                     out.pop();
+                    truncated = true;
                 }
             }
-            out.pop();
-            out.push('~');
         }
         out
     }
