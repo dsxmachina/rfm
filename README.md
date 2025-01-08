@@ -195,7 +195,8 @@ use_trash = true
 If the trash is activated, deleting a file does not really delete it, but move it into a temporary *trash* directory.
 This allows you to "undo" the delete operation, because you can always copy the files or directory from the trash to their original location.
 The trash diretory will be deleted automatically if you close rfm, so you don't accidentely clutter your file-system with a lot of trash files.
-However, when you delete a file, that is not on the same disk than your temp directory, it will copy the file and thus be expensive.
+
+Please Note: When you delete a file, that is not on the same disk than your temp directory, it will copy the file and thus be expensive.
 You should be aware of this before activating !
 
 ### cd into the current directory on exit
