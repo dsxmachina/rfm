@@ -13,9 +13,7 @@ You can find a detailed list of features below.
 Please note: rfm is considered beta. However, I use it as my daily filemanager for over a year now, without any problems. 
 But in case you encounter something suspicious while using it, please open an issue or pull request.
 
-## Workflow demonstration
-
-TODO
+![rfm image](/img/rfm-img.png)
 
 ## &#128187; Installation
 
