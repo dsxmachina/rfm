@@ -24,19 +24,24 @@ You can directly install `rfm` via cargo:
 cargo install rfm-bin
 ```
 
-Alternatively you can ofc build everything from scratch:
+Or via nix flake:
 
-Clone this repository:
+``` shell
+# Run it to see if you like it
+nix run github:dsxmachina/rfm
+
+# Install for user profile
+nix profile install github:dsxmachina/rfm
+```
+
+Alternatively you can build everything from scratch:
+
 ``` shell
 git clone https://github.com/dsxmachina/rfm
 cd rfm
-cargo build --release
 # Grab a coffee, while cargo is building: ☕
-```
-
-Copy the binary from the build directory to some directory in your `$PATH`:
-
-``` shell
+cargo build --release
+# Copy the binary to some directory in your $PATH:
 cp target/release/rfm /usr/local/bin/rfm
 ```
 
