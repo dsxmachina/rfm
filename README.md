@@ -13,6 +13,10 @@ You can find a detailed list of features below.
 Please note: rfm is considered beta. However, I use it as my daily filemanager for over a year now, without any problems. 
 But in case you encounter something suspicious while using it, please open an issue or pull request.
 
+### How does it look ?
+
+Depending on your color configuration, something like this:
+
 ![rfm image](/img/rfm-img.png)
 
 ## &#128187; Installation
@@ -108,11 +112,11 @@ nix-env -iA nixpkgs.zip
 
 There are three configuration files 
 
+- `config.toml` configures general behaviour and colors
 - `keys.toml` for keyboard configuration and jump-marks
 - `open.toml` to configure how to open files based on mime-type and/or extension
-- `colors.toml` to configure the colors used by rfm
 
-Both files are located under `$XDG_CONFIG_DIR/rfm/` (which is usually `$HOME/.config/rfm`).
+All files are located under `$XDG_CONFIG_DIR/rfm/` (which is usually `$HOME/.config/rfm`).
 In case they are not present, they will be created automatically on the first start of rfm.
 
 You can take a look at the config files, they contain a lot of comments and examples.
