@@ -7,7 +7,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::{color::print_vertical_bar, util::truncate_with_color_codes};
+use crate::{config::color::print_vertical_bar, util::truncate_with_color_codes};
 
 use super::{BasePanel, DirPanel, Draw, PanelContent};
 use crossterm::{

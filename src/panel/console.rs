@@ -1,7 +1,7 @@
 use patricia_tree::{PatriciaMap, PatriciaSet};
 
 use super::*;
-use crate::{color::print_horizontal_bar, content::dir_content};
+use crate::{config::color::print_horizontal_bar, content::dir_content};
 
 #[derive(Default)]
 pub struct DirConsole {

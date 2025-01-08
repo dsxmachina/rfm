@@ -9,7 +9,7 @@ use crossterm::style::{ContentStyle, StyledContent};
 use unix_mode::is_allowed;
 
 use crate::{
-    color::{color_highlight, color_main, color_marked, print_vertical_bar},
+    config::color::{color_highlight, color_main, color_marked, print_vertical_bar},
     content::dir_content,
     symbols::SymbolEngine,
     util::{file_size_str, ExactWidth},

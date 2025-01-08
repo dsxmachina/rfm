@@ -1,4 +1,18 @@
-# The color configuration is pretty basic
+# --- General behaviour of rfm
+[general]
+# Experimental feature
+# 
+# If set to 'true', rfm will not instantly delete files,
+# but will move them to a dedicated trash directory, from which users can retrieve the file.
+#
+# However, this is only desirable if you have a unix system with a single disk, where the temp
+# directory is on the same disk as every file you could delete.
+# If not, or if you try do delete something on another disk, the operation of deleting in rfm
+# may be very expensive, as it effectively copies the file to another disk.
+# 
+use_trash = false
+
+# --- Color configuration
 #
 # For normal text, rfm uses the foreground and background color of your terminal.
 # Apart from that, there are only four colors in use, which can be configured to any
@@ -10,7 +24,7 @@
 # dark-grey,      red,      green,      yellow,      blue,      magenta,      cyan, white
 #
 #
-
+[colors]
 # the 'main' color is used for things like the borders, directory names, and the cursor
 main = "dark-green"
 

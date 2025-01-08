@@ -11,8 +11,8 @@ use log::{debug, error, info, trace, Level};
 use tempfile::TempDir;
 
 use crate::{
-    color::{color_dir_path, color_main},
     commands::{CloseCmd, Command, CommandParser},
+    config::color::{color_dir_path, color_main},
     logger::LogBuffer,
     opener::OpenEngine,
     util::{copy_item, get_destination, move_item, print_metadata},
@@ -111,7 +111,9 @@ pub struct PanelManager {
     /// Previous path
     previous: PathBuf,
     pre_console_path: PathBuf,
-    trash_dir: TempDir,
+
+    /// Trash directory. If `None`, the trash mechanism should not be used.
+    trash_dir: Option<TempDir>,
 
     /// command-parser
     parser: CommandParser,
@@ -130,6 +132,7 @@ impl PanelManager {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         starting_path: PathBuf,
+        use_trash: bool,
         parser: CommandParser,
         directory_cache: PanelCache<DirPanel>,
         preview_cache: PanelCache<PreviewPanel>,
@@ -163,8 +166,15 @@ impl PanelManager {
         // TODO: If the user has multiple disks, the temp-dir may be on another disk,
         // so deleting would effectively be a copy - which is not what we want here.
         // Add a mechanism to check, if the file that should get deleted is on the same disk or not
-        let trash_dir = tempfile::tempdir()?;
-        debug!("Using {} as temporary trash", trash_dir.path().display());
+        //
+        // -> For now we mark the feature as experimental and turn it off by default
+        let trash_dir = if use_trash {
+            let trash_dir = tempfile::tempdir()?;
+            debug!("Using {} as temporary trash", trash_dir.path().display());
+            Some(trash_dir)
+        } else {
+            None
+        };
 
         Ok(PanelManager {
             left,
@@ -793,6 +803,30 @@ impl PanelManager {
         }
     }
 
+    /// Deletes a file or directory, based on the trash strategy.
+    fn delete_file(&self, file: &Path) {
+        // Check if we use the trash or not
+        if let Some(trash_path) = &self.trash_dir {
+            let destination = get_destination(file, trash_path.path()).unwrap();
+            let result = std::fs::rename(file, &destination);
+            if let Err(e) = result {
+                error!("Cannot delete {}: {e}", file.display());
+            }
+        } else {
+            if file.is_file() {
+                let result = std::fs::remove_file(file);
+                if let Err(e) = result {
+                    error!("Cannot delete {}: {e}", file.display());
+                }
+            } else if file.is_dir() {
+                let result = std::fs::remove_dir_all(file);
+                if let Err(e) = result {
+                    error!("Cannot delete {}: {e}", file.display());
+                }
+            }
+        }
+    }
+
     pub async fn run(mut self) -> Result<CloseCmd> {
         // Initial draw
         self.redraw_everything();
@@ -898,7 +932,11 @@ impl PanelManager {
                             self.move_cursor(direction);
                         }
                         Command::ViewTrash => {
-                            self.jump(self.trash_dir.path().to_path_buf());
+                            if let Some(trash_path) = &self.trash_dir {
+                                self.jump(trash_path.path().to_path_buf());
+                            } else {
+                                warn!("Trash feature is not activated - therefore there is no trash-directory to jump to.")
+                            }
                         }
                         Command::ToggleHidden => self.toggle_hidden(),
                         Command::ToggleLog => self.toggle_log(),
@@ -976,12 +1014,7 @@ impl PanelManager {
                             self.unmark_all_items();
                             // self.stack.push(Operation::MoveItems { from: files.clone(), to: trash_dir.path().to_path_buf() });
                             for file in files {
-                                let destination =
-                                    get_destination(&file, self.trash_dir.path()).unwrap();
-                                let result = std::fs::rename(&file, &destination);
-                                if let Err(e) = result {
-                                    error!("Cannot delete {}: {e}", file.display());
-                                }
+                                self.delete_file(&file);
                             }
                             self.left.reload();
                             self.center.reload();

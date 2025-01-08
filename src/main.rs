@@ -27,10 +27,10 @@ use symbols::SymbolEngine;
 use tokio::sync::mpsc;
 use util::xdg_config_home;
 
-use crate::color::{colors_from_config, colors_from_default};
+use crate::config::color::{colors_from_config, colors_from_default};
 
-mod color;
 mod commands;
+mod config;
 mod content;
 mod logger;
 mod opener;
@@ -129,20 +129,26 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // --- Set or generate color configuration
-    let color_config_file = config_dir.join("colors.toml");
-    if !color_config_file.exists() {
-        info!("Creating default config file for colors.toml");
-        let default = Examples::get("colors.toml").expect("embedded colors.toml");
-        let mut file = File::create(&color_config_file)
-            .context(format!("failed to create {}", color_config_file.display()))?;
+    let general_config_file = config_dir.join("config.toml");
+    if !general_config_file.exists() {
+        info!("Creating default config file for config.toml");
+        let default = Examples::get("config.toml").expect("embedded config.toml");
+        let mut file = File::create(&general_config_file).context(format!(
+            "failed to create {}",
+            general_config_file.display()
+        ))?;
         file.write_all(&default.data)?;
     }
 
-    if let Ok(content) = std::fs::read_to_string(&color_config_file) {
-        match toml::from_str(&content) {
-            Ok(color_config) => {
-                info!("Using color config: {}", color_config_file.display());
-                colors_from_config(color_config)?;
+    // Weather or not we activate the trash
+    let mut use_trash = false;
+
+    if let Ok(content) = std::fs::read_to_string(&general_config_file) {
+        match toml::from_str::<config::Config>(&content) {
+            Ok(config) => {
+                info!("Using general config: {}", general_config_file.display());
+                colors_from_config(config.colors)?;
+                use_trash = config.general.use_trash;
             }
             Err(e) => {
                 if Notification::new()
@@ -263,6 +269,7 @@ async fn main() -> anyhow::Result<()> {
 
     let panel_manager = PanelManager::new(
         starting_path.clone(),
+        use_trash,
         parser,
         directory_cache,
         preview_cache,
@@ -358,7 +365,7 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{color::ColorConfig, commands::KeyConfig, opener::OpenerConfig};
+    use crate::{commands::KeyConfig, config::Config, opener::OpenerConfig};
 
     #[test]
     fn embedded_key_config() {
@@ -386,7 +393,7 @@ mod tests {
         assert!(config.is_some(), "missing embedded keys.toml config");
         let config = config.unwrap();
         let content = std::str::from_utf8(&config.data).expect("config must be valid utf-8");
-        let parsed: Result<ColorConfig, _> = toml::from_str(content);
+        let parsed: Result<Config, _> = toml::from_str(content);
         assert!(parsed.is_ok(), "invalid keys.toml example");
     }
 }
