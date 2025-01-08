@@ -27,7 +27,7 @@
         # Define the rfm package
         rfm = pkgs.rustPlatform.buildRustPackage {
           pname = "rfm";
-          version = "0.2.11";
+          version = "0.3.0";
           src = ./.;
           cargoLock = { 
             lockFile = ./Cargo.lock; 
