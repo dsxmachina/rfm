@@ -129,6 +129,7 @@ pub struct PanelManager {
 impl PanelManager {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        starting_path: PathBuf,
         parser: CommandParser,
         directory_cache: PanelCache<DirPanel>,
         preview_cache: PanelCache<PreviewPanel>,
@@ -151,8 +152,8 @@ impl PanelManager {
         let mut right = ManagedPanel::new(preview_cache, preview_tx, true);
 
         // Set the directories accordingly
-        left.new_panel_instant(Some(".."));
-        center.new_panel_instant(Some("."));
+        left.new_panel_instant(Some(starting_path.join("..")));
+        center.new_panel_instant(Some(starting_path));
         right.new_panel_instant(center.panel().selected_path());
 
         // select the correct directory for the left panel

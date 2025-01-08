@@ -45,6 +45,8 @@ struct Args {
     /// it will write the full path of the last visited directory to CHOOSEDIR
     #[arg(long)]
     choosedir: Option<PathBuf>,
+    /// Path to open (defaults to ".")
+    path: Option<PathBuf>,
 }
 
 const ERROR_MSG: &str = "\
@@ -91,8 +93,11 @@ async fn main() -> anyhow::Result<()> {
     }));
 
     // Remember starting path
-    let starting_path =
-        std::env::current_dir().context("failed to get current directory from env")?;
+    let starting_path = if let Some(path) = args.path {
+        path
+    } else {
+        std::env::current_dir().context("failed to get current directory from env")?
+    };
 
     // Initialize logger
     let logger = LogBuffer::default()
@@ -257,6 +262,7 @@ async fn main() -> anyhow::Result<()> {
     let prev_mngr_handle = tokio::spawn(preview_manager.run());
 
     let panel_manager = PanelManager::new(
+        starting_path.clone(),
         parser,
         directory_cache,
         preview_cache,
