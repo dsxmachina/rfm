@@ -17,7 +17,7 @@ use engine::{
 use log::{error, info, warn};
 use logger::LogBuffer;
 use notify_rust::Notification;
-use panel::manager::PanelManager;
+use panel::{init_miller_panels, manager::PanelManager};
 use rust_embed::Embed;
 use std::{
     fs::{File, OpenOptions},
@@ -266,16 +266,20 @@ async fn main() -> anyhow::Result<()> {
     let dir_mngr_handle = tokio::spawn(dir_manager.run());
     let prev_mngr_handle = tokio::spawn(preview_manager.run());
 
-    let panel_manager = PanelManager::new(
+    let miller_panels = init_miller_panels(
         starting_path.clone(),
-        use_trash,
-        parser,
         directory_cache,
         preview_cache,
-        dir_rx,
-        prev_rx,
         directory_tx,
         preview_tx,
+    );
+
+    let panel_manager = PanelManager::new(
+        miller_panels,
+        use_trash,
+        parser,
+        dir_rx,
+        prev_rx,
         logger.clone(),
         opener,
     )?;
@@ -364,7 +368,7 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{commands::KeyConfig, config::Config, opener::OpenerConfig};
+    use crate::{config::Config, engine::commands::KeyConfig, engine::opener::OpenerConfig};
 
     #[test]
     fn embedded_key_config() {
@@ -387,8 +391,8 @@ mod tests {
     }
 
     #[test]
-    fn embedded_color_config() {
-        let config = Examples::get("colors.toml");
+    fn embedded_general_config() {
+        let config = Examples::get("config.toml");
         assert!(config.is_some(), "missing embedded keys.toml config");
         let config = config.unwrap();
         let content = std::str::from_utf8(&config.data).expect("config must be valid utf-8");

@@ -131,15 +131,11 @@ pub struct PanelManager {
 impl PanelManager {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        starting_path: PathBuf,
+        miller_panels: MillerPanels,
         use_trash: bool,
         parser: CommandParser,
-        directory_cache: PanelCache<DirPanel>,
-        preview_cache: PanelCache<PreviewPanel>,
         dir_rx: mpsc::Receiver<(DirPanel, PanelState)>,
         prev_rx: mpsc::Receiver<(PreviewPanel, PanelState)>,
-        directory_tx: mpsc::UnboundedSender<PanelUpdate>,
-        preview_tx: mpsc::UnboundedSender<PanelUpdate>,
         logger: LogBuffer,
         opener: OpenEngine,
     ) -> Result<Self> {
@@ -149,19 +145,8 @@ impl PanelManager {
         let terminal_size = terminal::size()?;
         let layout = MillerColumns::from_size(terminal_size);
 
-        // Create three panels
-        let mut left = ManagedPanel::new(directory_cache.clone(), directory_tx.clone(), false);
-        let mut center = ManagedPanel::new(directory_cache, directory_tx, false);
-        let mut right = ManagedPanel::new(preview_cache, preview_tx, true);
-
-        // Set the directories accordingly
-        left.new_panel_instant(Some(starting_path.join("..")));
-        center.new_panel_instant(Some(starting_path));
-        right.new_panel_instant(center.panel().selected_path());
-
-        // select the correct directory for the left panel
-        left.panel_mut()
-            .select_path(center.panel().path(), Some(center.panel().selected_idx()));
+        // Split panels
+        let (left, center, right) = miller_panels;
 
         // TODO: If the user has multiple disks, the temp-dir may be on another disk,
         // so deleting would effectively be a copy - which is not what we want here.

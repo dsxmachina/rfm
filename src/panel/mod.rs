@@ -30,6 +30,35 @@ mod preview;
 pub use directory::{DirElem, DirPanel};
 pub use preview::{FilePreview, PreviewPanel};
 
+pub type MillerPanels = (
+    ManagedPanel<DirPanel>,
+    ManagedPanel<DirPanel>,
+    ManagedPanel<PreviewPanel>,
+);
+
+pub fn init_miller_panels(
+    starting_path: PathBuf,
+    directory_cache: PanelCache<DirPanel>,
+    preview_cache: PanelCache<PreviewPanel>,
+    directory_tx: mpsc::UnboundedSender<PanelUpdate>,
+    preview_tx: mpsc::UnboundedSender<PanelUpdate>,
+) -> MillerPanels {
+    // Create three panels
+    let mut left = ManagedPanel::new(directory_cache.clone(), directory_tx.clone(), false);
+    let mut center = ManagedPanel::new(directory_cache, directory_tx, false);
+    let mut right = ManagedPanel::new(preview_cache, preview_tx, true);
+
+    // Set the directories accordingly
+    left.new_panel_instant(Some(starting_path.join("..")));
+    center.new_panel_instant(Some(starting_path));
+    right.new_panel_instant(center.panel().selected_path());
+
+    // select the correct directory for the left panel
+    left.panel_mut()
+        .select_path(center.panel().path(), Some(center.panel().selected_idx()));
+    (left, center, right)
+}
+
 /// Basic trait that lets us draw something on the terminal in a specified range.
 pub trait Draw {
     fn draw(&mut self, stdout: &mut Stdout, x_range: Range<u16>, y_range: Range<u16>)
