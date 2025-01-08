@@ -1,6 +1,5 @@
 use anyhow::Context;
 use clap::Parser;
-use commands::{CloseCmd, CommandParser};
 use content::{PanelCache, SHUTDOWN_FLAG};
 use crossterm::{
     cursor,
@@ -11,10 +10,13 @@ use crossterm::{
     },
     QueueableCommand,
 };
+use engine::{
+    commands::{CloseCmd, CommandParser},
+    OpenEngine, SymbolEngine,
+};
 use log::{error, info, warn};
 use logger::LogBuffer;
 use notify_rust::Notification;
-use opener::OpenEngine;
 use panel::manager::PanelManager;
 use rust_embed::Embed;
 use std::{
@@ -23,19 +25,16 @@ use std::{
     path::PathBuf,
     time::Duration,
 };
-use symbols::SymbolEngine;
 use tokio::sync::mpsc;
 use util::xdg_config_home;
 
 use crate::config::color::{colors_from_config, colors_from_default};
 
-mod commands;
 mod config;
 mod content;
+mod engine;
 mod logger;
-mod opener;
 mod panel;
-mod symbols;
 mod util;
 
 #[derive(Parser, Debug)]

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::opener::get_mime_type;
+use super::opener::get_mime_type;
 use log::error;
 use once_cell::sync::OnceCell;
 use patricia_tree::StringPatriciaMap;

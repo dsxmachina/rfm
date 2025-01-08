@@ -19,7 +19,7 @@ use std::{
 };
 use tokio::sync::mpsc;
 
-use crate::{commands::Move, content::PanelCache};
+use crate::{content::PanelCache, engine::commands::Move};
 
 mod console;
 mod directory;

@@ -11,10 +11,10 @@ use log::{debug, error, info, trace, Level};
 use tempfile::TempDir;
 
 use crate::{
-    commands::{CloseCmd, Command, CommandParser},
     config::color::{color_dir_path, color_main},
+    engine::commands::{CloseCmd, Command, CommandParser},
+    engine::OpenEngine,
     logger::LogBuffer,
-    opener::OpenEngine,
     util::{copy_item, get_destination, move_item, print_metadata},
 };
 

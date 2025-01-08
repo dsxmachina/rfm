@@ -11,7 +11,7 @@ use unix_mode::is_allowed;
 use crate::{
     config::color::{color_highlight, color_main, color_marked, print_vertical_bar},
     content::dir_content,
-    symbols::SymbolEngine,
+    engine::SymbolEngine,
     util::{file_size_str, ExactWidth},
 };
 
