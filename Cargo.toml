@@ -25,6 +25,7 @@ image = "0.24.9"
 log = { version ="0.4.22", features = ["std"] }
 mime = "0.3.17"
 mime_guess = "2.0.5"
+notify = "8.0.0"
 once_cell = { version = "1.20.2", features = ["parking_lot"] }
 opener = "0.7.2"
 parking_lot = "0.12.3"

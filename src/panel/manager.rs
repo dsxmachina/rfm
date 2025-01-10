@@ -1085,6 +1085,7 @@ impl PanelManager {
                     self.redraw_footer();
                 }
                 Mode::Console { console } => match key_event.code {
+                    // TODO: Let's refactor this, so that the console handles the key input directly
                     KeyCode::Backspace => {
                         if let Some(path) = console.del().map(|p| p.to_path_buf()) {
                             self.jump(path);

@@ -2,10 +2,10 @@
   description = "rfm - rusty file manager";
 
   inputs = {
+    nixpkgs.url      = "github:NixOS/nixpkgs/nixos-unstable";
     rust-overlay.url = "github:oxalica/rust-overlay";
-    flake-utils.follows = "rust-overlay/flake-utils";
-    nixpkgs.follows = "rust-overlay/nixpkgs";
-    # add compatibility layer
+    flake-utils.url  = "github:numtide/flake-utils";
+    # add compatibility layer to generate shell.nix based on flakes
     flake-compat.url = "https://flakehub.com/f/edolstra/flake-compat/1.tar.gz";
   };
   
@@ -44,12 +44,8 @@
             rustc
             cargo-edit
             cargo-audit
-            cargo-tarpaulin
             cargo-machete
             cargo-bloat
-            cargo-hakari
-            cargo-nextest
-            cargo-deny
             clippy
             rustfmt
           ] ++ commonArgs.nativeBuildInputs ++ commonArgs.buildInputs;
