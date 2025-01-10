@@ -1,4 +1,4 @@
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent};
 use patricia_tree::{PatriciaMap, PatriciaSet};
 
 use super::*;
@@ -10,6 +10,17 @@ pub enum ConsoleOp {
     Exit,
 }
 
+/// Abstract trait for all possible console implementations
+///
+/// In general, a console must be drawable and it must be able to handle keyboard input.
+pub trait Console: Draw + Send + Sync {
+    /// Inserts the given key to the console
+    fn handle_key(&mut self, key_event: KeyEvent) -> ConsoleOp;
+}
+
+/// Input console for our custom `cd` mode
+///
+/// The `DirConsole` handles user input and generates fancy recommendations.
 #[derive(Default)]
 pub struct DirConsole {
     input: String,
@@ -126,34 +137,6 @@ impl DirConsole {
             rec_idx,
             ..Default::default()
         }
-    }
-
-    pub fn handle_key(&mut self, keycode: KeyCode) -> ConsoleOp {
-        match keycode {
-            KeyCode::Backspace => {
-                if let Some(path) = self.del().map(|p| p.to_path_buf()) {
-                    return ConsoleOp::Cd(path);
-                }
-            }
-            KeyCode::Enter => return ConsoleOp::Exit,
-            KeyCode::Tab => {
-                if let Some(path) = self.tab() {
-                    return ConsoleOp::Cd(path);
-                }
-            }
-            KeyCode::BackTab => {
-                if let Some(path) = self.backtab() {
-                    return ConsoleOp::Cd(path);
-                }
-            }
-            KeyCode::Char(c) => {
-                if let Some(path) = self.insert(c) {
-                    return ConsoleOp::Cd(path);
-                }
-            }
-            _ => (),
-        }
-        ConsoleOp::None
     }
 
     fn change_dir(&mut self, path: PathBuf) {
@@ -319,6 +302,36 @@ impl DirConsole {
             self.change_dir(self.path.clone());
             Some(self.path.as_path())
         }
+    }
+}
+
+impl Console for DirConsole {
+    fn handle_key(&mut self, key_event: KeyEvent) -> ConsoleOp {
+        match key_event.code {
+            KeyCode::Backspace => {
+                if let Some(path) = self.del().map(|p| p.to_path_buf()) {
+                    return ConsoleOp::Cd(path);
+                }
+            }
+            KeyCode::Enter => return ConsoleOp::Exit,
+            KeyCode::Tab => {
+                if let Some(path) = self.tab() {
+                    return ConsoleOp::Cd(path);
+                }
+            }
+            KeyCode::BackTab => {
+                if let Some(path) = self.backtab() {
+                    return ConsoleOp::Cd(path);
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(path) = self.insert(c) {
+                    return ConsoleOp::Cd(path);
+                }
+            }
+            _ => (),
+        }
+        ConsoleOp::None
     }
 }
 

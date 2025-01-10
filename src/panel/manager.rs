@@ -18,9 +18,9 @@ use crate::{
     util::{copy_item, get_destination, move_item, print_metadata},
 };
 
-use self::console::ConsoleOp;
+use self::console::{Console, ConsoleOp, DirConsole};
 
-use super::{console::DirConsole, input::Input, *};
+use super::{input::Input, *};
 
 struct Redraw {
     left: bool,
@@ -46,7 +46,7 @@ impl Redraw {
 
 enum Mode {
     Normal,
-    Console { console: DirConsole },
+    Console { console: Box<dyn Console> },
     CreateItem { input: Input, is_dir: bool },
     Search { input: Input },
     Rename { input: Input },
@@ -928,7 +928,7 @@ impl PanelManager {
                         Command::Cd => {
                             self.pre_console_path = self.center.panel().path().to_path_buf();
                             self.mode = Mode::Console {
-                                console: DirConsole::from_panel(self.center.panel()),
+                                console: Box::new(DirConsole::from_panel(self.center.panel())),
                             };
                             self.redraw_console();
                         }
@@ -1087,7 +1087,7 @@ impl PanelManager {
                     self.redraw_footer();
                 }
                 Mode::Console { console } => {
-                    match console.handle_key(key_event.code) {
+                    match console.handle_key(key_event) {
                         ConsoleOp::Cd(path) => {
                             self.jump(path);
                         }
