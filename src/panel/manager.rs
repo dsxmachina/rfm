@@ -18,7 +18,7 @@ use crate::{
     util::{copy_item, get_destination, move_item, print_metadata},
 };
 
-use self::console::{Console, ConsoleOp, DirConsole};
+use self::console::{Console, ConsoleOp, DirConsole, Zoxide};
 
 use super::{input::Input, *};
 
@@ -927,8 +927,12 @@ impl PanelManager {
                         Command::ToggleLog => self.toggle_log(),
                         Command::Cd => {
                             self.pre_console_path = self.center.panel().path().to_path_buf();
+                            // self.mode = Mode::Console {
+                            //     console: Box::new(DirConsole::from_panel(self.center.panel())),
+                            // };
+                            // TODO WIP: Test out zoxide console
                             self.mode = Mode::Console {
-                                console: Box::new(DirConsole::from_panel(self.center.panel())),
+                                console: Box::new(Zoxide::from_panel(self.center.panel())),
                             };
                             self.redraw_console();
                         }
@@ -1092,7 +1096,10 @@ impl PanelManager {
                             self.jump(path);
                         }
                         ConsoleOp::None => (),
-                        ConsoleOp::Exit => {
+                        ConsoleOp::Exit(maybe_path) => {
+                            if let Some(path) = maybe_path {
+                                self.jump(path);
+                            }
                             self.mode = Mode::Normal;
                             self.redraw_panels();
                         }

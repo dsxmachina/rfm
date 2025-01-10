@@ -1,5 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent};
-use patricia_tree::{PatriciaMap, PatriciaSet};
+use patricia_tree::PatriciaSet;
+use std::process::{Command, Stdio};
 
 use super::*;
 use crate::{config::color::print_horizontal_bar, content::dir_content};
@@ -7,7 +8,7 @@ use crate::{config::color::print_horizontal_bar, content::dir_content};
 pub enum ConsoleOp {
     Cd(PathBuf),
     None,
-    Exit,
+    Exit(Option<PathBuf>),
 }
 
 /// Abstract trait for all possible console implementations
@@ -91,23 +92,6 @@ impl Draw for DirConsole {
             PrintStyledContent(self.input.clone().green()),
             cursor::MoveTo(x_text, y_center),
             Print(self.tmp_input.clone()),
-            // // Clear line and print main input
-            // cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(1)),
-            // Clear(ClearType::CurrentLine),
-            // Print(&format!("input: {}", self.input)),
-
-            // // Clear line and print tmp-input
-            // cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(2)),
-            // Clear(ClearType::CurrentLine),
-            // Print(&format!("tmp  : {}", self.tmp_input)),
-            // // Clear line and print path
-            // cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(3)),
-            // Clear(ClearType::CurrentLine),
-            // Print(&format!("path : {}", self.path.display())),
-            // cursor::MoveTo(x_start + offset - 7, y_center.saturating_add(4)),
-            // Clear(ClearType::CurrentLine),
-            // Print(&format!("n-rec: {}", self.rec_total)),
-            // Print recommendation
             cursor::MoveTo(x_rec, y_center),
             PrintStyledContent(rec_text.dark_grey()),
             cursor::MoveTo(x_rec, y_center),
@@ -313,7 +297,7 @@ impl Console for DirConsole {
                     return ConsoleOp::Cd(path);
                 }
             }
-            KeyCode::Enter => return ConsoleOp::Exit,
+            KeyCode::Enter => return ConsoleOp::Exit(None), // we already jumped into the directory
             KeyCode::Tab => {
                 if let Some(path) = self.tab() {
                     return ConsoleOp::Cd(path);
@@ -336,14 +320,25 @@ impl Console for DirConsole {
 }
 
 #[derive(Default)]
-pub struct SearchConsole {
+pub struct Zoxide {
     input: String,
-    rec_idx: usize,
-    tmp_input: String,
-    recommendations: PatriciaMap<usize>,
+    path: String,
+    starting_path: PathBuf,
 }
 
-impl Draw for SearchConsole {
+impl Zoxide {
+    pub fn from_panel(panel: &DirPanel) -> Self {
+        let path = ".".to_string();
+        let starting_path = panel.path().to_path_buf();
+        Zoxide {
+            input: String::new(),
+            path,
+            starting_path,
+        }
+    }
+}
+
+impl Draw for Zoxide {
     fn draw(
         &mut self,
         stdout: &mut Stdout,
@@ -356,23 +351,14 @@ impl Draw for SearchConsole {
         let x_start = x_range.start;
         let y_center = y_range.end.saturating_add(y_range.start) / 2;
 
-        let text = self.input.clone();
-        let text_len = text.chars().count();
-
-        let offset = if text_len < (width / 2).into() {
+        let text_len = unicode_display_width::width(&self.input) as u16;
+        let offset = if text_len < (width / 2) {
             width / 4
-        } else if text_len < width as usize {
-            ((width as usize - text_len).saturating_sub(1) / 2) as u16
+        } else if text_len < width {
+            (width - text_len).saturating_sub(1) / 2
         } else {
             0
         };
-
-        let rec_offset = offset.saturating_add(text_len as u16);
-        let rec_text = self
-            .recommendation()
-            .strip_prefix(&self.input)
-            .unwrap_or("/")
-            .to_string();
 
         if height >= 3 {
             for x in x_range {
@@ -380,22 +366,23 @@ impl Draw for SearchConsole {
                     stdout,
                     cursor::MoveTo(x, y_center.saturating_sub(1)),
                     print_horizontal_bar(),
-                    cursor::MoveTo(x, y_center.saturating_add(1)),
+                    cursor::MoveTo(x, y_center.saturating_add(2)),
                     print_horizontal_bar(),
                 )?;
             }
         }
-        let x_text = x_start.saturating_add(offset);
-        let x_rec = x_start.saturating_add(rec_offset);
+        let x_off = x_start.saturating_add(offset);
+
         queue!(
             stdout,
-            // Clear line and print main text
-            cursor::MoveTo(x_text, y_center),
+            // Print recommendation
+            cursor::MoveTo(x_off, y_center + 1),
             Clear(ClearType::CurrentLine),
-            Print(text),
-            cursor::MoveTo(x_rec, y_center),
-            PrintStyledContent(rec_text.dark_grey()),
-            cursor::MoveTo(x_rec, y_center),
+            PrintStyledContent(self.path.clone().red()),
+            cursor::MoveTo(x_off, y_center),
+            // Print input second, so that the cursor is in the first line
+            Clear(ClearType::CurrentLine),
+            PrintStyledContent(self.input.clone().green()),
             cursor::Show,
             cursor::SetCursorStyle::DefaultUserShape,
             cursor::EnableBlinking,
@@ -404,19 +391,70 @@ impl Draw for SearchConsole {
     }
 }
 
-impl SearchConsole {
-    fn recommendation(&self) -> String {
-        let mut all_keys: Vec<String> = self
-            .recommendations
-            .iter_prefix(self.tmp_input.as_bytes())
-            .map(|(item, _)| item)
-            .flat_map(String::from_utf8)
-            .collect();
-        all_keys.sort_by_cached_key(|name| name.to_lowercase());
-        all_keys
-            .into_iter()
-            .cycle()
-            .nth(self.rec_idx)
-            .unwrap_or_default()
+impl Console for Zoxide {
+    fn handle_key(&mut self, key_event: KeyEvent) -> ConsoleOp {
+        match key_event.code {
+            KeyCode::Backspace => {
+                let len_before = self.input.len();
+                self.input.pop();
+                if self.input.is_empty() && len_before > self.input.len() {
+                    self.path = ".".to_string();
+                    return ConsoleOp::Cd(self.starting_path.clone());
+                }
+            }
+            KeyCode::Enter => {
+                if self.input.trim_end().is_empty() {
+                    return ConsoleOp::Exit(Some(self.starting_path.clone()));
+                } else {
+                    return ConsoleOp::Exit(None);
+                }
+            }
+            KeyCode::Char(c) => {
+                self.input.push(c);
+                // if let Some(path) = self.insert(c) {
+                //     return ConsoleOp::Cd(path);
+                // }
+            }
+            _ => (),
+        }
+
+        if self.input.trim_end().is_empty() {
+            return ConsoleOp::None;
+        }
+
+        let result = Command::new("zoxide")
+            .arg("query")
+            .args(self.input.split_ascii_whitespace())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .output();
+
+        match result {
+            Ok(value) => {
+                let output = std::str::from_utf8(&value.stdout)
+                    .unwrap_or_else(|_| "- failed to get stdout of zoxide -")
+                    .trim_end();
+                if !output.is_empty() {
+                    self.path = output.to_string();
+                    self.path.push('/');
+                    let path = PathBuf::from(&self.path);
+                    if path.exists() && path.is_dir() {
+                        return ConsoleOp::Cd(path);
+                    } else {
+                        warn!(
+                            "{} does not exist {}, {}",
+                            self.path,
+                            path.exists(),
+                            path.is_dir()
+                        );
+                    }
+                } else {
+                    return ConsoleOp::Cd(self.starting_path.clone());
+                }
+            }
+            Err(e) => error!("failed to execute zoxide: {e}"),
+        }
+
+        ConsoleOp::None
     }
 }
