@@ -18,6 +18,8 @@ use crate::{
     util::{copy_item, get_destination, move_item, print_metadata},
 };
 
+use self::console::ConsoleOp;
+
 use super::{console::DirConsole, input::Input, *};
 
 struct Redraw {
@@ -1084,38 +1086,19 @@ impl PanelManager {
                     // Always redraw footer
                     self.redraw_footer();
                 }
-                Mode::Console { console } => match key_event.code {
-                    // TODO: Let's refactor this, so that the console handles the key input directly
-                    KeyCode::Backspace => {
-                        if let Some(path) = console.del().map(|p| p.to_path_buf()) {
+                Mode::Console { console } => {
+                    match console.handle_key(key_event.code) {
+                        ConsoleOp::Cd(path) => {
                             self.jump(path);
                         }
-                        self.redraw_console();
-                    }
-                    KeyCode::Enter => {
-                        self.mode = Mode::Normal;
-                        self.redraw_panels();
-                    }
-                    KeyCode::Tab => {
-                        if let Some(path) = console.tab() {
-                            self.jump(path);
+                        ConsoleOp::None => (),
+                        ConsoleOp::Exit => {
+                            self.mode = Mode::Normal;
+                            self.redraw_panels();
                         }
-                        self.redraw_console();
                     }
-                    KeyCode::BackTab => {
-                        if let Some(path) = console.backtab() {
-                            self.jump(path);
-                        }
-                        self.redraw_console();
-                    }
-                    KeyCode::Char(c) => {
-                        if let Some(path) = console.insert(c) {
-                            self.jump(path);
-                        }
-                        self.redraw_console();
-                    }
-                    _ => (),
-                },
+                    self.redraw_console();
+                }
                 Mode::CreateItem { input, is_dir } => {
                     match key_event.code {
                         KeyCode::Enter => {

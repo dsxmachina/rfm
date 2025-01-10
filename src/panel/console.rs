@@ -1,7 +1,14 @@
+use crossterm::event::KeyCode;
 use patricia_tree::{PatriciaMap, PatriciaSet};
 
 use super::*;
 use crate::{config::color::print_horizontal_bar, content::dir_content};
+
+pub enum ConsoleOp {
+    Cd(PathBuf),
+    None,
+    Exit,
+}
 
 #[derive(Default)]
 pub struct DirConsole {
@@ -119,6 +126,34 @@ impl DirConsole {
             rec_idx,
             ..Default::default()
         }
+    }
+
+    pub fn handle_key(&mut self, keycode: KeyCode) -> ConsoleOp {
+        match keycode {
+            KeyCode::Backspace => {
+                if let Some(path) = self.del().map(|p| p.to_path_buf()) {
+                    return ConsoleOp::Cd(path);
+                }
+            }
+            KeyCode::Enter => return ConsoleOp::Exit,
+            KeyCode::Tab => {
+                if let Some(path) = self.tab() {
+                    return ConsoleOp::Cd(path);
+                }
+            }
+            KeyCode::BackTab => {
+                if let Some(path) = self.backtab() {
+                    return ConsoleOp::Cd(path);
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(path) = self.insert(c) {
+                    return ConsoleOp::Cd(path);
+                }
+            }
+            _ => (),
+        }
+        ConsoleOp::None
     }
 
     fn change_dir(&mut self, path: PathBuf) {
