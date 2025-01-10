@@ -834,7 +834,6 @@ impl PanelManager {
 
                     // Find panel and update it
                     if self.center.check_update(&state) {
-                        // Notification::new().summary("update-center").body(&format!("{:?}", state)).show().unwrap();
                         self.center.update_panel(panel);
                         // update preview (if necessary)
                         self.right.new_panel_delayed(self.center.panel().selected_path());
@@ -842,7 +841,6 @@ impl PanelManager {
                         self.redraw_right();
                         self.redraw_console();
                     } else if self.left.check_update(&state) {
-                        // Notification::new().summary("update-left").body(&format!("{:?}", state)).show().unwrap();
                         self.left.update_panel(panel);
                         self.left.panel_mut().select_path(self.center.panel().path(), Some(self.center.panel().selected_idx()));
                         self.redraw_left();

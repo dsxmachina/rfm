@@ -16,7 +16,6 @@ use engine::{
 };
 use log::{error, info, warn};
 use logger::LogBuffer;
-use notify_rust::Notification;
 use panel::{init_miller_panels, manager::PanelManager};
 use rust_embed::Embed;
 use std::{
@@ -79,16 +78,6 @@ async fn main() -> anyhow::Result<()> {
 
     std::panic::set_hook(Box::new(|panic_info| {
         error!("{panic_info}");
-        let output = format!("{panic_info}");
-        let summary = "panic occured";
-        if Notification::new()
-            .summary(summary)
-            .body(&output)
-            .show()
-            .is_err()
-        {
-            warn!("failed to generate notification");
-        }
     }));
 
     // Remember starting path
@@ -150,14 +139,6 @@ async fn main() -> anyhow::Result<()> {
                 use_trash = config.general.use_trash;
             }
             Err(e) => {
-                if Notification::new()
-                    .summary("Configuration Error")
-                    .body(&format!("{e}"))
-                    .show()
-                    .is_err()
-                {
-                    warn!("failed to generate notification");
-                }
                 warn!("Configuration error: {e}. Using default color config");
                 colors_from_default();
             }
@@ -213,14 +194,6 @@ async fn main() -> anyhow::Result<()> {
                 OpenEngine::with_config(open_config)
             }
             Err(e) => {
-                if Notification::new()
-                    .summary("Configuration Error")
-                    .body(&format!("{e}"))
-                    .show()
-                    .is_err()
-                {
-                    warn!("failed to generate notification");
-                }
                 warn!("Configuration error: {e}. Using default open engine");
                 OpenEngine::default()
             }

@@ -1,6 +1,6 @@
 use anyhow::anyhow;
 use fs_extra::dir::CopyOptions;
-use notify_rust::Notification;
+use log::warn;
 use std::{
     cmp::Ordering,
     os::unix::fs::{MetadataExt, PermissionsExt},
@@ -208,10 +208,7 @@ where
         .unwrap_or_default();
     // If destination is the directory of from, don't do anything
     if from == destination.as_ref().join(dest_name) {
-        Notification::new()
-            .summary("from and to are identical")
-            .show()
-            .unwrap();
+        warn!("from and to are identical");
         return Ok(());
     }
     let to = get_destination(&source, destination)?;
