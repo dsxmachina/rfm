@@ -1,6 +1,13 @@
 # 0.3.1
 
 - greatly reduce binary size (see [here](https://github.com/dsxmachina/rfm/issues/5))
+- implement zoxide mode
+
+You can now change directories using zoxide. This option is now available in the `keys.toml` config:
+```toml
+[manipulation]
+zoxide_query = [ "CD", "Cd", "cD" ] # "shift+cd" with mistakes
+```
 
 # 0.3.0
 

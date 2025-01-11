@@ -179,6 +179,17 @@ or execute a cut, copy or delete operation on them).
 Type `cd` and see what happens. You can use `tab` to toggle the recommendation.
 The completion is quite similar to the one you find in`emacs`, so if you are used to that you should feel at home.
 
+### Zoxide support
+
+If you have zoxide installed on your system, you can use it to change directories. This is basically another `cd` mode.
+You can use `tab` and `shift+tab` to cycle between the zoxide query results.
+
+To use it, just set the keybinding to your liking (it is `shift+cd` by default):
+``` toml
+[manipulation]
+zoxide_query = [ "CD", "Cd", "cD" ] # "shift+cd" with mistakes
+```
+
 ### Preview-Engine
 
 There is a simple preview engine, that generates text previews of the currently selected file.
