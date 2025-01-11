@@ -629,9 +629,7 @@ impl PanelManager {
                 self.center.freeze();
 
                 // Change working directory so that child processes gets spawned from the currently active directory.
-                if let Err(e) = std::env::set_current_dir(self.center.panel().path()) {
-                    error!("Failed to set working-directory for process: {e}");
-                }
+                self.set_env_current_dir();
                 if let Err(e) = self.opener.open(selected) {
                     /* failed to open selected */
                     error!("Opening failed: {e}");
@@ -892,6 +890,14 @@ impl PanelManager {
         Ok(close_cmd)
     }
 
+    // Utility wrapper
+    fn set_env_current_dir(&self) {
+        // Change working directory so that child processes gets spawned from the currently active directory.
+        if let Err(e) = std::env::set_current_dir(self.center.panel().path()) {
+            error!("Failed to set working-directory for process: {e}");
+        }
+    }
+
     /// Handles the terminal events.
     ///
     /// Returns Ok(true) if the application needs to shut down.
@@ -1041,9 +1047,8 @@ impl PanelManager {
                         }
                         Command::Zip => {
                             let items = self.marked_or_selected();
-                            if let Err(e) = std::env::set_current_dir(self.center.panel().path()) {
-                                error!("Failed to set working-directory for process: {e}");
-                            }
+                            self.set_env_current_dir();
+
                             self.center.freeze();
                             if let Err(e) = self.opener.zip(items) {
                                 warn!("Failed to create zip-archive: {e}");
@@ -1053,9 +1058,7 @@ impl PanelManager {
                         }
                         Command::Tar => {
                             let items = self.marked_or_selected();
-                            if let Err(e) = std::env::set_current_dir(self.center.panel().path()) {
-                                error!("Failed to set working-directory for process: {e}");
-                            }
+                            self.set_env_current_dir();
                             self.center.freeze();
                             if let Err(e) = self.opener.tar(items) {
                                 warn!("Failed to create tar-archive: {e}");
@@ -1066,11 +1069,7 @@ impl PanelManager {
                         Command::Extract => {
                             self.center.freeze();
                             if let Some(archive) = self.center.panel().selected_path() {
-                                if let Err(e) =
-                                    std::env::set_current_dir(self.center.panel().path())
-                                {
-                                    error!("Failed to set working-directory for process: {e}");
-                                }
+                                self.set_env_current_dir();
                                 if let Err(e) = self.opener.extract(archive.to_owned()) {
                                     warn!("Failed to extract archive: {e}");
                                 }
