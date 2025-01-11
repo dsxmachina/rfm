@@ -1096,10 +1096,7 @@ impl PanelManager {
                             self.jump(path);
                         }
                         ConsoleOp::None => (),
-                        ConsoleOp::Exit(maybe_path) => {
-                            if let Some(path) = maybe_path {
-                                self.jump(path);
-                            }
+                        ConsoleOp::Exit => {
                             self.mode = Mode::Normal;
                             self.redraw_panels();
                         }

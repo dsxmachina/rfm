@@ -15,7 +15,7 @@ use crate::{
 pub enum ConsoleOp {
     Cd(PathBuf),
     None,
-    Exit(Option<PathBuf>),
+    Exit,
 }
 
 /// Abstract trait for all possible console implementations
@@ -318,7 +318,7 @@ impl Console for DirConsole {
                     return ConsoleOp::Cd(path);
                 }
             }
-            KeyCode::Enter => return ConsoleOp::Exit(None), // we already jumped into the directory
+            KeyCode::Enter => return ConsoleOp::Exit,
             KeyCode::Tab => {
                 if let Some(path) = self.tab() {
                     return ConsoleOp::Cd(path);
@@ -457,11 +457,7 @@ impl Console for Zoxide {
                 }
             }
             KeyCode::Enter => {
-                if self.input.trim_end().is_empty() {
-                    return ConsoleOp::Exit(Some(self.starting_path.clone()));
-                } else {
-                    return ConsoleOp::Exit(None);
-                }
+                return ConsoleOp::Exit;
             }
             KeyCode::Char(c) => {
                 self.opt_idx = 0;
@@ -477,10 +473,6 @@ impl Console for Zoxide {
                 self.opt_idx = self.opt_idx.saturating_sub(1);
             }
             _ => (),
-        }
-
-        if self.input.trim_end().is_empty() {
-            return ConsoleOp::None;
         }
 
         let result = self.query_zoxide();
