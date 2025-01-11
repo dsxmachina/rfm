@@ -19,6 +19,7 @@ use logger::LogBuffer;
 use panel::{init_miller_panels, manager::PanelManager};
 use rust_embed::Embed;
 use std::{
+    fmt::Write as _,
     fs::{File, OpenOptions},
     io::{stdout, IsTerminal, Write},
     path::PathBuf,
@@ -287,11 +288,10 @@ async fn main() -> anyhow::Result<()> {
                 let errors = logger.get_errors();
                 if !errors.is_empty() {
                     // Write error.log
-                    let log_output: String = logger
-                        .get()
-                        .into_iter()
-                        .map(|(level, msg)| format!("{level}: {msg}\n"))
-                        .collect();
+                    let mut log_output = String::new();
+                    for (level, msg) in logger.get() {
+                        writeln!(log_output, "{level}: {msg}")?;
+                    }
                     let mut log = std::fs::File::create("./error.log")?;
                     log.write_all(log_output.as_bytes())?;
                     eprintln!("{}", ERROR_MSG);

@@ -797,17 +797,15 @@ impl PanelManager {
             if let Err(e) = result {
                 error!("Cannot delete {}: {e}", file.display());
             }
-        } else {
-            if file.is_file() {
-                let result = std::fs::remove_file(file);
-                if let Err(e) = result {
-                    error!("Cannot delete {}: {e}", file.display());
-                }
-            } else if file.is_dir() {
-                let result = std::fs::remove_dir_all(file);
-                if let Err(e) = result {
-                    error!("Cannot delete {}: {e}", file.display());
-                }
+        } else if file.is_file() {
+            let result = std::fs::remove_file(file);
+            if let Err(e) = result {
+                error!("Cannot delete {}: {e}", file.display());
+            }
+        } else if file.is_dir() {
+            let result = std::fs::remove_dir_all(file);
+            if let Err(e) = result {
+                error!("Cannot delete {}: {e}", file.display());
             }
         }
     }

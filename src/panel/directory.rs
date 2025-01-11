@@ -196,10 +196,10 @@ impl PartialOrd for DirElem {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         if self.path.is_dir() {
             if other.path.is_dir() {
-                return self
+                self
                     .name()
                     .to_lowercase()
-                    .partial_cmp(&other.name().to_lowercase());
+                    .partial_cmp(&other.name().to_lowercase())
             } else {
                 Some(Ordering::Less)
             }
@@ -326,62 +326,39 @@ impl Draw for DirPanel {
                 )?;
                 y_offset += 1;
             }
-        } else {
-            if let Some((new_element, is_dir)) = &self.new_element {
-                let lowercase_name = new_element.to_lowercase();
-                let (partition, symbol) = if *is_dir {
-                    (
-                        self.elements
-                            // NOTE: This only works, because everything is sorted by name
-                            .partition_point(|elem| {
-                                elem.path().is_dir() && (elem.lowercase < lowercase_name)
-                            }),
-                        "\u{1F4C1}",
-                    )
-                } else {
-                    (
-                        self.elements
-                            // NOTE: This only works, because everything is sorted by name
-                            .partition_point(|elem| {
-                                elem.path().is_dir() || (elem.lowercase < lowercase_name)
-                            }),
-                        "\u{1F5B9} ",
-                    )
-                };
-                log::debug!("new_element: {new_element}, partition-point: {partition}");
+        } else if let Some((new_element, is_dir)) = &self.new_element {
+            let lowercase_name = new_element.to_lowercase();
+            let (partition, symbol) = if *is_dir {
+                (
+                    self.elements
+                        // NOTE: This only works, because everything is sorted by name
+                        .partition_point(|elem| {
+                            elem.path().is_dir() && (elem.lowercase < lowercase_name)
+                        }),
+                    "\u{1F4C1}",
+                )
+            } else {
+                (
+                    self.elements
+                        // NOTE: This only works, because everything is sorted by name
+                        .partition_point(|elem| {
+                            elem.path().is_dir() || (elem.lowercase < lowercase_name)
+                        }),
+                    "\u{1F5B9} ",
+                )
+            };
+            log::debug!("new_element: {new_element}, partition-point: {partition}");
 
-                // Write "height" items to the screen
-                for (idx, entry) in self
-                    .elements
-                    .iter_mut()
-                    .enumerate()
-                    .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
-                    .skip(scroll)
-                    .take(height.saturating_sub(1) as usize)
-                {
-                    if idx == partition && !new_element.is_empty() {
-                        queue!(
-                            stdout,
-                            cursor::MoveTo(x_range.start, y_range.start + y_offset),
-                            print_vertical_bar(),
-                            PrintStyledContent(format!(" {symbol}").with(color_highlight())),
-                            PrintStyledContent(
-                                new_element
-                                    .exact_width(width.saturating_sub(4) as usize)
-                                    .with(color_highlight())
-                            ),
-                        )?;
-                        y_offset += 1;
-                    }
-                    queue!(
-                        stdout,
-                        cursor::MoveTo(x_range.start, y_range.start + y_offset),
-                        print_vertical_bar(),
-                        entry.print_styled(self.selected_idx == idx, width),
-                    )?;
-                    y_offset += 1;
-                }
-                if y_offset as usize == partition && !new_element.is_empty() {
+            // Write "height" items to the screen
+            for (idx, entry) in self
+                .elements
+                .iter_mut()
+                .enumerate()
+                .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
+                .skip(scroll)
+                .take(height.saturating_sub(1) as usize)
+            {
+                if idx == partition && !new_element.is_empty() {
                     queue!(
                         stdout,
                         cursor::MoveTo(x_range.start, y_range.start + y_offset),
@@ -395,25 +372,46 @@ impl Draw for DirPanel {
                     )?;
                     y_offset += 1;
                 }
-            } else {
-                // Write "height" items to the screen
-                for (idx, entry) in self
-                    .elements
-                    .iter_mut()
-                    .enumerate()
-                    .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
-                    .skip(scroll)
-                    .take(height as usize)
-                {
-                    let y = y_range.start + y_offset;
-                    queue!(
-                        stdout,
-                        cursor::MoveTo(x_range.start, y),
-                        print_vertical_bar(),
-                        entry.print_styled(self.selected_idx == idx, width),
-                    )?;
-                    y_offset += 1;
-                }
+                queue!(
+                    stdout,
+                    cursor::MoveTo(x_range.start, y_range.start + y_offset),
+                    print_vertical_bar(),
+                    entry.print_styled(self.selected_idx == idx, width),
+                )?;
+                y_offset += 1;
+            }
+            if y_offset as usize == partition && !new_element.is_empty() {
+                queue!(
+                    stdout,
+                    cursor::MoveTo(x_range.start, y_range.start + y_offset),
+                    print_vertical_bar(),
+                    PrintStyledContent(format!(" {symbol}").with(color_highlight())),
+                    PrintStyledContent(
+                        new_element
+                            .exact_width(width.saturating_sub(4) as usize)
+                            .with(color_highlight())
+                    ),
+                )?;
+                y_offset += 1;
+            }
+        } else {
+            // Write "height" items to the screen
+            for (idx, entry) in self
+                .elements
+                .iter_mut()
+                .enumerate()
+                .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
+                .skip(scroll)
+                .take(height as usize)
+            {
+                let y = y_range.start + y_offset;
+                queue!(
+                    stdout,
+                    cursor::MoveTo(x_range.start, y),
+                    print_vertical_bar(),
+                    entry.print_styled(self.selected_idx == idx, width),
+                )?;
+                y_offset += 1;
             }
         }
 

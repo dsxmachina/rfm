@@ -375,7 +375,10 @@ impl Zoxide {
             .stdout
             .take()
             .context("could not get stdout of child process")?;
-        self.options = BufReader::new(stdout).lines().flatten().collect();
+        self.options = BufReader::new(stdout)
+            .lines()
+            .map_while(Result::ok)
+            .collect();
         Ok(())
     }
 }
@@ -483,8 +486,7 @@ impl Console for Zoxide {
                     .options
                     .iter()
                     .cycle()
-                    .skip(self.opt_idx)
-                    .next()
+                    .nth(self.opt_idx)
                     .cloned()
                     .unwrap_or_default();
 

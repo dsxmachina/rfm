@@ -29,7 +29,7 @@ pub fn file_size_str(file_size: u64) -> String {
 #[test]
 fn test_width() {
     let test_str = "Ｈｅｌｌｏ, ｗｏｒｌｄ!";
-    println!("test-str={test_str}, width={}", unicode_width(&test_str));
+    println!("test-str={test_str}, width={}", unicode_width(test_str));
     assert!(unicode_width("asdf") == 4);
     assert_eq!(unicode_width(&test_str.exact_width(4)), 4);
     let longer = test_str.exact_width(9);
