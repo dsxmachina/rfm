@@ -90,11 +90,6 @@ pub mod color {
     }
 
     #[inline]
-    pub fn print_cross() -> PrintStyledContent<&'static str> {
-        PrintStyledContent("┼".with(color_main()).bold())
-    }
-
-    #[inline]
     pub fn color_main() -> Color {
         *COLOR_MAIN.get().expect("color must be set")
     }

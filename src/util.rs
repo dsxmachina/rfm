@@ -290,21 +290,21 @@ pub fn print_metadata(selected_path: Option<&Path>) -> (String, String) {
 // If not, the operation would be quite expensive, and we should then find another strategy.
 //
 // Trait to extract device ID in a cross-platform way
-pub trait CheckDeviceId {
-    fn device_id(&self) -> u64;
-}
+// pub trait CheckDeviceId {
+//     fn device_id(&self) -> u64;
+// }
 
-#[cfg(unix)]
-impl CheckDeviceId for std::fs::Metadata {
-    fn device_id(&self) -> u64 {
-        self.dev()
-    }
-}
+// #[cfg(unix)]
+// impl CheckDeviceId for std::fs::Metadata {
+//     fn device_id(&self) -> u64 {
+//         self.dev()
+//     }
+// }
 
-#[cfg(windows)]
-impl CheckDeviceId for std::fs::Metadata {
-    fn device_id(&self) -> u64 {
-        use std::os::windows::fs::MetadataExt;
-        self.volume_serial_number().unwrap_or(0)
-    }
-}
+// #[cfg(windows)]
+// impl CheckDeviceId for std::fs::Metadata {
+//     fn device_id(&self) -> u64 {
+//         use std::os::windows::fs::MetadataExt;
+//         self.volume_serial_number().unwrap_or(0)
+//     }
+// }

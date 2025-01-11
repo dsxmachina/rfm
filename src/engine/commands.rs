@@ -47,7 +47,8 @@ impl From<ExpandedPath> for PathBuf {
 
 #[derive(Deserialize, Debug)]
 struct Manipulation {
-    change_directory: Vec<String>,
+    change_directory: Option<Vec<String>>,
+    zoxide_query: Option<Vec<String>>,
     rename: Vec<String>,
     mkdir: Vec<String>,
     touch: Vec<String>,
@@ -132,7 +133,7 @@ pub enum Command {
     Zip,
     Tar,
     Extract,
-    Cd,
+    Cd { zoxide: bool },
     Search,
     Rename,
     Mkdir,
@@ -172,7 +173,7 @@ impl Display for Command {
             Command::Zip => write!(f, "zip selected items"),
             Command::Tar => write!(f, "tar selected items"),
             Command::Extract => write!(f, "extract selected archive"),
-            Command::Cd => write!(f, "enter 'cd' mode"),
+            Command::Cd { .. } => write!(f, "enter 'cd' mode"),
             Command::Search => write!(f, "search for items"),
             Command::Rename => write!(f, "rename selected items"),
             Command::Mkdir => write!(f, "create a new directory"),
@@ -265,7 +266,14 @@ impl CommandParser {
                 .insert(keys, Command::Move(Move::JumpTo(path.into())));
         }
         // Manipulation commands
-        parser.insert(config.manipulation.change_directory, Command::Cd);
+        parser.insert(
+            config.manipulation.change_directory.unwrap_or_default(),
+            Command::Cd { zoxide: false },
+        );
+        parser.insert(
+            config.manipulation.zoxide_query.unwrap_or_default(),
+            Command::Cd { zoxide: true },
+        );
         parser.insert(config.manipulation.rename, Command::Rename);
         parser.insert(config.manipulation.mkdir, Command::Mkdir);
         parser.insert(config.manipulation.touch, Command::Touch);
@@ -439,7 +447,7 @@ impl CommandParser {
         key_commands.insert("N", Command::Previous);
 
         // cd, mkdir, touch
-        key_commands.insert("cd", Command::Cd);
+        key_commands.insert("cd", Command::Cd { zoxide: false });
         key_commands.insert("mkdir", Command::Mkdir);
         key_commands.insert("touch", Command::Touch);
 

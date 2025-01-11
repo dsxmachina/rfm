@@ -64,6 +64,7 @@ jump_to = [ ["gh", "~"],
 # Keybindings related to directory and file manipulation
 [manipulation]
 change_directory = [ "cd" ]                    # enter "cd" mode (similar to emacs)
+zoxide_query     = [ "CD", "Cd", "cD" ]        # cd with zoxide (requires 'zoxide')
 rename           = [ "rename" ]                # rename selected item
 mkdir            = [ "mkdir" ]                 # create new directory
 touch            = [ "touch" ]                 # create new file

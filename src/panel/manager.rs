@@ -925,14 +925,17 @@ impl PanelManager {
                         }
                         Command::ToggleHidden => self.toggle_hidden(),
                         Command::ToggleLog => self.toggle_log(),
-                        Command::Cd => {
+                        Command::Cd { zoxide } => {
                             self.pre_console_path = self.center.panel().path().to_path_buf();
-                            // self.mode = Mode::Console {
-                            //     console: Box::new(DirConsole::from_panel(self.center.panel())),
-                            // };
-                            // TODO WIP: Test out zoxide console
-                            self.mode = Mode::Console {
-                                console: Box::new(Zoxide::from_panel(self.center.panel())),
+                            self.mode = if zoxide {
+                                // TODO WIP: Test out zoxide console
+                                Mode::Console {
+                                    console: Box::new(Zoxide::from_panel(self.center.panel())),
+                                }
+                            } else {
+                                Mode::Console {
+                                    console: Box::new(DirConsole::from_panel(self.center.panel())),
+                                }
                             };
                             self.redraw_console();
                         }
