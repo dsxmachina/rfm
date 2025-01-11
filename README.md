@@ -275,3 +275,5 @@ A list of features that are planned to be implemented:
 - [x] basic interaction with archives
 - [ ] execution of external commands (like zip and tar) in a separate thread
 - [x] simple color configuration
+- [ ] show matching commands for input buffer after some delay
+- [ ] simple help screen for new users
