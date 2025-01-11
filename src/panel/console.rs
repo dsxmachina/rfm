@@ -3,7 +3,10 @@ use patricia_tree::PatriciaSet;
 use std::process::{Command, Stdio};
 
 use super::*;
-use crate::{config::color::print_horizontal_bar, content::dir_content};
+use crate::{
+    config::color::{print_horizontal_bar, print_horz_bot, print_horz_top},
+    content::dir_content,
+};
 
 pub enum ConsoleOp {
     Cd(PathBuf),
@@ -45,6 +48,15 @@ impl Draw for DirConsole {
         let x_start = x_range.start;
         let y_center = y_range.end.saturating_add(y_range.start) / 2;
 
+        // x-coordinates of the divider columns
+        //
+        // NOTE: We make the assumption here, that the width is the entire terminal size;
+        // which is ok, since the dividers only make sense in this context
+        //
+        let div_left = 0;
+        let div_center = width / 8;
+        let div_right = width / 2;
+
         let mut path = format!("{}", self.path.display());
         if !path.ends_with('/') {
             path.push('/');
@@ -69,12 +81,17 @@ impl Draw for DirConsole {
 
         if height >= 3 {
             for x in x_range {
+                let (top, bot) = if x == div_left || x == div_center || x == div_right {
+                    (print_horz_top(), print_horz_bot())
+                } else {
+                    (print_horizontal_bar(), print_horizontal_bar())
+                };
                 queue!(
                     stdout,
                     cursor::MoveTo(x, y_center.saturating_sub(1)),
-                    print_horizontal_bar(),
+                    top,
                     cursor::MoveTo(x, y_center.saturating_add(1)),
-                    print_horizontal_bar(),
+                    bot,
                 )?;
             }
         }
@@ -351,35 +368,46 @@ impl Draw for Zoxide {
         let x_start = x_range.start;
         let y_center = y_range.end.saturating_add(y_range.start) / 2;
 
+        // x-coordinates of the divider columns
+        //
+        // NOTE: We make the assumption here, that the width is the entire terminal size;
+        // which is ok, since the dividers only make sense in this context
+        //
+        let div_left = 0;
+        let div_center = width / 8;
+        let div_right = width / 2;
+
         let text_len = unicode_display_width::width(&self.input) as u16;
-        let offset = if text_len < (width / 2) {
-            width / 4
-        } else if text_len < width {
-            (width - text_len).saturating_sub(1) / 2
-        } else {
-            0
-        };
+        let path_len = self.path.chars().count() as u16;
+        let input_offset = width.saturating_sub(text_len).saturating_sub(1) / 3;
+        let path_offset = width.saturating_sub(path_len) / 3;
 
         if height >= 3 {
             for x in x_range {
+                let (top, bot) = if x == div_left || x == div_center || x == div_right {
+                    (print_horz_top(), print_horz_bot())
+                } else {
+                    (print_horizontal_bar(), print_horizontal_bar())
+                };
                 queue!(
                     stdout,
                     cursor::MoveTo(x, y_center.saturating_sub(1)),
-                    print_horizontal_bar(),
+                    top,
                     cursor::MoveTo(x, y_center.saturating_add(2)),
-                    print_horizontal_bar(),
+                    bot,
                 )?;
             }
         }
-        let x_off = x_start.saturating_add(offset);
+        let x_off_input = x_start.saturating_add(input_offset);
+        let x_off_path = x_start.saturating_add(path_offset);
 
         queue!(
             stdout,
             // Print recommendation
-            cursor::MoveTo(x_off, y_center + 1),
+            cursor::MoveTo(x_off_path, y_center + 1),
             Clear(ClearType::CurrentLine),
             PrintStyledContent(self.path.clone().red()),
-            cursor::MoveTo(x_off, y_center),
+            cursor::MoveTo(x_off_input, y_center),
             // Print input second, so that the cursor is in the first line
             Clear(ClearType::CurrentLine),
             PrintStyledContent(self.input.clone().green()),

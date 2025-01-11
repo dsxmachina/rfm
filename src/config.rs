@@ -75,7 +75,23 @@ pub mod color {
 
     #[inline]
     pub fn print_horizontal_bar() -> PrintStyledContent<&'static str> {
-        PrintStyledContent("―".with(color_main()).bold())
+        // NOTE: This is a utf-8 character - it may be a good idea to query utf-8 support somewhere ?
+        PrintStyledContent("─".with(color_main()).bold())
+    }
+
+    #[inline]
+    pub fn print_horz_top() -> PrintStyledContent<&'static str> {
+        PrintStyledContent("┴".with(color_main()).bold())
+    }
+
+    #[inline]
+    pub fn print_horz_bot() -> PrintStyledContent<&'static str> {
+        PrintStyledContent("┬".with(color_main()).bold())
+    }
+
+    #[inline]
+    pub fn print_cross() -> PrintStyledContent<&'static str> {
+        PrintStyledContent("┼".with(color_main()).bold())
     }
 
     #[inline]
