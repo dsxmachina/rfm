@@ -1,6 +1,10 @@
+use anyhow::Context;
 use crossterm::event::{KeyCode, KeyEvent};
 use patricia_tree::PatriciaSet;
-use std::process::{Command, Stdio};
+use std::{
+    io::{BufRead, BufReader},
+    process::{Command, Stdio},
+};
 
 use super::*;
 use crate::{
@@ -338,9 +342,11 @@ impl Console for DirConsole {
 
 #[derive(Default)]
 pub struct Zoxide {
+    starting_path: PathBuf,
     input: String,
     path: String,
-    starting_path: PathBuf,
+    options: Vec<String>,
+    opt_idx: usize,
 }
 
 impl Zoxide {
@@ -348,10 +354,29 @@ impl Zoxide {
         let path = ".".to_string();
         let starting_path = panel.path().to_path_buf();
         Zoxide {
+            starting_path,
             input: String::new(),
             path,
-            starting_path,
+            options: Vec::new(),
+            opt_idx: 0,
         }
+    }
+
+    fn query_zoxide(&mut self) -> anyhow::Result<()> {
+        let mut handle = Command::new("zoxide")
+            .arg("query")
+            .arg("-l")
+            .args(self.input.split_ascii_whitespace())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()?;
+
+        let stdout = handle
+            .stdout
+            .take()
+            .context("could not get stdout of child process")?;
+        self.options = BufReader::new(stdout).lines().flatten().collect();
+        Ok(())
     }
 }
 
@@ -379,8 +404,8 @@ impl Draw for Zoxide {
 
         let text_len = unicode_display_width::width(&self.input) as u16;
         let path_len = self.path.chars().count() as u16;
-        let input_offset = width.saturating_sub(text_len).saturating_sub(1) / 3;
-        let path_offset = width.saturating_sub(path_len) / 3;
+        let input_offset = width.saturating_sub(text_len).saturating_sub(1) / 2;
+        let path_offset = width.saturating_sub(path_len) / 2;
 
         if height >= 3 {
             for x in x_range {
@@ -423,6 +448,7 @@ impl Console for Zoxide {
     fn handle_key(&mut self, key_event: KeyEvent) -> ConsoleOp {
         match key_event.code {
             KeyCode::Backspace => {
+                self.opt_idx = 0;
                 let len_before = self.input.len();
                 self.input.pop();
                 if self.input.is_empty() && len_before > self.input.len() {
@@ -438,10 +464,17 @@ impl Console for Zoxide {
                 }
             }
             KeyCode::Char(c) => {
+                self.opt_idx = 0;
                 self.input.push(c);
                 // if let Some(path) = self.insert(c) {
                 //     return ConsoleOp::Cd(path);
                 // }
+            }
+            KeyCode::Tab => {
+                self.opt_idx = self.opt_idx.saturating_add(1);
+            }
+            KeyCode::BackTab => {
+                self.opt_idx = self.opt_idx.saturating_sub(1);
             }
             _ => (),
         }
@@ -450,21 +483,21 @@ impl Console for Zoxide {
             return ConsoleOp::None;
         }
 
-        let result = Command::new("zoxide")
-            .arg("query")
-            .args(self.input.split_ascii_whitespace())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .output();
+        let result = self.query_zoxide();
 
         match result {
-            Ok(value) => {
-                let output = std::str::from_utf8(&value.stdout)
-                    .unwrap_or_else(|_| "- failed to get stdout of zoxide -")
-                    .trim_end();
+            Ok(_) => {
+                let output = self
+                    .options
+                    .iter()
+                    .cycle()
+                    .skip(self.opt_idx)
+                    .next()
+                    .cloned()
+                    .unwrap_or_default();
+
                 if !output.is_empty() {
-                    self.path = output.to_string();
-                    self.path.push('/');
+                    self.path = output;
                     let path = PathBuf::from(&self.path);
                     if path.exists() && path.is_dir() {
                         return ConsoleOp::Cd(path);
@@ -480,7 +513,11 @@ impl Console for Zoxide {
                     return ConsoleOp::Cd(self.starting_path.clone());
                 }
             }
-            Err(e) => error!("failed to execute zoxide: {e}"),
+            Err(e) => {
+                let err_msg = format!("failed to execute zoxide: {e}");
+                error!("{err_msg}");
+                self.path = err_msg;
+            }
         }
 
         ConsoleOp::None
