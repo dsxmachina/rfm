@@ -121,6 +121,16 @@ pub enum Move {
     JumpPrevious,
 }
 
+/// An executable shell command
+///
+/// If `multi` is set to `true`, multiple files can be selected and fed into the command.
+#[derive(Debug, Clone)]
+pub struct ShellCmd {
+    pub cmd: String,
+    pub args: String,
+    pub multi: bool,
+}
+
 /// Set of commands that the filemanager should perform during its runtime
 #[derive(Debug, Clone)]
 pub enum Command {
@@ -132,6 +142,7 @@ pub enum Command {
     ViewTrash,
     Zip,
     Tar,
+    Shell(Box<ShellCmd>),
     Extract,
     Cd { zoxide: bool },
     Search,
@@ -172,6 +183,7 @@ impl Display for Command {
             Command::ViewTrash => write!(f, "go to trash"),
             Command::Zip => write!(f, "zip selected items"),
             Command::Tar => write!(f, "tar selected items"),
+            Command::Shell(inner) => write!(f, "execute {} {} on selection", inner.cmd, inner.args),
             Command::Extract => write!(f, "extract selected archive"),
             Command::Cd { .. } => write!(f, "enter 'cd' mode"),
             Command::Search => write!(f, "search for items"),

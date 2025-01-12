@@ -1064,6 +1064,9 @@ impl PanelManager {
                             self.center.unfreeze();
                             self.redraw_center();
                         }
+                        Command::Shell(inner) => {
+                            todo!("implement shell cmd handling");
+                        }
                         Command::Extract => {
                             self.center.freeze();
                             if let Some(archive) = self.center.panel().selected_path() {
