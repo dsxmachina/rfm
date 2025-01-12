@@ -12,6 +12,7 @@ use crossterm::{
 };
 use engine::{
     commands::{CloseCmd, CommandParser},
+    shell::ShellExecutor,
     OpenEngine, SymbolEngine,
 };
 use log::{error, info, warn};
@@ -44,6 +45,9 @@ struct Args {
     /// it will write the full path of the last visited directory to CHOOSEDIR
     #[arg(long)]
     choosedir: Option<PathBuf>,
+    /// Prints the debug log to stdout upon closing
+    #[arg(long, default_value = "false")]
+    debug: bool,
     /// Path to open (defaults to ".")
     path: Option<PathBuf>,
 }
@@ -219,6 +223,7 @@ async fn main() -> anyhow::Result<()> {
 
     SymbolEngine::init();
 
+    // --- Inititialize cache and preview engines
     let directory_cache = PanelCache::with_size(16384);
     let preview_cache = PanelCache::with_size(4096);
 
@@ -240,6 +245,14 @@ async fn main() -> anyhow::Result<()> {
     let dir_mngr_handle = tokio::spawn(dir_manager.run());
     let prev_mngr_handle = tokio::spawn(preview_manager.run());
 
+    // --- Inititialize Shell executor
+    let (shell_cmd_tx, shell_cmd_rx) = mpsc::unbounded_channel();
+    let (shell_rs_tx, shell_rs_rx) = mpsc::channel(32);
+    let shell_executor = ShellExecutor::new(shell_cmd_rx, shell_rs_tx);
+
+    let shell_handle = tokio::spawn(shell_executor.run());
+
+    // --- Initialize miller panels and panel-manager
     let miller_panels = init_miller_panels(
         starting_path.clone(),
         directory_cache,
@@ -256,6 +269,8 @@ async fn main() -> anyhow::Result<()> {
         prev_rx,
         logger.clone(),
         opener,
+        shell_cmd_tx,
+        shell_rs_rx,
     )?;
     let panel_handle = tokio::spawn(panel_manager.run());
 
@@ -267,8 +282,15 @@ async fn main() -> anyhow::Result<()> {
 
     // The .await here is okay, because the PanelManager dropped the queue sender,
     // which makes these two guys instantly return:
-    let dir_mngr_result = dir_mngr_handle.await;
-    let prev_mngr_result = prev_mngr_handle.await;
+    if let Err(e) = dir_mngr_handle.await {
+        error!("dir-mngr-task: {e}");
+    }
+    if let Err(e) = prev_mngr_handle.await {
+        error!("preview-mngr-task: {e}");
+    }
+    if let Err(e) = shell_handle.await {
+        error!("shell-execurot-task: {e}");
+    }
 
     // Be a good citizen, cleanup
     stdout
@@ -323,17 +345,14 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Ok(Err(e)) => {
-            error!("PanelManager returned an error: {e}");
+            eprintln!("PanelManager returned an error: {e}");
         }
         Err(e) => {
-            error!("PanelManager-task: {e}")
+            eprintln!("PanelManager-task: {e}")
         }
     }
-    if let Err(e) = dir_mngr_result {
-        error!("dir-mngr-task: {e}");
-    }
-    if let Err(e) = prev_mngr_result {
-        error!("preview-mngr-task: {e}");
+    if args.debug {
+        logger.write_to_stdout();
     }
     Ok(())
 }

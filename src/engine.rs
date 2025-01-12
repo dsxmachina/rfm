@@ -31,17 +31,35 @@ pub mod shell {
         items: Vec<PathBuf>,
     }
 
+    impl Execute {
+        pub fn new(cmd: String, args: String, multi: bool, items: Vec<PathBuf>) -> Self {
+            Execute {
+                shell_cmd: ShellCmd { cmd, args, multi },
+                items,
+            }
+        }
+    }
+
+    impl ShellCmd {
+        pub fn into_execute(self, items: Vec<PathBuf>) -> Execute {
+            Execute {
+                shell_cmd: self,
+                items,
+            }
+        }
+    }
+
     pub enum ExecMsg {
         /// The task is making some progress (used to visualize spinner)
         Progress,
         /// New task is queued (only happens if another task is still running)
         Queued,
         /// Task has finished
-        Finish,
+        Finished,
     }
 
     pub struct ShellExecutor {
-        input_rx: mpsc::Receiver<Execute>,
+        input_rx: mpsc::UnboundedReceiver<Execute>,
         result_tx: mpsc::Sender<ExecMsg>,
         queue: VecDeque<Execute>,
         task_handle: Option<JoinHandle<Result<()>>>,
@@ -65,7 +83,10 @@ pub mod shell {
     }
 
     impl ShellExecutor {
-        pub fn new(input_rx: mpsc::Receiver<Execute>, result_tx: mpsc::Sender<ExecMsg>) -> Self {
+        pub fn new(
+            input_rx: mpsc::UnboundedReceiver<Execute>,
+            result_tx: mpsc::Sender<ExecMsg>,
+        ) -> Self {
             ShellExecutor {
                 input_rx,
                 result_tx,
@@ -86,18 +107,22 @@ pub mod shell {
                         if self.task_handle.is_some() {
                             self.result_tx.send(ExecMsg::Progress).await?;
                         }
+                        info!("--- ping");
                     }
                     result = self.input_rx.recv() => {
                         let exec = result.context("channel closed")?;
                         if self.task_handle.is_some() {
                             self.queue.push_back(exec);
+                            self.result_tx.send(ExecMsg::Queued).await?;
                         } else {
                             self.task_handle = Some(spawn_blocking(move || execute_cmd(exec)));
+                            self.result_tx.send(ExecMsg::Progress).await?;
                         }
                     }
                     // Await the task_handle if it is Some
                     _ = async {
                         if let Some(handle) = self.task_handle.take() {
+                            // TODO: Use SHUTDOWN_FLAG (somehow) to abort long running task
                             if let Err(err) = handle.await {
                                 warn!("Task failed: {:?}", err);
                             }
@@ -106,6 +131,7 @@ pub mod shell {
                         // At this point the task is done and can be reset
                         // if let Some()
                         info!("task finished");
+                        self.result_tx.send(ExecMsg::Finished).await?;
                     }
                 }
             }

@@ -12,8 +12,11 @@ use tempfile::TempDir;
 
 use crate::{
     config::color::{color_dir_path, color_main},
-    engine::commands::{CloseCmd, Command, CommandParser},
-    engine::OpenEngine,
+    engine::{
+        commands::{CloseCmd, Command, CommandParser},
+        shell::{ExecMsg, Execute},
+        OpenEngine,
+    },
     logger::LogBuffer,
     util::{copy_item, get_destination, move_item, print_metadata},
 };
@@ -69,6 +72,10 @@ struct Clipboard {
 //     Move(Movement),
 // }
 
+// TODO: This struct is getting out of control :D
+//
+// I think we should split out the "Message-Bus" that is hidden inside this.
+// It now contains drawing logic, execution logic and message logic.
 pub struct PanelManager {
     /// Left panel
     left: ManagedPanel<DirPanel>,
@@ -128,6 +135,12 @@ pub struct PanelManager {
 
     /// Receiver for incoming preview-panels
     prev_rx: mpsc::Receiver<(PreviewPanel, PanelState)>,
+
+    /// Execute shell commands asynchronously
+    shell_cmd_tx: mpsc::UnboundedSender<Execute>,
+
+    /// Get result of shell command
+    shell_rs_rx: mpsc::Receiver<ExecMsg>,
 }
 
 impl PanelManager {
@@ -140,6 +153,8 @@ impl PanelManager {
         prev_rx: mpsc::Receiver<(PreviewPanel, PanelState)>,
         logger: LogBuffer,
         opener: OpenEngine,
+        shell_cmd_tx: mpsc::UnboundedSender<Execute>,
+        shell_rs_rx: mpsc::Receiver<ExecMsg>,
     ) -> Result<Self> {
         // Prepare terminal
         let stdout = stdout();
@@ -194,6 +209,8 @@ impl PanelManager {
             stdout,
             dir_rx,
             prev_rx,
+            shell_cmd_tx,
+            shell_rs_rx,
         })
     }
 
@@ -862,6 +879,24 @@ impl PanelManager {
                         self.redraw_console();
                     }
                 }
+                // Check incoming shell results
+                result = self.shell_rs_rx.recv() => {
+                    // Shutdown if sender has been dropped
+                    if result.is_none() {
+                        break CloseCmd::QuitErr { error: "Shell executor has been dropped" };
+                    }
+                    match result.unwrap() {
+                        ExecMsg::Progress => {
+
+                        }
+                        ExecMsg::Queued => {
+
+                        }
+                        ExecMsg::Finished => {
+
+                        }
+                    }
+                }
                 // Check incoming new events
                 result = event_reader => {
                     // Shutdown if reader has been dropped
@@ -1044,15 +1079,24 @@ impl PanelManager {
                             self.redraw_panels();
                         }
                         Command::Zip => {
+                            // TODO: Use this to test the shell executor
+                            info!("zip");
                             let items = self.marked_or_selected();
-                            self.set_env_current_dir();
+                            let _ = self.shell_cmd_tx.send(Execute::new(
+                                "sleep".to_string(),
+                                "1".to_string(),
+                                false,
+                                items,
+                            ));
+                            // let items = self.marked_or_selected();
+                            // self.set_env_current_dir();
 
-                            self.center.freeze();
-                            if let Err(e) = self.opener.zip(items) {
-                                warn!("Failed to create zip-archive: {e}");
-                            }
-                            self.center.unfreeze();
-                            self.redraw_center();
+                            // self.center.freeze();
+                            // if let Err(e) = self.opener.zip(items) {
+                            //     warn!("Failed to create zip-archive: {e}");
+                            // }
+                            // self.center.unfreeze();
+                            // self.redraw_center();
                         }
                         Command::Tar => {
                             let items = self.marked_or_selected();

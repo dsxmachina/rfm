@@ -58,6 +58,13 @@ impl LogBuffer {
     pub async fn update(&self) {
         self.notify.notified().await
     }
+
+    /// Writes the current log buffer to stdout - useful for debugging after cleanup
+    pub fn write_to_stdout(&self) {
+        for (level, line) in self.buffer.lock().iter() {
+            println!("[{level}]: {line}")
+        }
+    }
 }
 
 impl log::Log for LogBuffer {
