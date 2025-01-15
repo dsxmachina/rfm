@@ -63,7 +63,7 @@ const ERROR_MSG: &str = "\
 #[folder = "examples/"]
 struct Examples;
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
     // Check if we run from a terminal
     let mut stdout = stdout();
