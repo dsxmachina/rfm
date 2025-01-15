@@ -27,7 +27,7 @@ pub fn file_size_str(file_size: u64) -> String {
 }
 
 #[test]
-fn test_width() {
+fn exact_width_unicode() {
     let test_str = "Ｈｅｌｌｏ, ｗｏｒｌｄ!";
     println!("test-str={test_str}, width={}", unicode_width(&test_str));
     assert!(unicode_width("asdf") == 4);
@@ -37,8 +37,19 @@ fn test_width() {
     assert_eq!(unicode_width(&test_str.exact_width(2)), 2);
 }
 
+#[test]
+fn exact_width_zero() {
+    let test_str = "something";
+    let empty = test_str.exact_width(0);
+    assert!(empty.is_empty());
+}
+
 pub trait ExactWidth: std::fmt::Display {
     fn exact_width(&self, len: usize) -> String {
+        // Edge-Case: len == 0
+        if len == 0 {
+            return String::new();
+        }
         // Prepare output
         let mut out = format!("{}", self);
         let mut truncated = false;
@@ -60,6 +71,7 @@ pub trait ExactWidth: std::fmt::Display {
                     }
                     break;
                 }
+                // NOTE: len == 0 is forbidden, otherwise we would .pop() forever
                 Ordering::Equal => {
                     if !truncated {
                         break;
