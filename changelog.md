@@ -1,3 +1,8 @@
+# 0.3.2
+
+- fix deadlock when resizing the window
+- limit number of worker threads in tokio runtime to reduce number of spawned rfm processes
+
 # 0.3.1
 
 - greatly reduce binary size (see [here](https://github.com/dsxmachina/rfm/issues/5))

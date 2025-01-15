@@ -1,6 +1,6 @@
 [package]
 name = "rfm-bin" # someone else already registered rfm as a crate-name :S
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 authors = ["Christian Hammermeister <christian.hammermeister@protonmail.com>"]
 description = "A super fast file-manager written in rust"
