@@ -1,3 +1,8 @@
+# 0.3.3
+
+- fix blocking when closing rfm that happened when generating previews of huge files
+- improve speed of image preview generation (due to downscaling upon loading, which helps with huge images)
+
 # 0.3.2
 
 - fix deadlock when resizing the window

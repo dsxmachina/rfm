@@ -1158,7 +1158,7 @@ checksum = "809e8dc61f6de73b46c85f4c96486310fe304c434cfa43669d7b40f711150908"
 
 [[package]]
 name = "rfm-bin"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "cached",
