@@ -266,8 +266,8 @@ async fn main() -> anyhow::Result<()> {
 
     // The .await here is okay, because the PanelManager dropped the queue sender,
     // which makes these two guys instantly return:
-    let dir_mngr_result = dir_mngr_handle.await;
-    let prev_mngr_result = prev_mngr_handle.await;
+    dir_mngr_handle.abort();
+    prev_mngr_handle.abort();
 
     // Be a good citizen, cleanup
     stdout
@@ -283,23 +283,7 @@ async fn main() -> anyhow::Result<()> {
         Ok(Ok(close_cmd)) => {
             if let CloseCmd::QuitErr { error } = &close_cmd {
                 error!("{error}");
-                // Print all errors
-                let errors = logger.get_errors();
-                if !errors.is_empty() {
-                    // Write error.log
-                    let log_output: String = logger
-                        .get()
-                        .into_iter()
-                        .map(|(level, msg)| format!("{level}: {msg}\n"))
-                        .collect();
-                    let mut log = std::fs::File::create("./error.log")?;
-                    log.write_all(log_output.as_bytes())?;
-                    eprintln!("{}", ERROR_MSG);
-                    eprintln!("Error:");
-                    for e in errors {
-                        eprintln!("{e}");
-                    }
-                }
+                print_all_errors(&logger)?;
                 return Ok(());
             }
             if let Some(choosedir) = args.choosedir {
@@ -322,18 +306,34 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Ok(Err(e)) => {
-            error!("PanelManager returned an error: {e}");
+        Ok(e) => {
+            e.context("panel manager returned an error")?;
         }
-        Err(e) => {
-            error!("PanelManager-task: {e}")
+        e => {
+            e.context("error in panel-manager task")??;
         }
     }
-    if let Err(e) = dir_mngr_result {
-        error!("dir-mngr-task: {e}");
-    }
-    if let Err(e) = prev_mngr_result {
-        error!("preview-mngr-task: {e}");
+    print_all_errors(&logger)?;
+    Ok(())
+}
+
+fn print_all_errors(logger: &LogBuffer) -> anyhow::Result<()> {
+    let errors = logger.get_errors();
+    if !errors.is_empty() {
+        // Write error.log
+        let log_output: String = logger
+            .get()
+            .into_iter()
+            .map(|(level, msg)| format!("{level}: {msg}\n"))
+            .collect();
+        let mut log = std::fs::File::create("./error.log").context("failed to create error log")?;
+        log.write_all(log_output.as_bytes())
+            .context("failed to write to error log")?;
+        eprintln!("{}", ERROR_MSG);
+        eprintln!("Error:");
+        for e in errors {
+            eprintln!("{e}");
+        }
     }
     Ok(())
 }
