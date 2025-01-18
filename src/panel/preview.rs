@@ -57,9 +57,7 @@ impl Draw for FilePreview {
                     // let img_height = ((height as f32) - (height as f32) / 3.6).round();
                     let aspect_ratio = (img.height() as f32) / (img.width() as f32);
                     let img_height = ((width as f32) * aspect_ratio).round();
-                    let img = img
-                        .thumbnail_exact(width as u32, img_height as u32)
-                        .into_rgb8();
+                    let img = img.thumbnail(width as u32, img_height as u32).into_rgb8();
                     let mut cy = y_range.start;
                     for y in (0..img_height as usize).step_by(2) {
                         for x in 0..width {
@@ -154,7 +152,7 @@ impl FilePreview {
         let preview = match (mime.type_().as_str(), mime.subtype().as_str()) {
             ("image", _) => {
                 if let Ok(img_bytes) = image::io::Reader::open(&path) {
-                    let img = img_bytes.decode().ok();
+                    let img = img_bytes.decode().ok().map(|img| img.thumbnail(960, 540));
                     Preview::Image { img }
                 } else {
                     Preview::Image { img: None }
@@ -211,6 +209,7 @@ impl FilePreview {
 }
 
 fn bat_preview<P: AsRef<Path>>(path: P, binary: bool) -> Preview {
+    log::info!("bat-preview, binary={binary}");
     // Use bat for preview generation (if present)
     let mut cmd = std::process::Command::new("bat");
     cmd.arg("--color=always")
