@@ -1,3 +1,9 @@
+# 0.3.4
+
+- introduce thumbnail generation for videos using ffmpeg
+- enhanced image previews in case mediainfo is installed
+- fix potential bug in image preview generation for aspect ratios > 1
+
 # 0.3.3
 
 - fix blocking when closing rfm that happened when generating previews of huge files
