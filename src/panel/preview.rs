@@ -64,11 +64,14 @@ impl Draw for FilePreview {
             Preview::Image { img, info } => {
                 // load image
                 if let Some(img) = img {
-                    // crop height
-                    // let aspect_ratio = (img.height() as f32) / (img.width() as f32);
-                    // let img_height = ((width as f32) * aspect_ratio).round();
+                    // Generate thumbnail
+                    let thumbnail_height = if info.is_empty() {
+                        2 * height
+                    } else {
+                        4 * height / 3
+                    };
                     let img = img
-                        .thumbnail(width as u32, (4 * height / 3) as u32)
+                        .thumbnail(width as u32, thumbnail_height as u32)
                         .into_rgb8();
                     log::debug!(
                         "img: {}x{}, wxh: {}x{}",
