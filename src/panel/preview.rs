@@ -1,4 +1,5 @@
 use std::{
+    env::temp_dir,
     fs::File,
     io::{self, BufRead, Stdout},
     ops::Range,
@@ -15,12 +16,19 @@ use crossterm::{
     style::{self, Colors, Print, ResetColor, SetColors},
     Result,
 };
+use fasthash::sea;
 use image::{DynamicImage, GenericImageView};
+use once_cell::sync::OnceCell;
 
 #[derive(Debug, Clone)]
 pub enum Preview {
-    Image { img: Option<DynamicImage> },
-    Text { lines: Vec<String> },
+    Image {
+        img: Option<DynamicImage>,
+        info: Vec<String>,
+    },
+    Text {
+        lines: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -50,7 +58,7 @@ impl Draw for FilePreview {
         }
 
         match &self.preview {
-            Preview::Image { img } => {
+            Preview::Image { img, info } => {
                 // load image
                 if let Some(img) = img {
                     // crop height
@@ -150,21 +158,15 @@ impl FilePreview {
         let mime = mime_guess::from_ext(extension).first_or_text_plain();
 
         let preview = match (mime.type_().as_str(), mime.subtype().as_str()) {
-            ("image", _) => {
-                if let Ok(img_bytes) = image::io::Reader::open(&path) {
-                    let img = img_bytes.decode().ok().map(|img| img.thumbnail(960, 540));
-                    Preview::Image { img }
-                } else {
-                    Preview::Image { img: None }
-                }
-            }
-            ("audio", _) | ("video", _) => cmd_to_preview(
+            ("image", _) => image_preview(&path),
+            ("audio", _) => cmd_to_preview(
                 "mediainfo",
                 std::process::Command::new("mediainfo")
                     .arg(&path)
                     .output()
                     .and_then(|o| o.stdout.lines().take(128).collect()),
             ),
+            ("video", _) => video_preview(&path, modified),
             ("application", "gzip") => cmd_to_preview("tar", tar_list(&path)),
             ("application", "x-tar") => cmd_to_preview("tar", tar_list(&path)),
             ("application", "zip") => cmd_to_preview(
@@ -208,8 +210,100 @@ impl FilePreview {
     }
 }
 
+fn image_preview(path: impl AsRef<Path>) -> Preview {
+    // let info = std::process::Command::new("mediainfo")
+    //     .arg(path.as_ref())
+    //     .output()
+    //     .and_then(|o| o.stdout.lines().take(128).collect())
+    //     .unwrap_or_default();
+    let info = vec![];
+    if let Ok(img_bytes) = image::io::Reader::open(&path) {
+        let img = img_bytes.decode().ok().map(|img| img.thumbnail(960, 540));
+        Preview::Image { img, info }
+    } else {
+        Preview::Image { img: None, info }
+    }
+}
+
+fn video_preview(path: impl AsRef<Path>, modified: SystemTime) -> Preview {
+    // Check, if ffmpeg exists
+    static FFMPEG_INSTALLED: OnceCell<bool> = OnceCell::new();
+    FFMPEG_INSTALLED.get_or_init(|| {
+        log::info!("- this executes only once");
+        let success = std::process::Command::new("ffmpeg")
+            .arg("-h")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .stdin(Stdio::null())
+            .spawn()
+            .and_then(|mut c| c.wait())
+            .map(|e| e.success())
+            .unwrap_or_default();
+        success
+    });
+    if !FFMPEG_INSTALLED.get().unwrap() {
+        return cmd_to_preview(
+            "mediainfo",
+            std::process::Command::new("mediainfo")
+                .arg(path.as_ref())
+                .output()
+                .and_then(|o| o.stdout.lines().take(128).collect()),
+        );
+    }
+    let modified = modified
+        .duration_since(UNIX_EPOCH)
+        .map(|t| t.as_secs())
+        .unwrap_or_default();
+
+    // Use ffmpeg
+    match ffmpeg_thumbnail(&path, modified) {
+        Ok(preview) => preview,
+        Err(e) => {
+            log::error!("failed to execute ffmpeg: {e}");
+            cmd_to_preview(
+                "mediainfo",
+                std::process::Command::new("mediainfo")
+                    .arg(path.as_ref())
+                    .output()
+                    .and_then(|o| o.stdout.lines().take(128).collect()),
+            )
+        }
+    }
+}
+
+fn ffmpeg_thumbnail(path: impl AsRef<Path>, modified: u64) -> anyhow::Result<Preview> {
+    static THUMBNAIL_DIR: OnceCell<PathBuf> = OnceCell::new();
+    let full_path = path.as_ref().as_os_str();
+    let path_hash = sea::hash64(full_path.as_encoded_bytes());
+    let identifier = format!("{path_hash}{modified}.jpg");
+    let thumbnail = THUMBNAIL_DIR.get_or_init(temp_dir).join(identifier);
+    if thumbnail.exists() {
+        log::debug!("using existing thumbnail {}", thumbnail.display());
+        Ok(image_preview(thumbnail))
+    } else {
+        log::debug!("generating thumbnail {}", thumbnail.display());
+        let mut cmd = std::process::Command::new("ffmpeg");
+        cmd.arg("-ss")
+            .arg("00:00:10")
+            .arg("-y")
+            .arg("-i")
+            .arg(path.as_ref())
+            .arg("-vframes")
+            .arg("1")
+            .arg("-q:v")
+            .arg("2")
+            .arg("-vf")
+            .arg("scale=120:-1")
+            .arg(&thumbnail);
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        let _out = cmd.spawn()?.wait()?;
+        Ok(image_preview(thumbnail))
+    }
+}
+
 fn bat_preview<P: AsRef<Path>>(path: P, binary: bool) -> Preview {
-    log::info!("bat-preview, binary={binary}");
     // Use bat for preview generation (if present)
     let mut cmd = std::process::Command::new("bat");
     cmd.arg("--color=always")
