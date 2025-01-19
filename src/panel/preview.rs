@@ -8,7 +8,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::{config::color::print_vertical_bar, util::truncate_with_color_codes};
+use crate::{
+    config::color::print_vertical_bar,
+    util::{truncate_with_color_codes, ExactWidth},
+};
 
 use super::{BasePanel, DirPanel, Draw, PanelContent};
 use crossterm::{
@@ -17,7 +20,7 @@ use crossterm::{
     Result,
 };
 use fasthash::sea;
-use image::{DynamicImage, GenericImageView};
+use image::DynamicImage;
 use once_cell::sync::OnceCell;
 
 #[derive(Debug, Clone)]
@@ -62,18 +65,27 @@ impl Draw for FilePreview {
                 // load image
                 if let Some(img) = img {
                     // crop height
-                    // let img_height = ((height as f32) - (height as f32) / 3.6).round();
-                    let aspect_ratio = (img.height() as f32) / (img.width() as f32);
-                    let img_height = ((width as f32) * aspect_ratio).round();
-                    let img = img.thumbnail(width as u32, img_height as u32).into_rgb8();
+                    // let aspect_ratio = (img.height() as f32) / (img.width() as f32);
+                    // let img_height = ((width as f32) * aspect_ratio).round();
+                    let img = img
+                        .thumbnail(width as u32, (4 * height / 3) as u32)
+                        .into_rgb8();
+                    log::debug!(
+                        "img: {}x{}, wxh: {}x{}",
+                        img.width(),
+                        img.height(),
+                        width,
+                        height,
+                    );
                     let mut cy = y_range.start;
-                    for y in (0..img_height as usize).step_by(2) {
+                    for y in (0..img.height() as usize).step_by(2) {
                         for x in 0..width {
                             // cursor x
                             let cx = x_range.start.saturating_add(x).saturating_add(1);
                             queue!(stdout, cursor::MoveTo(cx, cy))?;
-                            let px_hi = unsafe { img.unsafe_get_pixel(x as u32, y as u32) };
-                            if let Some(px_lo) = img.get_pixel_checked(x as u32, (y + 1) as u32) {
+                            let px_hi = img.get_pixel_checked(x as u32, y as u32);
+                            let px_lo = img.get_pixel_checked(x as u32, (y + 1) as u32);
+                            if let (Some(px_hi), Some(px_lo)) = (px_hi, px_lo) {
                                 let color = Colors::new(
                                     style::Color::Rgb {
                                         r: px_lo.0[0],
@@ -88,7 +100,7 @@ impl Draw for FilePreview {
                                 );
                                 queue!(stdout, SetColors(color), Print("▄"),)?;
                             } else {
-                                queue!(stdout, cursor::MoveTo(cx, cy), ResetColor, Print(" "),)?;
+                                queue!(stdout, ResetColor, Print(" "),)?;
                             }
                         }
                         // Increase column
@@ -96,11 +108,19 @@ impl Draw for FilePreview {
                     }
                     queue!(stdout, ResetColor)?;
                     // Reset everything else
+                    let mut idx = 0;
                     for y in cy..y_range.end {
-                        for x in 0..width {
-                            let cx = x_range.start.saturating_add(x).saturating_add(1);
-                            queue!(stdout, cursor::MoveTo(cx, y), Print(" "),)?;
+                        if let Some(line) = info.get(idx) {
+                            let line = line.exact_width(width as usize);
+                            let cx = x_range.start.saturating_add(1);
+                            queue!(stdout, cursor::MoveTo(cx, y), Print(" "), Print(line))?;
+                        } else {
+                            for x in 0..width {
+                                let cx = x_range.start.saturating_add(x).saturating_add(1);
+                                queue!(stdout, cursor::MoveTo(cx, y), Print(" "),)?;
+                            }
                         }
+                        idx += 1;
                     }
                 } else {
                     queue!(
@@ -158,14 +178,8 @@ impl FilePreview {
         let mime = mime_guess::from_ext(extension).first_or_text_plain();
 
         let preview = match (mime.type_().as_str(), mime.subtype().as_str()) {
-            ("image", _) => image_preview(&path),
-            ("audio", _) => cmd_to_preview(
-                "mediainfo",
-                std::process::Command::new("mediainfo")
-                    .arg(&path)
-                    .output()
-                    .and_then(|o| o.stdout.lines().take(128).collect()),
-            ),
+            ("image", _) => image_preview(&path, mediainfo(&path).unwrap_or_default()),
+            ("audio", _) => cmd_to_preview("mediainfo", mediainfo(&path)),
             ("video", _) => video_preview(&path, modified),
             ("application", "gzip") => cmd_to_preview("tar", tar_list(&path)),
             ("application", "x-tar") => cmd_to_preview("tar", tar_list(&path)),
@@ -190,13 +204,7 @@ impl FilePreview {
                 bat_preview(&path, true)
             }
             // Use mediainfo for everything else
-            ("application", _) => cmd_to_preview(
-                "mediainfo",
-                std::process::Command::new("mediainfo")
-                    .arg(&path)
-                    .output()
-                    .and_then(|o| o.stdout.lines().take(128).collect()),
-            ),
+            ("application", _) => cmd_to_preview("mediainfo", mediainfo(&path)),
             ("text", _) => bat_preview(&path, false),
             // Default to bat with binary mode enabled
             _ext => bat_preview(&path, true),
@@ -210,13 +218,7 @@ impl FilePreview {
     }
 }
 
-fn image_preview(path: impl AsRef<Path>) -> Preview {
-    // let info = std::process::Command::new("mediainfo")
-    //     .arg(path.as_ref())
-    //     .output()
-    //     .and_then(|o| o.stdout.lines().take(128).collect())
-    //     .unwrap_or_default();
-    let info = vec![];
+fn image_preview(path: impl AsRef<Path>, info: Vec<String>) -> Preview {
     if let Ok(img_bytes) = image::io::Reader::open(&path) {
         let img = img_bytes.decode().ok().map(|img| img.thumbnail(960, 540));
         Preview::Image { img, info }
@@ -279,7 +281,10 @@ fn ffmpeg_thumbnail(path: impl AsRef<Path>, modified: u64) -> anyhow::Result<Pre
     let thumbnail = THUMBNAIL_DIR.get_or_init(temp_dir).join(identifier);
     if thumbnail.exists() {
         log::debug!("using existing thumbnail {}", thumbnail.display());
-        Ok(image_preview(thumbnail))
+        Ok(image_preview(
+            thumbnail,
+            mediainfo(path).unwrap_or_default(),
+        ))
     } else {
         log::debug!("generating thumbnail {}", thumbnail.display());
         let mut cmd = std::process::Command::new("ffmpeg");
@@ -299,8 +304,18 @@ fn ffmpeg_thumbnail(path: impl AsRef<Path>, modified: u64) -> anyhow::Result<Pre
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
         let _out = cmd.spawn()?.wait()?;
-        Ok(image_preview(thumbnail))
+        Ok(image_preview(
+            thumbnail,
+            mediainfo(path).unwrap_or_default(),
+        ))
     }
+}
+
+fn mediainfo(path: impl AsRef<Path>) -> io::Result<Vec<String>> {
+    std::process::Command::new("mediainfo")
+        .arg(path.as_ref())
+        .output()
+        .and_then(|o| o.stdout.lines().take(128).collect())
 }
 
 fn bat_preview<P: AsRef<Path>>(path: P, binary: bool) -> Preview {
