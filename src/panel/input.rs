@@ -5,7 +5,6 @@ use crossterm::{
     style::{Color, PrintStyledContent, Stylize},
     QueueableCommand,
 };
-use log::debug;
 
 pub struct Input {
     input: String,
@@ -63,7 +62,7 @@ impl Input {
 
     /// Updates the input field
     pub fn update(&mut self, key_code: KeyCode, modifiers: KeyModifiers) {
-        debug!(
+        log::info!(
             "input-update: {}, input-len: {}, cursor: {}",
             self.input,
             self.input.len(),
@@ -114,11 +113,10 @@ impl Input {
 
     pub fn print(&self, stdout: &mut Stdout, color: Color) -> crossterm::Result<()> {
         let (left, right) = self.input.as_str().split_at(self.cursor);
-        // let left: String = self.input.chars().take(self.cursor).collect();
-        // let right: String = self.input.chars().skip(self.cursor).collect();
 
-        let first = right.chars().next().unwrap_or(' ');
-        let remainder: String = right.chars().skip(1).collect();
+        let mut it = right.chars();
+        let first = it.next().unwrap_or(' ');
+        let remainder: String = it.collect();
 
         stdout
             .queue(PrintStyledContent(left.bold().with(color)))?
