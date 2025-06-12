@@ -999,6 +999,7 @@ impl PanelManager {
                             let files = self.marked_or_selected();
                             info!("copying {} items", files.len());
                             self.clipboard = Some(Clipboard { files, cut: false });
+                            self.redraw_center();
                         }
                         Command::Delete => {
                             let files = self.marked_or_selected();
