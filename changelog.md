@@ -1,3 +1,6 @@
+# 0.3.5
+- fix: panel not redrawn after yanking marked item - see https://github.com/dsxmachina/rfm/pull/6
+
 # 0.3.4
 
 - introduce thumbnail generation for videos using ffmpeg
