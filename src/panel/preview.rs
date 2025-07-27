@@ -180,6 +180,7 @@ impl FilePreview {
             ("image", _) => image_preview(&path, mediainfo(&path).unwrap_or_default()),
             ("audio", _) => cmd_to_preview("mediainfo", mediainfo(&path)),
             ("video", _) => video_preview(&path, modified),
+            ("application", "x-x509-ca-cert") => cert_preview(&path),
             ("application", "gzip") => cmd_to_preview("tar", tar_list(&path)),
             ("application", "x-tar") => cmd_to_preview("tar", tar_list(&path)),
             ("application", "zip") => cmd_to_preview(
@@ -307,6 +308,38 @@ fn ffmpeg_thumbnail(path: impl AsRef<Path>, modified: u64) -> anyhow::Result<Pre
             mediainfo(path).unwrap_or_default(),
         ))
     }
+}
+
+fn cert_preview(path: impl AsRef<Path>) -> Preview {
+    // Check, if ffmpeg exists
+    static OPENSSL_INSTALLED: OnceCell<bool> = OnceCell::new();
+    OPENSSL_INSTALLED.get_or_init(|| {
+        let success = std::process::Command::new("openssl")
+            .arg("-v")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .stdin(Stdio::null())
+            .spawn()
+            .and_then(|mut c| c.wait())
+            .map(|e| e.success())
+            .unwrap_or_default();
+        success
+    });
+    if *OPENSSL_INSTALLED.get().unwrap() {
+        let res = cmd_to_preview(
+            "openssl",
+            std::process::Command::new("openssl")
+                .arg("x509")
+                .arg("-in")
+                .arg(path.as_ref())
+                .arg("-text")
+                .arg("-noout")
+                .output()
+                .and_then(|o| o.stdout.lines().take(128).collect()),
+        );
+        return res;
+    }
+    bat_preview(path, false)
 }
 
 fn mediainfo(path: impl AsRef<Path>) -> io::Result<Vec<String>> {
