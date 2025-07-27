@@ -10,6 +10,7 @@ use std::{
 
 use crate::{
     config::color::print_vertical_bar,
+    engine::opener::get_mime_type,
     util::{truncate_with_color_codes, ExactWidth},
 };
 
@@ -167,18 +168,13 @@ impl Draw for FilePreview {
 
 impl FilePreview {
     pub fn new(path: PathBuf) -> Self {
-        let extension = path
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default();
-
         let modified = path
             .metadata()
             .ok()
             .and_then(|m| m.modified().ok())
             .unwrap_or_else(SystemTime::now);
 
-        let mime = mime_guess::from_ext(extension).first_or_text_plain();
+        let mime = get_mime_type(&path);
 
         let preview = match (mime.type_().as_str(), mime.subtype().as_str()) {
             ("image", _) => image_preview(&path, mediainfo(&path).unwrap_or_default()),
@@ -234,7 +230,6 @@ fn video_preview(path: impl AsRef<Path>, modified: SystemTime) -> Preview {
     // Check, if ffmpeg exists
     static FFMPEG_INSTALLED: OnceCell<bool> = OnceCell::new();
     FFMPEG_INSTALLED.get_or_init(|| {
-        log::info!("- this executes only once");
         let success = std::process::Command::new("ffmpeg")
             .arg("-h")
             .stdout(Stdio::null())

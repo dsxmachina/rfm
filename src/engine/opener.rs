@@ -23,7 +23,7 @@ pub fn get_mime_type<P: AsRef<Path>>(path: P) -> Mime {
     let ext = path.as_ref().extension().and_then(|e| e.to_str());
     // Check the special extensions here
     match ext {
-        Some("ts") => return mime::TEXT_PLAIN,
+        Some("ts") => return mime::TEXT_JAVASCRIPT,
         None => return mime::TEXT_PLAIN,
         _ => (),
     }

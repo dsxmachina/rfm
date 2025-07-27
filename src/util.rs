@@ -10,6 +10,8 @@ use time::OffsetDateTime;
 use unicode_display_width::width as unicode_width;
 use users::{get_group_by_gid, get_user_by_uid};
 
+use crate::engine::opener::get_mime_type;
+
 pub fn file_size_str(file_size: u64) -> String {
     match file_size {
         0..=1023 => format!("{file_size} B"),
@@ -287,7 +289,7 @@ pub fn print_metadata(selected_path: Option<&Path>) -> (String, String) {
                 .and_then(|g| g.name().to_str().map(String::from))
                 .unwrap_or_default();
             let size_str = file_size_str(metadata.size());
-            let mime_type = mime_guess::from_path(path).first_raw().unwrap_or_default();
+            let mime_type = get_mime_type(path);
             let other = format!("{user} {group} {size_str} {modified} {mime_type}");
             (permissions, other)
         } else {
