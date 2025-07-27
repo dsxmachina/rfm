@@ -1,3 +1,7 @@
+# 0.3.6
+- fix: use correct mime-type for typescript's `.ts` extension
+- add preview for x509 certificates, if openssl is installed
+
 # 0.3.5
 - fix: panel not redrawn after yanking marked item - see https://github.com/dsxmachina/rfm/pull/6
 
