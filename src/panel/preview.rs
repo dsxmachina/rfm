@@ -198,6 +198,7 @@ impl FilePreview {
             | ("application", "javascript; charset=utf-8")
             | ("application", "rtf")
             | ("application", "xml")
+            | ("application", "x-sql")
             | ("application", "xhtml+xml") => bat_preview(&path, false),
             // Binary based application/* types
             ("application", "octet-stream") | ("application", "msgpack") => {
