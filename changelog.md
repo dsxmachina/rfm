@@ -1,3 +1,7 @@
+# 0.3.7
+- add `application/x-sql` mime-type to text-preview
+- [add support for aarch64](https://github.com/dsxmachina/rfm/pull/7)
+
 # 0.3.6
 - fix: use correct mime-type for typescript's `.ts` extension
 - add preview for x509 certificates, if openssl is installed
