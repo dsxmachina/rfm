@@ -20,7 +20,6 @@ use crossterm::{
     style::{self, Colors, Print, ResetColor, SetColors},
     Result,
 };
-use fasthash::sea;
 use image::DynamicImage;
 use once_cell::sync::OnceCell;
 
@@ -276,7 +275,7 @@ fn video_preview(path: impl AsRef<Path>, modified: SystemTime) -> Preview {
 fn ffmpeg_thumbnail(path: impl AsRef<Path>, modified: u64) -> anyhow::Result<Preview> {
     static THUMBNAIL_DIR: OnceCell<PathBuf> = OnceCell::new();
     let full_path = path.as_ref().as_os_str();
-    let path_hash = sea::hash64(full_path.as_encoded_bytes());
+    let path_hash = seahash::hash(full_path.as_encoded_bytes());
     let identifier = format!("{path_hash}{modified}.jpg");
     let thumbnail = THUMBNAIL_DIR.get_or_init(temp_dir).join(identifier);
     if thumbnail.exists() {
