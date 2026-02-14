@@ -32,13 +32,14 @@ impl Input {
     ///
     /// Checks if the cursor lies on a char-boundary
     fn decrease_cursor(&mut self) {
-        self.cursor = self.cursor.saturating_sub(1);
+        if self.cursor == 0 {
+            return;
+        }
+        self.cursor -= 1;
         // A character can be up to four bytes - so we have to decrease the
-        // cursor up to 4 times (and we increased it by one already)
-        for _ in 0..3 {
-            if !self.input.is_char_boundary(self.cursor) {
-                self.cursor = self.cursor.saturating_sub(1);
-            }
+        // cursor until we find a valid char-boundary
+        while self.cursor > 0 && !self.input.is_char_boundary(self.cursor) {
+            self.cursor -= 1;
         }
         assert!(self.input.is_char_boundary(self.cursor));
     }
@@ -83,13 +84,9 @@ impl Input {
                 self.increase_cursor();
             }
             KeyCode::Backspace => {
-                self.decrease_cursor();
-                if self.cursor == self.input.len() {
-                    self.input.pop();
-                } else if self.cursor > 0 {
+                if self.cursor > 0 {
+                    self.decrease_cursor();
                     self.input.remove(self.cursor);
-                } else if self.input.chars().count() == 1 {
-                    self.input.pop();
                 }
             }
             KeyCode::Delete => {
