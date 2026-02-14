@@ -171,6 +171,18 @@ impl Rect {
             },
         )
     }
+
+    /// Create a new rectangle with height reduced from the bottom.
+    ///
+    /// Useful for making room for overlays like log messages.
+    pub fn with_height_reduced(&self, by: u16) -> Rect {
+        Rect {
+            x: self.x,
+            y: self.y,
+            width: self.width,
+            height: self.height.saturating_sub(by),
+        }
+    }
 }
 
 impl Default for Rect {

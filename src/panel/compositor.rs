@@ -34,7 +34,7 @@ impl LayerId {
 /// Each layer contains a widget and has position/visibility properties.
 pub struct Layer {
     /// The widget to render.
-    widget: Box<dyn Widget>,
+    widget: Box<dyn Widget + Send>,
     /// The area where this layer renders.
     area: Rect,
     /// Whether this layer is visible.
@@ -45,7 +45,7 @@ pub struct Layer {
 
 impl Layer {
     /// Create a new layer.
-    fn new(id: LayerId, widget: Box<dyn Widget>, area: Rect) -> Self {
+    fn new(id: LayerId, widget: Box<dyn Widget + Send>, area: Rect) -> Self {
         Self {
             widget,
             area,
@@ -105,7 +105,7 @@ impl Compositor {
     /// Add a layer with a widget at the specified area.
     ///
     /// Returns the layer ID for later reference.
-    pub fn add_layer(&mut self, widget: Box<dyn Widget>, area: Rect) -> LayerId {
+    pub fn add_layer(&mut self, widget: Box<dyn Widget + Send>, area: Rect) -> LayerId {
         let id = LayerId::new(self.next_id);
         self.next_id += 1;
         self.layers.push(Layer::new(id, widget, area));
@@ -116,7 +116,7 @@ impl Compositor {
     /// Remove a layer by ID.
     ///
     /// Returns the widget if the layer was found.
-    pub fn remove_layer(&mut self, id: LayerId) -> Option<Box<dyn Widget>> {
+    pub fn remove_layer(&mut self, id: LayerId) -> Option<Box<dyn Widget + Send>> {
         if let Some(pos) = self.layers.iter().position(|l| l.id == id) {
             self.needs_full_redraw = true;
             Some(self.layers.remove(pos).widget)
@@ -130,7 +130,7 @@ impl Compositor {
     /// Returns None if the layer doesn't exist.
     pub fn with_widget<F, R>(&self, id: LayerId, f: F) -> Option<R>
     where
-        F: FnOnce(&dyn Widget) -> R,
+        F: FnOnce(&(dyn Widget + Send)) -> R,
     {
         self.layers.iter()
             .find(|l| l.id == id)
@@ -142,7 +142,7 @@ impl Compositor {
     /// Returns None if the layer doesn't exist.
     pub fn with_widget_mut<F, R>(&mut self, id: LayerId, f: F) -> Option<R>
     where
-        F: FnOnce(&mut dyn Widget) -> R,
+        F: FnOnce(&mut (dyn Widget + Send)) -> R,
     {
         self.layers.iter_mut()
             .find(|l| l.id == id)
@@ -273,6 +273,7 @@ impl Default for Compositor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::any::Any;
     use crate::panel::widget::z_index;
 
     /// A simple test widget for unit tests.
@@ -315,6 +316,10 @@ mod tests {
 
         fn is_modal(&self) -> bool {
             self.modal
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
         }
     }
 

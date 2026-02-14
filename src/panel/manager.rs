@@ -20,7 +20,13 @@ use crate::{
 
 use self::console::{Console, ConsoleOp, DirConsole, Zoxide};
 
-use super::{input::Input, *};
+use super::{
+    compositor::{Compositor, LayerId},
+    input::Input,
+    rect::Rect,
+    widgets::{DirPanelWidget, PreviewPanelWidget},
+    *,
+};
 
 struct Redraw {
     left: bool,
@@ -128,6 +134,15 @@ pub struct PanelManager {
 
     /// Receiver for incoming preview-panels
     prev_rx: mpsc::Receiver<(PreviewPanel, PanelState)>,
+
+    /// Compositor for panel rendering
+    compositor: Compositor,
+    /// Layer ID for left panel
+    left_layer: LayerId,
+    /// Layer ID for center panel
+    center_layer: LayerId,
+    /// Layer ID for right panel
+    right_layer: LayerId,
 }
 
 impl PanelManager {
@@ -163,6 +178,21 @@ impl PanelManager {
             None
         };
 
+        // Initialize compositor with panel widgets
+        let mut compositor = Compositor::new();
+        let left_layer = compositor.add_layer(
+            Box::new(DirPanelWidget::new(left.panel().clone())),
+            layout.left_rect(),
+        );
+        let center_layer = compositor.add_layer(
+            Box::new(DirPanelWidget::new(center.panel().clone())),
+            layout.center_rect(),
+        );
+        let right_layer = compositor.add_layer(
+            Box::new(PreviewPanelWidget::new(right.panel().clone())),
+            layout.right_rect(),
+        );
+
         Ok(PanelManager {
             left,
             center,
@@ -194,6 +224,10 @@ impl PanelManager {
             stdout,
             dir_rx,
             prev_rx,
+            compositor,
+            left_layer,
+            center_layer,
+            right_layer,
         })
     }
 
@@ -459,38 +493,63 @@ impl PanelManager {
         Ok(())
     }
 
-    fn draw_panels(&mut self) -> Result<()> {
-        let (start, end) = (self.layout.y_range.start, self.layout.y_range.end);
-        let height = if self.show_log {
-            let cap = self.logger.capacity();
-            start..end.saturating_sub(cap as u16)
+    /// Sync panel state from ManagedPanels to compositor widgets.
+    ///
+    /// This copies panel data to widgets when panels have changed,
+    /// and adjusts layer areas when log display changes height.
+    fn sync_panels_to_compositor(&mut self) {
+        // Calculate height adjustment for log display
+        let height_adjustment = if self.show_log {
+            self.logger.capacity() as u16
         } else {
-            start..end
+            0
         };
+
+        // Sync left panel if dirty
         if self.redraw.left {
-            self.left.panel_mut().draw(
-                &mut self.stdout,
-                self.layout.left_x_range.clone(),
-                height.clone(),
-            )?;
-            self.redraw.left = false;
+            let area = self.layout.left_rect().with_height_reduced(height_adjustment);
+            self.compositor.set_layer_area(self.left_layer, area);
+            self.compositor.with_widget_mut(self.left_layer, |w| {
+                if let Some(widget) = w.as_any_mut().downcast_mut::<DirPanelWidget>() {
+                    widget.set_panel(self.left.panel().clone());
+                }
+            });
         }
+
+        // Sync center panel if dirty
         if self.redraw.center {
-            self.center.panel_mut().draw(
-                &mut self.stdout,
-                self.layout.center_x_range.clone(),
-                height.clone(),
-            )?;
-            self.redraw.center = false;
+            let area = self.layout.center_rect().with_height_reduced(height_adjustment);
+            self.compositor.set_layer_area(self.center_layer, area);
+            self.compositor.with_widget_mut(self.center_layer, |w| {
+                if let Some(widget) = w.as_any_mut().downcast_mut::<DirPanelWidget>() {
+                    widget.set_panel(self.center.panel().clone());
+                }
+            });
         }
+
+        // Sync right panel if dirty
         if self.redraw.right {
-            self.right.panel_mut().draw(
-                &mut self.stdout,
-                self.layout.right_x_range.clone(),
-                height,
-            )?;
-            self.redraw.right = false;
+            let area = self.layout.right_rect().with_height_reduced(height_adjustment);
+            self.compositor.set_layer_area(self.right_layer, area);
+            self.compositor.with_widget_mut(self.right_layer, |w| {
+                if let Some(widget) = w.as_any_mut().downcast_mut::<PreviewPanelWidget>() {
+                    widget.set_panel(self.right.panel().clone());
+                }
+            });
         }
+    }
+
+    fn draw_panels(&mut self) -> Result<()> {
+        // Sync panel state to compositor widgets
+        self.sync_panels_to_compositor();
+
+        // Render via compositor (handles z-ordering)
+        self.compositor.render(&mut self.stdout)?;
+
+        // Clear flags after successful render
+        self.redraw.left = false;
+        self.redraw.center = false;
+        self.redraw.right = false;
         Ok(())
     }
 

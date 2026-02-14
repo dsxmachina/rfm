@@ -7,6 +7,7 @@
 //! - Modal support for blocking overlays
 //! - Focus handling
 
+use std::any::Any;
 use std::io::Stdout;
 use crossterm::Result;
 use super::rect::Rect;
@@ -94,6 +95,12 @@ pub trait Widget {
     fn on_blur(&mut self) {
         // Default: no-op
     }
+
+    /// Get a mutable reference to this widget as Any.
+    ///
+    /// This enables downcasting to concrete widget types.
+    /// Required for updating widget-specific data (e.g., panel contents).
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 /// A wrapper that adds dirty flag tracking to any widget-like type.
@@ -292,6 +299,10 @@ impl Widget for BoxWidget {
 
     fn is_modal(&self) -> bool {
         true
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }
 

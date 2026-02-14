@@ -2,6 +2,7 @@
 //!
 //! Displays the username@hostname and current path.
 
+use std::any::Any;
 use std::io::Stdout;
 use std::path::PathBuf;
 use crossterm::{
@@ -112,5 +113,9 @@ impl Widget for HeaderWidget {
 
     fn z_index(&self) -> u8 {
         z_index::BARS
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }

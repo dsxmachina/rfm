@@ -2,6 +2,7 @@
 //!
 //! Displays file metadata, key buffer, and position.
 
+use std::any::Any;
 use std::io::Stdout;
 use std::path::Path;
 use crossterm::{
@@ -131,5 +132,9 @@ impl Widget for FooterWidget {
 
     fn z_index(&self) -> u8 {
         z_index::BARS
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }

@@ -27,23 +27,31 @@ This document tracks the progress of the PanelManager refactoring effort.
   - `HeaderWidget` (top bar)
   - `FooterWidget` (bottom bar)
 
+### Phase 3b: Compositor Integration
+- Added `Compositor` field and layer IDs to `PanelManager`
+- Initialized compositor with panel widgets in `new()`
+- Added `as_any_mut()` to Widget trait for downcasting
+- Added `with_height_reduced()` to Rect for log display
+- Created `sync_panels_to_compositor()` method
+- Replaced `draw_panels()` to use compositor rendering
+- Made Widget trait objects `Send` for async compatibility
+- All 22 tests pass, manual tmux testing successful
+
 ## Remaining Work
 
-### Phase 3 (Optional Integration)
-The new architecture is ready but not yet integrated with PanelManager.
-Integration can be done incrementally by:
-1. Creating a compositor instance in PanelManager
-2. Registering panels as layers
-3. Replacing draw_* methods with compositor.render()
-4. Removing the Redraw struct
+### Phase 4: Complete Compositor Migration
+- Migrate header/footer rendering to compositor (currently still manual)
+- Migrate log display to compositor
+- Migrate console overlay to compositor
+- Remove Redraw struct entirely (currently kept for sync signaling)
 
-### Phase 4: Separate Event Handling
+### Phase 5: Separate Event Handling
 - Create `src/app.rs` for App struct
 - Move state from PanelManager to AppState
 - Move event handling to App::handle_event
 - PanelManager becomes thin wrapper or removed
 
-### Phase 5: Add Modal Support
+### Phase 6: Add Modal Support
 - Create modal widget types
 - Add show_modal() / hide_modal() to App
 - Implement confirmation dialog
@@ -64,8 +72,8 @@ src/panel/
 ├── compositor.rs      # Layer management (NEW)
 ├── console.rs         # Console modes (unchanged)
 ├── directory.rs       # DirPanel (unchanged)
-├── input.rs           # Text input (unchanged)
-├── manager.rs         # Event loop (unchanged, needs integration)
+├── input.rs           # Text input (fixed backspace bug)
+├── manager.rs         # Event loop (uses compositor for panels)
 ├── mod.rs             # Module exports (updated)
 ├── preview.rs         # PreviewPanel (unchanged)
 ├── rect.rs            # Rect type (NEW)
@@ -86,3 +94,11 @@ All 22 tests pass:
 - 2 widget tests
 - 1 render test
 - 5 existing tests
+
+## Manual Testing
+
+Verified with tmux:
+- Navigation (h/j/k/l) works correctly
+- Panel rendering updates properly
+- Resize handling works
+- File preview works

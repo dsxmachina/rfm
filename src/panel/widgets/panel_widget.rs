@@ -3,6 +3,7 @@
 //! These wrappers adapt the existing panel types to implement the Widget trait,
 //! enabling them to be used with the Compositor.
 
+use std::any::Any;
 use std::io::Stdout;
 use crossterm::Result;
 
@@ -74,6 +75,10 @@ impl Widget for DirPanelWidget {
     fn z_index(&self) -> u8 {
         z_index::PANELS
     }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 }
 
 /// Widget wrapper for PreviewPanel.
@@ -136,5 +141,9 @@ impl Widget for PreviewPanelWidget {
 
     fn z_index(&self) -> u8 {
         z_index::PANELS
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }
