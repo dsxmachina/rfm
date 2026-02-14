@@ -1,12 +1,13 @@
 use std::fs::OpenOptions;
 
 use crossterm::{
+    cursor,
     event::{Event, EventStream, KeyCode},
-    terminal,
-    ExecutableCommand,
+    terminal::{self, Clear, ClearType},
+    QueueableCommand,
 };
 use futures::{FutureExt, StreamExt};
-use log::{debug, error, info, trace};
+use log::{debug, error, info, trace, warn};
 use tempfile::TempDir;
 
 use crate::{
@@ -59,19 +60,9 @@ enum Mode {
 struct Clipboard {
     /// Items we put into the clipboard
     files: Vec<PathBuf>,
-    /// Weather or not we want to cut or copy the items.
-    ///
-    /// `True`  : Cut
-    /// `False` : Copy
+    /// Whether to cut or copy the items.
     cut: bool,
 }
-
-// enum Operation {
-//     MoveItems { from: Vec<PathBuf>, to: PathBuf },
-//     CopyItems { from: Vec<PathBuf>, to: PathBuf },
-//     Mkdir { path: PathBuf },
-//     Move(Movement),
-// }
 
 pub struct PanelManager {
     /// Left panel
@@ -91,8 +82,6 @@ pub struct PanelManager {
     /// Clipboard
     clipboard: Option<Clipboard>,
 
-    // /// Undo/Redo stack
-    // stack: Vec<Operation>,
     /// Miller-Columns layout
     layout: MillerColumns,
 
@@ -265,10 +254,6 @@ impl PanelManager {
             input_bar_layer,
         })
     }
-
-    // fn redraw_header(&mut self) {
-    //     self.redraw.header = true;
-    // }
 
     fn redraw_footer(&mut self) {
         self.redraw.footer = true;
@@ -534,17 +519,6 @@ impl PanelManager {
         }
     }
 
-    // fn select(&mut self, path: &Path) {
-    //     if self.center.panel().selected_path() == Some(path) {
-    //         return;
-    //     }
-    //     self.center.panel_mut().select_path(path);
-    //     self.right
-    //         .new_panel_delayed(self.center.panel().selected_path());
-    //     self.redraw_center();
-    //     self.redraw_right();
-    // }
-
     fn move_up(&mut self, step: usize) {
         trace!("move-up");
         if self.center.panel_mut().up(step) {
@@ -553,7 +527,6 @@ impl PanelManager {
             self.redraw_center();
             self.redraw_right();
             self.rev_history.clear();
-            // self.stack.push(Operation::Move(Movement::Up));
         }
     }
 
@@ -565,7 +538,6 @@ impl PanelManager {
             self.redraw_center();
             self.redraw_right();
             self.rev_history.clear();
-            // self.stack.push(Operation::Move(Movement::Down));
         }
     }
 
@@ -639,7 +611,6 @@ impl PanelManager {
                 self.center.unfreeze();
                 self.redraw_everything();
             }
-            // self.stack.push(Operation::Move(Movement::Right));
             //
             self.unmark_left_right();
         }
@@ -692,7 +663,6 @@ impl PanelManager {
 
         // All panels needs to be redrawn
         self.redraw_panels();
-        // self.stack.push(Operation::Move(Movement::Left));
     }
 
     fn jump(&mut self, path: PathBuf) {
@@ -1005,7 +975,6 @@ impl PanelManager {
                             let files = self.marked_or_selected();
                             info!("Deleted {} items", files.len());
                             self.unmark_all_items();
-                            // self.stack.push(Operation::MoveItems { from: files.clone(), to: trash_dir.path().to_path_buf() });
                             for file in files {
                                 self.delete_file(&file);
                             }
@@ -1126,7 +1095,6 @@ impl PanelManager {
                             if let Err(e) = create_fn(current_path.join(input.get().trim())) {
                                 error!("{e}");
                             }
-                            // self.stack.push(Operation::Mkdir { path: new_dir.clone() });
                             self.mode = Mode::Normal;
                             self.center.panel_mut().clear_new_element();
                             self.redraw_panels();
