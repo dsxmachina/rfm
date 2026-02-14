@@ -2,20 +2,18 @@ use std::fs::OpenOptions;
 
 use crossterm::{
     event::{Event, EventStream, KeyCode},
-    style::PrintStyledContent,
-    terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate},
+    terminal,
     ExecutableCommand,
 };
 use futures::{FutureExt, StreamExt};
-use log::{debug, error, info, trace, Level};
+use log::{debug, error, info, trace};
 use tempfile::TempDir;
 
 use crate::{
-    config::color::{color_dir_path, color_main},
     engine::commands::{CloseCmd, Command, CommandParser},
     engine::OpenEngine,
     logger::LogBuffer,
-    util::{copy_item, get_destination, move_item, print_metadata},
+    util::{copy_item, get_destination, move_item},
 };
 
 use self::console::{Console, ConsoleOp, DirConsole, Zoxide};
@@ -24,7 +22,7 @@ use super::{
     compositor::{Compositor, LayerId},
     input::Input,
     rect::Rect,
-    widgets::{DirPanelWidget, PreviewPanelWidget},
+    widgets::{DirPanelWidget, PreviewPanelWidget, HeaderWidget, FooterWidget, InputBarWidget, InputType, LogWidget, LogEntry},
     *,
 };
 
@@ -135,14 +133,22 @@ pub struct PanelManager {
     /// Receiver for incoming preview-panels
     prev_rx: mpsc::Receiver<(PreviewPanel, PanelState)>,
 
-    /// Compositor for panel rendering
+    /// Compositor for all rendering
     compositor: Compositor,
+    /// Layer ID for header
+    header_layer: LayerId,
+    /// Layer ID for footer
+    footer_layer: LayerId,
     /// Layer ID for left panel
     left_layer: LayerId,
     /// Layer ID for center panel
     center_layer: LayerId,
     /// Layer ID for right panel
     right_layer: LayerId,
+    /// Layer ID for log display
+    log_layer: LayerId,
+    /// Layer ID for input bar (search, rename, etc.)
+    input_bar_layer: LayerId,
 }
 
 impl PanelManager {
@@ -178,8 +184,20 @@ impl PanelManager {
             None
         };
 
-        // Initialize compositor with panel widgets
+        // Initialize compositor with all widgets
         let mut compositor = Compositor::new();
+
+        // Header and footer (z-index: BARS = 10)
+        let header_layer = compositor.add_layer(
+            Box::new(HeaderWidget::new()),
+            layout.header_rect(),
+        );
+        let footer_layer = compositor.add_layer(
+            Box::new(FooterWidget::new()),
+            layout.footer_rect(),
+        );
+
+        // Panels (z-index: PANELS = 20)
         let left_layer = compositor.add_layer(
             Box::new(DirPanelWidget::new(left.panel().clone())),
             layout.left_rect(),
@@ -193,6 +211,20 @@ impl PanelManager {
             layout.right_rect(),
         );
 
+        // Log display (z-index: LOG = 30) - initially hidden
+        let log_layer = compositor.add_layer(
+            Box::new(LogWidget::new()),
+            layout.footer_rect(), // Will be positioned dynamically
+        );
+        compositor.hide_layer(log_layer);
+
+        // Input bar for search/rename/etc (z-index: CONSOLE = 40) - initially hidden
+        let input_bar_layer = compositor.add_layer(
+            Box::new(InputBarWidget::new(InputType::Search)),
+            layout.footer_rect(),
+        );
+        compositor.hide_layer(input_bar_layer);
+
         Ok(PanelManager {
             left,
             center,
@@ -202,7 +234,6 @@ impl PanelManager {
             clipboard: None,
             layout,
             opener,
-            // stack: Vec::new(),
             show_hidden: false,
             show_log: false,
             redraw: Redraw {
@@ -225,9 +256,13 @@ impl PanelManager {
             dir_rx,
             prev_rx,
             compositor,
+            header_layer,
+            footer_layer,
             left_layer,
             center_layer,
             right_layer,
+            log_layer,
+            input_bar_layer,
         })
     }
 
@@ -284,220 +319,33 @@ impl PanelManager {
         self.redraw.log = true;
     }
 
-    fn draw_log(&mut self) -> Result<()> {
-        if !self.redraw.log {
-            return Ok(());
-        }
-
-        let mut y = self.layout.footer().saturating_sub(2); // or 3, if we have the advanced command preview
-
-        let print_level = |level| match level {
-            log::Level::Error => PrintStyledContent("error".red().bold()),
-            log::Level::Warn => PrintStyledContent("warn".yellow().bold()),
-            log::Level::Info => PrintStyledContent("info".with(color_main()).bold()),
-            log::Level::Debug => PrintStyledContent("debug".dark_blue()),
-            log::Level::Trace => PrintStyledContent("trace".grey()),
-        };
-
-        if self.show_log {
-            for (level, line) in self.logger.get().into_iter().rev() {
-                queue!(
-                    self.stdout,
-                    cursor::MoveTo(0, y),
-                    Clear(ClearType::CurrentLine),
-                    print_level(level),
-                    style::Print(": "),
-                    style::PrintStyledContent(line.grey()),
-                    style::Print("  "),
-                )?;
-                y = y.saturating_sub(1);
-            }
-        } else if let Some((level, line)) = self
-            .logger
-            .get()
-            .into_iter()
-            .rev()
-            .find(|(level, _)| *level <= Level::Warn)
-        {
-            queue!(
-                self.stdout,
-                cursor::MoveTo(0, y),
-                Clear(ClearType::CurrentLine),
-                print_level(level),
-                style::Print(": "),
-                style::PrintStyledContent(line.grey()),
-                style::Print("  "),
-            )?;
-        }
-        self.redraw.log = false;
-        Ok(())
-    }
-
-    // Prints our header
-    fn draw_header(&mut self) -> Result<()> {
-        if !self.redraw.header {
-            return Ok(());
-        }
-        let prompt = format!(
-            "{}@{}",
-            whoami::username(),
-            whoami::fallible::hostname().unwrap_or_else(|e| e.to_string())
-        );
-        let absolute = self
-            .center
-            .panel()
-            .selected_path()
-            .and_then(|f| f.canonicalize().ok())
-            .unwrap_or_else(|| self.center.panel().path().to_path_buf());
-        let file_name = absolute
-            .file_name()
-            .unwrap_or_default()
-            .to_str()
-            .unwrap_or_default();
-        let absolute = absolute.to_str().unwrap_or_default();
-
-        let (prefix, suffix) = absolute.split_at(absolute.len() - file_name.len());
-
-        queue!(
-            self.stdout,
-            cursor::MoveTo(0, 0),
-            Clear(ClearType::CurrentLine),
-            style::PrintStyledContent(prompt.with(color_main()).bold()),
-            style::Print(" "),
-            style::PrintStyledContent(prefix.to_string().with(color_dir_path()).bold()),
-            style::PrintStyledContent(suffix.to_string().bold()),
-        )?;
-        self.redraw.header = false;
-        Ok(())
-    }
-
-    // Prints a footer
-    fn draw_footer(&mut self) -> Result<()> {
-        if !self.redraw.footer {
-            return Ok(());
-        }
-        // Common operation at the start
-        queue!(
-            self.stdout,
-            cursor::MoveTo(0, self.layout.footer()),
-            Clear(ClearType::CurrentLine),
-        )?;
-
-        if let Mode::Search { input } = &self.mode {
-            self.stdout
-                .queue(PrintStyledContent(
-                    "Search".bold().with(color_main()).reverse(),
-                ))?
-                .queue(Print(" "))?;
-            input.print(&mut self.stdout, style::Color::Red)?;
-            return self.stdout.flush();
-        }
-        if let Mode::Rename { input } = &self.mode {
-            self.stdout
-                .queue(PrintStyledContent(
-                    "Rename:".bold().with(color_main()).reverse(),
-                ))?
-                .queue(Print(" "))?;
-            input.print(&mut self.stdout, style::Color::Yellow)?;
-            return self.stdout.flush();
-        }
-        if let Mode::CreateItem { input, is_dir } = &self.mode {
-            let prompt = if *is_dir { "Make Directory:" } else { "Touch:" };
-            self.stdout
-                .queue(PrintStyledContent(
-                    prompt.bold().with(color_main()).reverse(),
-                ))?
-                .queue(Print(" "))?;
-            if *is_dir {
-                input.print(&mut self.stdout, color_main())?;
-            } else {
-                input.print(&mut self.stdout, style::Color::Grey)?;
-            }
-            return self.stdout.flush();
-        }
-        let (permissions, metadata) = print_metadata(self.center.panel().selected_path());
-        queue!(
-            self.stdout,
-            style::PrintStyledContent(permissions.dark_cyan()),
-            Print("   "),
-            Print(metadata)
-        )?;
-
-        // TODO: We could place this into its own line, and also print some recommendations
-        let key_buffer = self.parser.buffer();
-        let (n, m) = self.center.panel().index_vs_total();
-        let n_files_string = format!("{n}/{m} ");
-
-        // Okay, we CAN print the matching commands, but currently I am not very happy with this.
-        if false {
-            queue!(
-                self.stdout,
-                cursor::MoveTo(
-                    // (self.layout.width() / 2).saturating_sub(key_buffer.len() as u16 / 2),
-                    0,
-                    self.layout.footer().saturating_sub(2),
-                ),
-                Clear(ClearType::CurrentLine),
-                style::PrintStyledContent(key_buffer.clone().on_dark_grey()),
-                Print("    "),
-            )?;
-            let key_buffer_len = key_buffer.chars().count();
-            for (cmd, desc) in self.parser.matching_commands() {
-                let sub_cmd: String = cmd.chars().skip(key_buffer_len).collect();
-                queue!(
-                    self.stdout,
-                    style::PrintStyledContent(key_buffer.clone().on_dark_grey()),
-                    style::PrintStyledContent(sub_cmd.dark_grey()),
-                    Print(": "),
-                    style::PrintStyledContent(desc.dark_grey()),
-                    Print("   "),
-                )?;
-            }
-        } else {
-            queue!(
-                self.stdout,
-                cursor::MoveTo(
-                    (self.layout.width() / 2).saturating_sub(key_buffer.len() as u16 / 2),
-                    self.layout.footer()
-                ),
-                style::PrintStyledContent(key_buffer.dark_grey()),
-            )?;
-        }
-        // ---
-        queue!(
-            self.stdout,
-            cursor::MoveTo(
-                self.layout
-                    .width()
-                    .saturating_sub(n_files_string.len() as u16),
-                self.layout.footer(),
-            ),
-            style::Print(n_files_string),
-        )?;
-        self.redraw.footer = false;
-        Ok(())
-    }
-
     fn draw(&mut self) -> Result<()> {
-        if !self.redraw.any() {
+        if !self.redraw.any() && !self.compositor.needs_redraw() {
             return Ok(());
         }
-        self.stdout.execute(BeginSynchronizedUpdate)?;
-        self.stdout.queue(cursor::Hide)?;
-        self.draw_footer()?;
-        self.draw_header()?;
-        self.draw_panels()?;
+
+        // Sync all state to compositor widgets
+        self.sync_to_compositor();
+
+        // Render via compositor (handles z-ordering and synchronized updates)
+        self.compositor.render(&mut self.stdout)?;
+
+        // Console still renders separately (interactive overlay)
         self.draw_console()?;
-        self.draw_log()?;
-        self.stdout.execute(EndSynchronizedUpdate)?;
+
+        // Clear all redraw flags
+        self.redraw.left = false;
+        self.redraw.center = false;
+        self.redraw.right = false;
+        self.redraw.header = false;
+        self.redraw.footer = false;
+        self.redraw.log = false;
+
         Ok(())
     }
 
-    /// Sync panel state from ManagedPanels to compositor widgets.
-    ///
-    /// This copies panel data to widgets when panels have changed,
-    /// and adjusts layer areas when log display changes height.
-    fn sync_panels_to_compositor(&mut self) {
+    /// Sync all state to compositor widgets before rendering.
+    fn sync_to_compositor(&mut self) {
         // Calculate height adjustment for log display
         let height_adjustment = if self.show_log {
             self.logger.capacity() as u16
@@ -505,7 +353,115 @@ impl PanelManager {
             0
         };
 
-        // Sync left panel if dirty
+        // Sync header
+        if self.redraw.header {
+            let path = self.center.panel().selected_path()
+                .and_then(|f| f.canonicalize().ok())
+                .unwrap_or_else(|| self.center.panel().path().to_path_buf());
+            self.compositor.with_widget_mut(self.header_layer, |w| {
+                if let Some(widget) = w.as_any_mut().downcast_mut::<HeaderWidget>() {
+                    widget.set_path(path);
+                }
+            });
+        }
+
+        // Sync footer and input bar based on mode
+        match &self.mode {
+            Mode::Normal => {
+                // Hide input bar, show footer
+                self.compositor.hide_layer(self.input_bar_layer);
+                self.compositor.show_layer(self.footer_layer);
+
+                if self.redraw.footer {
+                    let selected_path = self.center.panel().selected_path();
+                    let key_buffer = self.parser.buffer();
+                    let (n, m) = self.center.panel().index_vs_total();
+
+                    self.compositor.with_widget_mut(self.footer_layer, |w| {
+                        if let Some(widget) = w.as_any_mut().downcast_mut::<FooterWidget>() {
+                            widget.set_file_info(selected_path);
+                            widget.set_key_buffer(key_buffer);
+                            widget.set_position(n, m);
+                        }
+                    });
+                }
+            }
+            Mode::Search { input } | Mode::Rename { input } | Mode::CreateItem { input, .. } => {
+                // Show input bar, hide footer
+                self.compositor.show_layer(self.input_bar_layer);
+                self.compositor.hide_layer(self.footer_layer);
+
+                let input_type = match &self.mode {
+                    Mode::Search { .. } => InputType::Search,
+                    Mode::Rename { .. } => InputType::Rename,
+                    Mode::CreateItem { is_dir: true, .. } => InputType::Mkdir,
+                    Mode::CreateItem { is_dir: false, .. } => InputType::Touch,
+                    _ => InputType::Search,
+                };
+
+                self.compositor.with_widget_mut(self.input_bar_layer, |w| {
+                    if let Some(widget) = w.as_any_mut().downcast_mut::<InputBarWidget>() {
+                        widget.set_input_type(input_type);
+                        // We need to extract cursor position - Input doesn't expose it publicly
+                        // For now, just set the text
+                        widget.set_text(input.get().to_string(), input.get().len());
+                    }
+                });
+            }
+            Mode::Console { .. } => {
+                // In console mode, hide both - console renders itself
+                self.compositor.hide_layer(self.input_bar_layer);
+                self.compositor.hide_layer(self.footer_layer);
+            }
+        }
+
+        // Sync log display
+        if self.show_log {
+            self.compositor.show_layer(self.log_layer);
+            // Position log above footer
+            let log_height = self.logger.capacity() as u16;
+            let log_y = self.layout.footer().saturating_sub(log_height);
+            let log_area = Rect::new(0, log_y, self.layout.width(), log_height);
+            self.compositor.set_layer_area(self.log_layer, log_area);
+
+            self.compositor.with_widget_mut(self.log_layer, |w| {
+                if let Some(widget) = w.as_any_mut().downcast_mut::<LogWidget>() {
+                    let entries: Vec<LogEntry> = self.logger.get()
+                        .into_iter()
+                        .map(|(level, msg)| LogEntry { level, message: msg })
+                        .collect();
+                    widget.set_entries(entries);
+                    widget.set_show_all(true);
+                }
+            });
+        } else {
+            // Still show single warning/error if present
+            let has_warning = self.logger.get()
+                .into_iter()
+                .any(|(level, _)| level <= log::Level::Warn);
+
+            if has_warning && self.redraw.log {
+                self.compositor.show_layer(self.log_layer);
+                let log_y = self.layout.footer().saturating_sub(2);
+                let log_area = Rect::new(0, log_y, self.layout.width(), 1);
+                self.compositor.set_layer_area(self.log_layer, log_area);
+
+                self.compositor.with_widget_mut(self.log_layer, |w| {
+                    if let Some(widget) = w.as_any_mut().downcast_mut::<LogWidget>() {
+                        let entries: Vec<LogEntry> = self.logger.get()
+                            .into_iter()
+                            .map(|(level, msg)| LogEntry { level, message: msg })
+                            .collect();
+                        widget.set_entries(entries);
+                        widget.set_show_all(false);
+                    }
+                });
+            } else {
+                self.compositor.hide_layer(self.log_layer);
+            }
+        }
+
+        // Sync panels
         if self.redraw.left {
             let area = self.layout.left_rect().with_height_reduced(height_adjustment);
             self.compositor.set_layer_area(self.left_layer, area);
@@ -516,7 +472,6 @@ impl PanelManager {
             });
         }
 
-        // Sync center panel if dirty
         if self.redraw.center {
             let area = self.layout.center_rect().with_height_reduced(height_adjustment);
             self.compositor.set_layer_area(self.center_layer, area);
@@ -527,7 +482,6 @@ impl PanelManager {
             });
         }
 
-        // Sync right panel if dirty
         if self.redraw.right {
             let area = self.layout.right_rect().with_height_reduced(height_adjustment);
             self.compositor.set_layer_area(self.right_layer, area);
@@ -539,21 +493,8 @@ impl PanelManager {
         }
     }
 
-    fn draw_panels(&mut self) -> Result<()> {
-        // Sync panel state to compositor widgets
-        self.sync_panels_to_compositor();
-
-        // Render via compositor (handles z-ordering)
-        self.compositor.render(&mut self.stdout)?;
-
-        // Clear flags after successful render
-        self.redraw.left = false;
-        self.redraw.center = false;
-        self.redraw.right = false;
-        Ok(())
-    }
-
     fn draw_console(&mut self) -> Result<()> {
+        // Console still renders itself (complex interactive widget)
         if self.redraw.console {
             if let Mode::Console { console } = &mut self.mode {
                 console.draw(
