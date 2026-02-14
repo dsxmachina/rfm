@@ -21,6 +21,7 @@ use tokio::sync::mpsc;
 
 use crate::{content::PanelCache, engine::commands::Move};
 
+pub mod compositor;
 mod console;
 mod directory;
 mod input;

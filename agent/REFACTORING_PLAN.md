@@ -214,16 +214,19 @@ impl App {
 - [ ] Gradually migrate draw methods to use Rect (optional, can do as needed)
 - [x] Tests pass, behavior unchanged
 
-### Phase 2: Create Widget Trait (Low Risk)
-- [ ] Define `Widget` trait in `src/panel/widget.rs`
-- [ ] Add `dirty` flag to existing panel types
-- [ ] Implement `Widget` for DirPanel, PreviewPanel
-- [ ] Keep existing draw() working alongside Widget
+### Phase 2: Create Widget Trait (Low Risk) - COMPLETE
+- [x] Define `Widget` trait in `src/panel/widget.rs`
+- [x] Add z_index constants module
+- [x] Add DirtyWrapper for existing panel types
+- [x] Add BoxWidget for modal dialogs
+- [x] Keep existing draw() working alongside Widget
 
-### Phase 3: Implement Compositor (Medium Risk)
-- [ ] Create `src/panel/compositor.rs`
-- [ ] Wrap existing panels as Layers
-- [ ] Replace manual draw flags with compositor
+### Phase 3: Implement Compositor (Medium Risk) - IN PROGRESS
+- [x] Create `src/panel/compositor.rs`
+- [x] Implement Layer management with z-index ordering
+- [x] Add dirty region tracking
+- [ ] Create panel wrapper widgets
+- [ ] Integrate compositor with PanelManager
 - [ ] Remove `Redraw` struct
 
 ### Phase 4: Separate Event Handling (Medium Risk)
