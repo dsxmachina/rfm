@@ -30,6 +30,7 @@ mod preview;
 pub mod rect;
 pub mod render;
 pub mod widget;
+pub mod widgets;
 
 pub use directory::{DirElem, DirPanel};
 pub use preview::{FilePreview, PreviewPanel};
