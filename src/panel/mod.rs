@@ -27,6 +27,7 @@ mod input;
 pub mod manager;
 mod preview;
 pub mod rect;
+pub mod render;
 
 pub use directory::{DirElem, DirPanel};
 pub use preview::{FilePreview, PreviewPanel};
@@ -62,8 +63,19 @@ pub fn init_miller_panels(
 
 /// Basic trait that lets us draw something on the terminal in a specified range.
 pub trait Draw {
+    /// Draw to a region defined by x and y ranges.
+    ///
+    /// This is the legacy method. New code should use `draw_rect` instead.
     fn draw(&mut self, stdout: &mut Stdout, x_range: Range<u16>, y_range: Range<u16>)
         -> Result<()>;
+
+    /// Draw to a region defined by a Rect.
+    ///
+    /// Default implementation converts to ranges and calls `draw`.
+    /// Override this for new implementations.
+    fn draw_rect(&mut self, stdout: &mut Stdout, area: rect::Rect) -> Result<()> {
+        self.draw(stdout, area.x_range(), area.y_range())
+    }
 }
 
 /// Basic trait for managing the content of a panel
@@ -410,13 +422,16 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
     }
 }
 
+/// Layout calculator for the three-column Miller display.
 #[derive(Clone)]
-struct MillerColumns {
-    left_x_range: Range<u16>,
-    center_x_range: Range<u16>,
-    right_x_range: Range<u16>,
-    y_range: Range<u16>,
+pub struct MillerColumns {
+    // Range-based fields (legacy, kept for compatibility)
+    pub left_x_range: Range<u16>,
+    pub center_x_range: Range<u16>,
+    pub right_x_range: Range<u16>,
+    pub y_range: Range<u16>,
     width: u16,
+    height: u16,
 }
 
 impl MillerColumns {
@@ -428,18 +443,86 @@ impl MillerColumns {
             right_x_range: (sx / 2)..sx,
             y_range: 1..sy.saturating_sub(1), // 1st line is reserved for the header, last for the footer
             width: sx,
+            height: sy,
         }
     }
 
+    /// Get the footer row position.
     pub fn footer(&self) -> u16 {
         self.y_range.end.saturating_add(1)
     }
 
-    pub fn height(&self) -> u16 {
+    /// Get the content area height (excluding header and footer).
+    pub fn content_height(&self) -> u16 {
         self.y_range.end.saturating_sub(self.y_range.start)
     }
 
+    /// Get the total terminal width.
     pub fn width(&self) -> u16 {
         self.width
+    }
+
+    /// Get the total terminal height.
+    pub fn height(&self) -> u16 {
+        self.height
+    }
+
+    /// Get the full screen rect.
+    pub fn screen(&self) -> rect::Rect {
+        rect::Rect::new(0, 0, self.width, self.height)
+    }
+
+    /// Get the header rect (first row).
+    pub fn header_rect(&self) -> rect::Rect {
+        rect::Rect::new(0, 0, self.width, 1)
+    }
+
+    /// Get the footer rect (last row).
+    pub fn footer_rect(&self) -> rect::Rect {
+        rect::Rect::new(0, self.footer(), self.width, 1)
+    }
+
+    /// Get the left panel rect.
+    pub fn left_rect(&self) -> rect::Rect {
+        rect::Rect::from_ranges(self.left_x_range.clone(), self.y_range.clone())
+    }
+
+    /// Get the center panel rect.
+    pub fn center_rect(&self) -> rect::Rect {
+        rect::Rect::from_ranges(self.center_x_range.clone(), self.y_range.clone())
+    }
+
+    /// Get the right panel rect.
+    pub fn right_rect(&self) -> rect::Rect {
+        rect::Rect::from_ranges(self.right_x_range.clone(), self.y_range.clone())
+    }
+
+    /// Get the content area rect (all three panels combined).
+    pub fn content_rect(&self) -> rect::Rect {
+        rect::Rect::from_ranges(
+            self.left_x_range.start..self.right_x_range.end,
+            self.y_range.clone(),
+        )
+    }
+
+    /// Get the left panel rect with adjusted height for log display.
+    pub fn left_rect_with_log(&self, log_lines: u16) -> rect::Rect {
+        let mut r = self.left_rect();
+        r.height = r.height.saturating_sub(log_lines);
+        r
+    }
+
+    /// Get the center panel rect with adjusted height for log display.
+    pub fn center_rect_with_log(&self, log_lines: u16) -> rect::Rect {
+        let mut r = self.center_rect();
+        r.height = r.height.saturating_sub(log_lines);
+        r
+    }
+
+    /// Get the right panel rect with adjusted height for log display.
+    pub fn right_rect_with_log(&self, log_lines: u16) -> rect::Rect {
+        let mut r = self.right_rect();
+        r.height = r.height.saturating_sub(log_lines);
+        r
     }
 }

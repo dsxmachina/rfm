@@ -206,11 +206,13 @@ impl App {
 
 ## Implementation Phases
 
-### Phase 1: Introduce Rect and RenderContext (Low Risk)
-- [ ] Create `src/panel/rect.rs` with `Rect` struct
-- [ ] Create `src/panel/render.rs` with `RenderContext`
-- [ ] Convert existing draw methods to use Rect
-- [ ] Tests pass, behavior unchanged
+### Phase 1: Introduce Rect and RenderContext (Low Risk) - IN PROGRESS
+- [x] Create `src/panel/rect.rs` with `Rect` struct
+- [x] Create `src/panel/render.rs` with `RenderContext`
+- [x] Add `draw_rect` method to Draw trait (backward compatible)
+- [x] Add Rect-based accessors to MillerColumns
+- [ ] Gradually migrate draw methods to use Rect (optional, can do as needed)
+- [x] Tests pass, behavior unchanged
 
 ### Phase 2: Create Widget Trait (Low Risk)
 - [ ] Define `Widget` trait in `src/panel/widget.rs`
