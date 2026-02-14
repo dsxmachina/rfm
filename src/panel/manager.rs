@@ -27,28 +27,6 @@ use super::{
     *,
 };
 
-struct Redraw {
-    left: bool,
-    center: bool,
-    right: bool,
-    console: bool,
-    log: bool,
-    header: bool,
-    footer: bool,
-}
-
-impl Redraw {
-    fn any(&self) -> bool {
-        self.left
-            || self.center
-            || self.right
-            || self.console
-            || self.header
-            || self.footer
-            || self.log
-    }
-}
-
 enum Mode {
     Normal,
     Console { console: Box<dyn Console> },
@@ -91,8 +69,8 @@ pub struct PanelManager {
     /// Show log
     show_log: bool,
 
-    /// Elements that needs to be redrawn
-    redraw: Redraw,
+    /// Console needs redraw (special case - renders separately)
+    console_dirty: bool,
 
     /// Event-stream from the terminal
     event_reader: EventStream,
@@ -225,15 +203,7 @@ impl PanelManager {
             opener,
             show_hidden: false,
             show_log: false,
-            redraw: Redraw {
-                left: true,
-                center: true,
-                right: true,
-                log: true,
-                console: true,
-                header: true,
-                footer: true,
-            },
+            console_dirty: false,
             event_reader,
             fwd_history: Vec::new(),
             rev_history: Vec::new(),
@@ -255,81 +225,49 @@ impl PanelManager {
         })
     }
 
-    fn redraw_footer(&mut self) {
-        self.redraw.footer = true;
+    /// Mark that panels need to be redrawn (all three + header/footer).
+    fn mark_panels_dirty(&mut self) {
+        self.compositor.mark_layer_dirty(self.left_layer);
+        self.compositor.mark_layer_dirty(self.center_layer);
+        self.compositor.mark_layer_dirty(self.right_layer);
+        self.compositor.mark_layer_dirty(self.header_layer);
+        self.compositor.mark_layer_dirty(self.footer_layer);
+        self.compositor.mark_layer_dirty(self.log_layer);
     }
 
-    fn redraw_panels(&mut self) {
-        self.redraw.left = true;
-        self.redraw.center = true;
-        self.redraw.right = true;
-        self.redraw.header = true;
-        self.redraw.footer = true;
-        self.redraw.log = true;
+    /// Mark center panel and related UI elements as dirty.
+    fn mark_center_dirty(&mut self) {
+        self.compositor.mark_layer_dirty(self.center_layer);
+        self.compositor.mark_layer_dirty(self.header_layer);
+        self.compositor.mark_layer_dirty(self.footer_layer);
     }
 
-    fn redraw_left(&mut self) {
-        self.redraw.left = true;
-        self.redraw.log = true;
-    }
-
-    fn redraw_center(&mut self) {
-        self.redraw.center = true;
-        // if something changed in the center,
-        // also redraw header and footer
-        self.redraw.footer = true;
-        self.redraw.header = true;
-        self.redraw.log = true;
-    }
-
-    fn redraw_right(&mut self) {
-        self.redraw.right = true;
-        self.redraw.log = true;
-    }
-
-    fn redraw_console(&mut self) {
-        self.redraw.console = true;
-    }
-
-    fn redraw_everything(&mut self) {
-        self.redraw.header = true;
-        self.redraw.footer = true;
-        self.redraw.left = true;
-        self.redraw.center = true;
-        self.redraw.right = true;
-        self.redraw.console = true;
-    }
-
-    fn redraw_log(&mut self) {
-        self.redraw.log = true;
+    /// Mark everything as needing redraw.
+    fn mark_all_dirty(&mut self) {
+        self.compositor.mark_all_dirty();
+        self.console_dirty = true;
     }
 
     fn draw(&mut self) -> Result<()> {
-        if !self.redraw.any() && !self.compositor.needs_redraw() {
-            return Ok(());
-        }
-
-        // Sync all state to compositor widgets
+        // Sync all state to compositor widgets (widgets track their own dirty state)
         self.sync_to_compositor();
 
-        // Render via compositor (handles z-ordering and synchronized updates)
+        // Render via compositor (only redraws dirty layers)
         self.compositor.render(&mut self.stdout)?;
 
-        // Console still renders separately (interactive overlay)
-        self.draw_console()?;
-
-        // Clear all redraw flags
-        self.redraw.left = false;
-        self.redraw.center = false;
-        self.redraw.right = false;
-        self.redraw.header = false;
-        self.redraw.footer = false;
-        self.redraw.log = false;
+        // Console renders separately (interactive overlay)
+        if self.console_dirty {
+            self.draw_console()?;
+            self.console_dirty = false;
+        }
 
         Ok(())
     }
 
-    /// Sync all state to compositor widgets before rendering.
+    /// Sync all state to compositor widgets.
+    ///
+    /// Widgets internally track whether their state changed and only mark
+    /// themselves dirty if the new state differs from the old.
     fn sync_to_compositor(&mut self) {
         // Calculate height adjustment for log display
         let height_adjustment = if self.show_log {
@@ -338,17 +276,15 @@ impl PanelManager {
             0
         };
 
-        // Sync header
-        if self.redraw.header {
-            let path = self.center.panel().selected_path()
-                .and_then(|f| f.canonicalize().ok())
-                .unwrap_or_else(|| self.center.panel().path().to_path_buf());
-            self.compositor.with_widget_mut(self.header_layer, |w| {
-                if let Some(widget) = w.as_any_mut().downcast_mut::<HeaderWidget>() {
-                    widget.set_path(path);
-                }
-            });
-        }
+        // Sync header - widget checks if path changed
+        let path = self.center.panel().selected_path()
+            .and_then(|f| f.canonicalize().ok())
+            .unwrap_or_else(|| self.center.panel().path().to_path_buf());
+        self.compositor.with_widget_mut(self.header_layer, |w| {
+            if let Some(widget) = w.as_any_mut().downcast_mut::<HeaderWidget>() {
+                widget.set_path(path);
+            }
+        });
 
         // Sync footer and input bar based on mode
         match &self.mode {
@@ -357,19 +293,17 @@ impl PanelManager {
                 self.compositor.hide_layer(self.input_bar_layer);
                 self.compositor.show_layer(self.footer_layer);
 
-                if self.redraw.footer {
-                    let selected_path = self.center.panel().selected_path();
-                    let key_buffer = self.parser.buffer();
-                    let (n, m) = self.center.panel().index_vs_total();
+                let selected_path = self.center.panel().selected_path();
+                let key_buffer = self.parser.buffer();
+                let (n, m) = self.center.panel().index_vs_total();
 
-                    self.compositor.with_widget_mut(self.footer_layer, |w| {
-                        if let Some(widget) = w.as_any_mut().downcast_mut::<FooterWidget>() {
-                            widget.set_file_info(selected_path);
-                            widget.set_key_buffer(key_buffer);
-                            widget.set_position(n, m);
-                        }
-                    });
-                }
+                self.compositor.with_widget_mut(self.footer_layer, |w| {
+                    if let Some(widget) = w.as_any_mut().downcast_mut::<FooterWidget>() {
+                        widget.set_file_info(selected_path);
+                        widget.set_key_buffer(key_buffer);
+                        widget.set_position(n, m);
+                    }
+                });
             }
             Mode::Search { input } | Mode::Rename { input } | Mode::CreateItem { input, .. } => {
                 // Show input bar, hide footer
@@ -387,8 +321,6 @@ impl PanelManager {
                 self.compositor.with_widget_mut(self.input_bar_layer, |w| {
                     if let Some(widget) = w.as_any_mut().downcast_mut::<InputBarWidget>() {
                         widget.set_input_type(input_type);
-                        // We need to extract cursor position - Input doesn't expose it publicly
-                        // For now, just set the text
                         widget.set_text(input.get().to_string(), input.get().len());
                     }
                 });
@@ -403,7 +335,6 @@ impl PanelManager {
         // Sync log display
         if self.show_log {
             self.compositor.show_layer(self.log_layer);
-            // Position log above footer
             let log_height = self.logger.capacity() as u16;
             let log_y = self.layout.footer().saturating_sub(log_height);
             let log_area = Rect::new(0, log_y, self.layout.width(), log_height);
@@ -425,7 +356,7 @@ impl PanelManager {
                 .into_iter()
                 .any(|(level, _)| level <= log::Level::Warn);
 
-            if has_warning && self.redraw.log {
+            if has_warning {
                 self.compositor.show_layer(self.log_layer);
                 let log_y = self.layout.footer().saturating_sub(2);
                 let log_area = Rect::new(0, log_y, self.layout.width(), 1);
@@ -446,49 +377,40 @@ impl PanelManager {
             }
         }
 
-        // Sync panels
-        if self.redraw.left {
-            let area = self.layout.left_rect().with_height_reduced(height_adjustment);
-            self.compositor.set_layer_area(self.left_layer, area);
-            self.compositor.with_widget_mut(self.left_layer, |w| {
-                if let Some(widget) = w.as_any_mut().downcast_mut::<DirPanelWidget>() {
-                    widget.set_panel(self.left.panel().clone());
-                }
-            });
-        }
+        // Sync panels - widgets track if content changed
+        let left_area = self.layout.left_rect().with_height_reduced(height_adjustment);
+        self.compositor.set_layer_area(self.left_layer, left_area);
+        self.compositor.with_widget_mut(self.left_layer, |w| {
+            if let Some(widget) = w.as_any_mut().downcast_mut::<DirPanelWidget>() {
+                widget.set_panel(self.left.panel().clone());
+            }
+        });
 
-        if self.redraw.center {
-            let area = self.layout.center_rect().with_height_reduced(height_adjustment);
-            self.compositor.set_layer_area(self.center_layer, area);
-            self.compositor.with_widget_mut(self.center_layer, |w| {
-                if let Some(widget) = w.as_any_mut().downcast_mut::<DirPanelWidget>() {
-                    widget.set_panel(self.center.panel().clone());
-                }
-            });
-        }
+        let center_area = self.layout.center_rect().with_height_reduced(height_adjustment);
+        self.compositor.set_layer_area(self.center_layer, center_area);
+        self.compositor.with_widget_mut(self.center_layer, |w| {
+            if let Some(widget) = w.as_any_mut().downcast_mut::<DirPanelWidget>() {
+                widget.set_panel(self.center.panel().clone());
+            }
+        });
 
-        if self.redraw.right {
-            let area = self.layout.right_rect().with_height_reduced(height_adjustment);
-            self.compositor.set_layer_area(self.right_layer, area);
-            self.compositor.with_widget_mut(self.right_layer, |w| {
-                if let Some(widget) = w.as_any_mut().downcast_mut::<PreviewPanelWidget>() {
-                    widget.set_panel(self.right.panel().clone());
-                }
-            });
-        }
+        let right_area = self.layout.right_rect().with_height_reduced(height_adjustment);
+        self.compositor.set_layer_area(self.right_layer, right_area);
+        self.compositor.with_widget_mut(self.right_layer, |w| {
+            if let Some(widget) = w.as_any_mut().downcast_mut::<PreviewPanelWidget>() {
+                widget.set_panel(self.right.panel().clone());
+            }
+        });
     }
 
     fn draw_console(&mut self) -> Result<()> {
-        // Console still renders itself (complex interactive widget)
-        if self.redraw.console {
-            if let Mode::Console { console } = &mut self.mode {
-                console.draw(
-                    &mut self.stdout,
-                    self.layout.left_x_range.start..self.layout.right_x_range.end,
-                    self.layout.y_range.clone(),
-                )?;
-            }
-            self.redraw.console = false;
+        // Console renders itself (complex interactive widget)
+        if let Mode::Console { console } = &mut self.mode {
+            console.draw(
+                &mut self.stdout,
+                self.layout.left_x_range.start..self.layout.right_x_range.end,
+                self.layout.y_range.clone(),
+            )?;
         }
         Ok(())
     }
@@ -506,16 +428,16 @@ impl PanelManager {
             self.center.panel().path(),
             Some(self.center.panel().selected_idx()),
         );
-        self.redraw_everything();
+        self.mark_all_dirty();
     }
 
     fn toggle_log(&mut self) {
         self.show_log = !self.show_log;
         if self.show_log {
-            self.redraw_log();
+            self.compositor.mark_layer_dirty(self.log_layer);
         } else {
             // Redraw everything, so that the current log gets overdrawn by the panels
-            self.redraw_everything();
+            self.mark_all_dirty();
         }
     }
 
@@ -524,8 +446,8 @@ impl PanelManager {
         if self.center.panel_mut().up(step) {
             self.right
                 .new_panel_delayed(self.center.panel().selected_path());
-            self.redraw_center();
-            self.redraw_right();
+            self.mark_center_dirty();
+            self.compositor.mark_layer_dirty(self.right_layer);
             self.rev_history.clear();
         }
     }
@@ -535,8 +457,8 @@ impl PanelManager {
         if self.center.panel_mut().down(step) {
             self.right
                 .new_panel_delayed(self.center.panel().selected_path());
-            self.redraw_center();
-            self.redraw_right();
+            self.mark_center_dirty();
+            self.compositor.mark_layer_dirty(self.right_layer);
             self.rev_history.clear();
         }
     }
@@ -584,7 +506,7 @@ impl PanelManager {
                     self.right.panel_mut().select_path(path);
                 }
 
-                self.redraw_panels();
+                self.mark_panels_dirty();
             } else {
                 // NOTE: This is a blocking call, if we have a terminal application.
                 // The watchers are still active in the background.
@@ -609,7 +531,7 @@ impl PanelManager {
                     error!("Opening failed: {e}");
                 }
                 self.center.unfreeze();
-                self.redraw_everything();
+                self.mark_all_dirty();
             }
             //
             self.unmark_left_right();
@@ -662,7 +584,7 @@ impl PanelManager {
         self.unmark_left_right();
 
         // All panels needs to be redrawn
-        self.redraw_panels();
+        self.mark_panels_dirty();
     }
 
     fn jump(&mut self, path: PathBuf) {
@@ -680,7 +602,7 @@ impl PanelManager {
             self.center.new_panel_instant(Some(&path));
             self.right
                 .new_panel_delayed(self.center.panel().selected_path());
-            self.redraw_panels();
+            self.mark_panels_dirty();
         }
     }
 
@@ -732,7 +654,7 @@ impl PanelManager {
         if let PreviewPanel::Dir(panel) = self.right.panel_mut() {
             panel.elements_mut().for_each(|item| item.unmark());
         }
-        self.redraw_panels();
+        self.mark_panels_dirty();
     }
 
     /// Returns all marked paths *or* the selected path.
@@ -786,7 +708,7 @@ impl PanelManager {
 
     pub async fn run(mut self) -> Result<CloseCmd> {
         // Initial draw
-        self.redraw_everything();
+        self.mark_all_dirty();
         self.draw()?;
 
         let close_cmd = loop {
@@ -794,7 +716,7 @@ impl PanelManager {
             tokio::select! {
                 // Check incoming new logs
                 () = self.logger.update() => {
-                    self.redraw_log();
+                    self.compositor.mark_layer_dirty(self.log_layer);
                 }
                 // Check incoming new dir-panels
                 result = self.dir_rx.recv() => {
@@ -809,14 +731,14 @@ impl PanelManager {
                         self.center.update_panel(panel);
                         // update preview (if necessary)
                         self.right.new_panel_delayed(self.center.panel().selected_path());
-                        self.redraw_center();
-                        self.redraw_right();
-                        self.redraw_console();
+                        self.mark_center_dirty();
+                        self.compositor.mark_layer_dirty(self.right_layer);
+                        self.console_dirty = true;
                     } else if self.left.check_update(&state) {
                         self.left.update_panel(panel);
                         self.left.panel_mut().select_path(self.center.panel().path(), Some(self.center.panel().selected_idx()));
-                        self.redraw_left();
-                        self.redraw_console();
+                        self.compositor.mark_layer_dirty(self.left_layer);
+                        self.console_dirty = true;
                     } else {
                         // Reduce log level here, this is not that important
                         debug!("unknown panel update: {:?}", state);
@@ -832,8 +754,8 @@ impl PanelManager {
 
                     if self.right.check_update(&state) {
                         self.right.update_panel(panel);
-                        self.redraw_right();
-                        self.redraw_console();
+                        self.compositor.mark_layer_dirty(self.right_layer);
+                        self.console_dirty = true;
                     }
                 }
                 // Check incoming new events
@@ -876,8 +798,8 @@ impl PanelManager {
                 self.parser.clear();
                 self.center.panel_mut().clear_search();
                 self.center.panel_mut().clear_new_element();
-                self.redraw_panels();
-                self.redraw_footer();
+                self.mark_panels_dirty();
+                self.compositor.mark_layer_dirty(self.footer_layer);
                 self.unmark_all_items();
             }
             match &mut self.mode {
@@ -907,13 +829,13 @@ impl PanelManager {
                                     console: Box::new(DirConsole::from_panel(self.center.panel())),
                                 }
                             };
-                            self.redraw_console();
+                            self.console_dirty = true;
                         }
                         Command::Search => {
                             self.mode = Mode::Search {
                                 input: Input::empty(),
                             };
-                            self.redraw_footer();
+                            self.compositor.mark_layer_dirty(self.footer_layer);
                         }
                         Command::Rename => {
                             let selected = self
@@ -926,35 +848,35 @@ impl PanelManager {
                             self.mode = Mode::Rename {
                                 input: Input::from_str(selected),
                             };
-                            self.redraw_footer();
+                            self.compositor.mark_layer_dirty(self.footer_layer);
                         }
                         Command::Next => {
                             self.center.panel_mut().select_next_marked();
                             self.right
                                 .new_panel_delayed(self.center.panel().selected_path());
-                            self.redraw_center();
-                            self.redraw_right();
+                            self.mark_center_dirty();
+                            self.compositor.mark_layer_dirty(self.right_layer);
                         }
                         Command::Previous => {
                             self.center.panel_mut().select_prev_marked();
                             self.right
                                 .new_panel_delayed(self.center.panel().selected_path());
-                            self.redraw_center();
-                            self.redraw_right();
+                            self.mark_center_dirty();
+                            self.compositor.mark_layer_dirty(self.right_layer);
                         }
                         Command::Mkdir => {
                             self.mode = Mode::CreateItem {
                                 input: Input::empty(),
                                 is_dir: true,
                             };
-                            self.redraw_footer();
+                            self.compositor.mark_layer_dirty(self.footer_layer);
                         }
                         Command::Touch => {
                             self.mode = Mode::CreateItem {
                                 input: Input::empty(),
                                 is_dir: false,
                             };
-                            self.redraw_footer();
+                            self.compositor.mark_layer_dirty(self.footer_layer);
                         }
                         Command::Mark => {
                             self.center.panel_mut().mark_selected_item();
@@ -969,7 +891,7 @@ impl PanelManager {
                             let files = self.marked_or_selected();
                             info!("copying {} items", files.len());
                             self.clipboard = Some(Clipboard { files, cut: false });
-                            self.redraw_center();
+                            self.mark_center_dirty();
                         }
                         Command::Delete => {
                             let files = self.marked_or_selected();
@@ -1007,7 +929,7 @@ impl PanelManager {
                             self.left.reload();
                             self.center.reload();
                             self.right.reload();
-                            self.redraw_panels();
+                            self.mark_panels_dirty();
                         }
                         Command::Zip => {
                             let items = self.marked_or_selected();
@@ -1019,7 +941,7 @@ impl PanelManager {
                                 warn!("Failed to create zip-archive: {e}");
                             }
                             self.center.unfreeze();
-                            self.redraw_center();
+                            self.mark_center_dirty();
                         }
                         Command::Tar => {
                             let items = self.marked_or_selected();
@@ -1031,7 +953,7 @@ impl PanelManager {
                                 warn!("Failed to create tar-archive: {e}");
                             }
                             self.center.unfreeze();
-                            self.redraw_center();
+                            self.mark_center_dirty();
                         }
                         Command::Extract => {
                             self.center.freeze();
@@ -1044,7 +966,7 @@ impl PanelManager {
                                 if let Err(e) = self.opener.extract(archive.to_owned()) {
                                     warn!("Failed to extract archive: {e}");
                                 }
-                                self.redraw_center();
+                                self.mark_center_dirty();
                             } else {
                                 warn!("Nothing extractable is selected");
                             }
@@ -1061,7 +983,7 @@ impl PanelManager {
                         Command::None => {}
                     }
                     // Always redraw footer
-                    self.redraw_footer();
+                    self.compositor.mark_layer_dirty(self.footer_layer);
                 }
                 Mode::Console { console } => {
                     match console.handle_key(key_event) {
@@ -1071,10 +993,10 @@ impl PanelManager {
                         ConsoleOp::None => (),
                         ConsoleOp::Exit => {
                             self.mode = Mode::Normal;
-                            self.redraw_panels();
+                            self.mark_panels_dirty();
                         }
                     }
-                    self.redraw_console();
+                    self.console_dirty = true;
                 }
                 Mode::CreateItem { input, is_dir } => {
                     match key_event.code {
@@ -1097,18 +1019,18 @@ impl PanelManager {
                             }
                             self.mode = Mode::Normal;
                             self.center.panel_mut().clear_new_element();
-                            self.redraw_panels();
+                            self.mark_panels_dirty();
                         }
                         KeyCode::Tab => {
                             /* autocomplete here ? */
-                            self.redraw_footer();
+                            self.compositor.mark_layer_dirty(self.footer_layer);
                         }
                         key_code => {
                             input.update(key_code, key_event.modifiers);
                             self.center
                                 .panel_mut()
                                 .inject_new_element(input.get().to_string(), *is_dir);
-                            self.redraw_center();
+                            self.mark_center_dirty();
                         }
                     }
                 }
@@ -1119,14 +1041,14 @@ impl PanelManager {
                         self.right
                             .new_panel_delayed(self.center.panel().selected_path());
                         self.mode = Mode::Normal;
-                        self.redraw_center();
-                        self.redraw_right();
+                        self.mark_center_dirty();
+                        self.compositor.mark_layer_dirty(self.right_layer);
                     } else {
                         input.update(key_event.code, key_event.modifiers);
                         self.center
                             .panel_mut()
                             .update_search(input.get().to_string());
-                        self.redraw_center();
+                        self.mark_center_dirty();
                     }
                 }
                 Mode::Rename { input } => {
@@ -1143,17 +1065,17 @@ impl PanelManager {
                         self.mode = Mode::Normal;
                         self.center.reload();
                         self.right.reload();
-                        self.redraw_panels();
+                        self.mark_panels_dirty();
                     } else {
                         input.update(key_event.code, key_event.modifiers);
-                        self.redraw_center();
+                        self.mark_center_dirty();
                     }
                 }
             }
         }
         if let Event::Resize(sx, sy) = event {
             self.layout = MillerColumns::from_size((sx, sy));
-            self.redraw_everything();
+            self.mark_all_dirty();
         }
         Ok(None)
     }
