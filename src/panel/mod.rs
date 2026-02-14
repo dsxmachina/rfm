@@ -26,6 +26,7 @@ mod directory;
 mod input;
 pub mod manager;
 mod preview;
+pub mod rect;
 
 pub use directory::{DirElem, DirPanel};
 pub use preview::{FilePreview, PreviewPanel};
