@@ -221,13 +221,15 @@ impl App {
 - [x] Add BoxWidget for modal dialogs
 - [x] Keep existing draw() working alongside Widget
 
-### Phase 3: Implement Compositor (Medium Risk) - IN PROGRESS
+### Phase 3: Implement Compositor (Medium Risk) - MOSTLY COMPLETE
 - [x] Create `src/panel/compositor.rs`
 - [x] Implement Layer management with z-index ordering
 - [x] Add dirty region tracking
-- [ ] Create panel wrapper widgets
-- [ ] Integrate compositor with PanelManager
-- [ ] Remove `Redraw` struct
+- [x] Create panel wrapper widgets (`src/panel/widgets/`)
+  - [x] DirPanelWidget and PreviewPanelWidget
+  - [x] HeaderWidget and FooterWidget
+- [ ] Integrate compositor with PanelManager (optional, incremental)
+- [ ] Remove `Redraw` struct (optional, can coexist)
 
 ### Phase 4: Separate Event Handling (Medium Risk)
 - [ ] Create `src/app.rs` for App struct
