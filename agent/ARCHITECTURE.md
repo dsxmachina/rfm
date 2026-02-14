@@ -1,33 +1,10 @@
-# New UI Architecture Overview
+# UI Architecture
 
-## The Problem
+## Overview
 
-The original `PanelManager` (~1200 lines) mixed several concerns:
+The UI rendering uses a **Compositor** pattern that manages layers of widgets. Each widget knows how to render itself and track whether it needs redrawing. The compositor renders layers in z-index order (lowest first, highest on top).
 
-```
-PanelManager {
-    // Manual redraw tracking
-    redraw: Redraw {
-        left: bool,
-        center: bool,
-        right: bool,
-        console: bool,
-        log: bool,
-        header: bool,
-        footer: bool,
-    }
-}
-```
-
-Every time something changed, you had to manually set the right boolean flags. Adding a new UI element (like a confirmation dialog) required:
-1. Adding a new boolean flag
-2. Adding a new `draw_*` method
-3. Manually managing the draw order
-4. Handling input routing
-
-## The Solution: Layers and Widgets
-
-### Core Concepts
+## Architecture Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -36,8 +13,8 @@ Every time something changed, you had to manually set the right boolean flags. A
 │  │ Layer (z=50): Modal Dialog                      │   │
 │  │   └─ BoxWidget                                  │   │
 │  ├─────────────────────────────────────────────────┤   │
-│  │ Layer (z=40): Console (cd/search/rename)        │   │
-│  │   └─ ConsoleWidget                              │   │
+│  │ Layer (z=40): Input Bar / Console               │   │
+│  │   └─ InputBarWidget (search/rename/mkdir/touch) │   │
 │  ├─────────────────────────────────────────────────┤   │
 │  │ Layer (z=30): Log Messages                      │   │
 │  │   └─ LogWidget                                  │   │
@@ -54,178 +31,134 @@ Every time something changed, you had to manually set the right boolean flags. A
 └─────────────────────────────────────────────────────────┘
 ```
 
-**Widget**: A UI component that knows how to render itself and track if it needs redrawing.
+## Key Components
 
-**Layer**: A widget placed at a specific screen region with a z-index.
-
-**Compositor**: Manages all layers, renders them in z-order, tracks dirty regions.
-
-### Z-Index (Drawing Order)
-
-Higher z-index = drawn on top:
-
-| Z-Index | Layer Type | Example |
-|---------|------------|---------|
-| 10 | BARS | Header, Footer |
-| 20 | PANELS | Left, Center, Right panels |
-| 30 | LOG | Warning/error messages |
-| 40 | CONSOLE | cd input, search, rename |
-| 50 | MODAL | Confirmation dialogs |
-| 60 | NOTIFICATION | Toast messages |
-
-### The Widget Trait
+### Widget Trait (`src/panel/widget.rs`)
 
 ```rust
 pub trait Widget {
-    /// Draw yourself in this area
     fn render(&mut self, stdout: &mut Stdout, area: Rect) -> Result<()>;
-
-    /// Do you need to be redrawn?
     fn needs_redraw(&self) -> bool;
-
-    /// Mark yourself as needing redraw
     fn mark_dirty(&mut self);
-
-    /// Your z-index (higher = on top)
+    fn mark_clean(&mut self);
     fn z_index(&self) -> u8;
-
-    /// Do you block input to layers below?
     fn is_modal(&self) -> bool;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 ```
 
-### The Rect Type
+### Z-Index Constants
 
-Replaces the old `x_range: Range<u16>, y_range: Range<u16>` pattern:
+| Z-Index | Constant | Purpose |
+|---------|----------|---------|
+| 10 | `BARS` | Header, Footer |
+| 20 | `PANELS` | Left, Center, Right panels |
+| 30 | `LOG` | Warning/error messages |
+| 40 | `CONSOLE` | Input overlays (search, rename, mkdir) |
+| 50 | `MODAL` | Confirmation dialogs |
+| 60 | `NOTIFICATION` | Toast messages |
+
+### Compositor (`src/panel/compositor.rs`)
+
+- Manages a collection of layers
+- Renders layers in z-index order
+- Tracks dirty state for efficient redraws
+- Supports modal layer detection
+
+### Widgets (`src/panel/widgets/`)
+
+| Widget | Purpose |
+|--------|---------|
+| `DirPanelWidget` | Wraps DirPanel for directory listing |
+| `PreviewPanelWidget` | Wraps PreviewPanel for file previews |
+| `HeaderWidget` | Top bar with username@host and path |
+| `FooterWidget` | Bottom bar with permissions and position |
+| `InputBarWidget` | Input field for search/rename/mkdir/touch |
+| `LogWidget` | Log message display overlay |
+| `BoxWidget` | Modal dialog box |
+
+## Rendering Flow
+
+1. State changes trigger `redraw_*` methods in PanelManager
+2. Before rendering, `sync_to_compositor()` updates widget state
+3. `compositor.render()` draws all visible layers in z-order
+4. Console mode renders separately (complex interactive overlay)
 
 ```rust
-// Old way
-fn draw(&mut self, stdout: &mut Stdout, x_range: Range<u16>, y_range: Range<u16>)
+fn draw(&mut self) -> Result<()> {
+    // Sync all state to widgets
+    self.sync_to_compositor();
 
-// New way
-fn render(&mut self, stdout: &mut Stdout, area: Rect)
+    // Render via compositor
+    self.compositor.render(&mut self.stdout)?;
 
-// Rect provides helpful methods
-area.x, area.y, area.width, area.height
-area.left(), area.right(), area.top(), area.bottom()
-area.contains(x, y)
-area.intersects(&other)
-area.inner(margin)  // shrink by margin
-area.split_vertical(at)  // divide into two rects
+    // Console renders separately
+    self.draw_console()?;
+
+    Ok(())
+}
 ```
 
-### The Compositor
+## Mode Handling
+
+The `Mode` enum controls input handling:
 
 ```rust
-let mut compositor = Compositor::new();
-
-// Add layers (order doesn't matter - z-index determines draw order)
-let header_id = compositor.add_layer(
-    Box::new(HeaderWidget::new()),
-    layout.header_rect(),
-);
-
-let center_id = compositor.add_layer(
-    Box::new(DirPanelWidget::new(center_panel)),
-    layout.center_rect(),
-);
-
-// Later: show a modal
-let modal_id = compositor.add_layer(
-    Box::new(BoxWidget::with_title("Confirm Delete?")),
-    Rect::new(20, 10, 40, 10),
-);
-
-// Render everything in correct order
-compositor.render(&mut stdout)?;
-
-// Hide the modal
-compositor.hide_layer(modal_id);
-
-// Mark something as needing redraw
-compositor.mark_layer_dirty(center_id);
+enum Mode {
+    Normal,
+    Console { console: Box<dyn Console> },
+    CreateItem { input: Input, is_dir: bool },
+    Search { input: Input },
+    Rename { input: Input },
+}
 ```
+
+- **Normal**: Commands parsed via CommandParser
+- **Console**: Interactive cd/zoxide console
+- **CreateItem/Search/Rename**: Input modes with InputBarWidget
 
 ## File Structure
 
 ```
 src/panel/
-├── rect.rs            # Rect type for screen regions
-├── widget.rs          # Widget trait + z_index constants
 ├── compositor.rs      # Layer management
-├── render.rs          # RenderContext helper (optional use)
-│
-├── widgets/           # Widget implementations
+├── rect.rs            # Rect type for screen regions
+├── widget.rs          # Widget trait and z_index constants
+├── render.rs          # RenderContext helper
+├── widgets/
+│   ├── mod.rs
 │   ├── panel_widget.rs   # DirPanelWidget, PreviewPanelWidget
 │   ├── header.rs         # HeaderWidget
-│   └── footer.rs         # FooterWidget
-│
-└── (existing files unchanged)
+│   ├── footer.rs         # FooterWidget
+│   ├── input_bar.rs      # InputBarWidget
+│   └── log.rs            # LogWidget
+├── manager.rs         # Event loop and state management
+├── directory.rs       # DirPanel (unchanged)
+├── preview.rs         # PreviewPanel (unchanged)
+├── console.rs         # Console modes (unchanged)
+└── input.rs           # Text input handling (unchanged)
 ```
 
-## How It Simplifies Things
+## Adding New UI Elements
 
-### Adding a Confirmation Dialog (Before)
+To add a new overlay (e.g., help screen):
+
+1. Create widget in `src/panel/widgets/help.rs`
+2. Add to `widgets/mod.rs`
+3. Add layer ID field to PanelManager
+4. Initialize layer (hidden) in `PanelManager::new()`
+5. Show/hide layer when needed
 
 ```rust
-// 1. Add field to Redraw struct
-struct Redraw {
-    // ... existing fields ...
-    confirm_dialog: bool,  // NEW
-}
-
-// 2. Add state to PanelManager
-confirm_dialog_visible: bool,
-confirm_dialog_message: String,
-
-// 3. Add draw method
-fn draw_confirm_dialog(&mut self) -> Result<()> {
-    if !self.redraw.confirm_dialog { return Ok(()); }
-    // ... drawing code ...
-}
-
-// 4. Call it in the right order in draw()
-fn draw(&mut self) -> Result<()> {
-    self.draw_panels()?;
-    self.draw_confirm_dialog()?;  // Must be after panels!
-    // ...
-}
-
-// 5. Handle input routing
-fn handle_event(&mut self, event: Event) {
-    if self.confirm_dialog_visible {
-        // Handle dialog input
-    } else {
-        // Normal input
-    }
-}
+// In PanelManager
+self.compositor.show_layer(self.help_layer);
+// ... later ...
+self.compositor.hide_layer(self.help_layer);
 ```
 
-### Adding a Confirmation Dialog (After)
+## Design Principles
 
-```rust
-// Just add a layer when needed
-let dialog = BoxWidget::with_title("Delete 3 files?");
-let dialog_id = self.compositor.add_layer(
-    Box::new(dialog),
-    centered_rect(40, 10),
-);
-
-// Input routing is automatic (modal layers block input below)
-if self.compositor.has_modal() {
-    // Handle modal input
-}
-
-// Remove when done
-self.compositor.remove_layer(dialog_id);
-```
-
-## Backward Compatibility
-
-The new architecture is **additive**:
-- Existing `Draw` trait still works
-- Existing panel types unchanged
-- `PanelManager` can adopt compositor gradually
-- Widget wrappers adapt old types to new trait
-
-You can use the new system for new features while keeping existing code working.
+1. **Widgets own their rendering**: Each widget knows how to draw itself
+2. **Compositor handles ordering**: Z-index determines draw order automatically
+3. **Dirty tracking**: Only redraw what changed
+4. **Incremental adoption**: Old code can coexist with new widgets
