@@ -70,10 +70,11 @@ impl Draw for FilePreview {
                     } else {
                         4 * height / 3
                     };
+                    log::info!("converting img: {}x{}", width, height,);
                     let img = img
                         .thumbnail(width as u32, thumbnail_height as u32)
                         .into_rgb8();
-                    log::debug!(
+                    log::info!(
                         "img: {}x{}, wxh: {}x{}",
                         img.width(),
                         img.height(),
@@ -219,10 +220,16 @@ impl FilePreview {
 }
 
 fn image_preview(path: impl AsRef<Path>, info: Vec<String>) -> Preview {
+    log::info!("--- creating image-preview for {}", path.as_ref().display());
     if let Ok(img_bytes) = image::io::Reader::open(&path) {
         let img = img_bytes.decode().ok().map(|img| img.thumbnail(960, 540));
+        log::info!("--- created image-preview for {}", path.as_ref().display());
         Preview::Image { img, info }
     } else {
+        log::info!(
+            "--- created empty image-preview for {}",
+            path.as_ref().display()
+        );
         Preview::Image { img: None, info }
     }
 }
