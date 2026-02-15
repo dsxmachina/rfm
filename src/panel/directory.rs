@@ -384,7 +384,7 @@ impl Draw for DirPanel {
         x_range: Range<u16>,
         y_range: Range<u16>,
     ) -> Result<()> {
-        let width = x_range.end.saturating_sub(x_range.start);
+        let width = x_range.end.saturating_sub(x_range.start.saturating_add(1));
         let height = y_range.end.saturating_sub(y_range.start);
 
         // Calculate page-scroll
