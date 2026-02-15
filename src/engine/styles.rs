@@ -35,7 +35,7 @@ mod unicode_icons {
     // Documents
     pub const TEXT: &str = "\u{1F5B9}";        // 🖹 - document
     pub const PDF: &str = "\u{1F4C4}";         // 📄 - document
-    pub const MARKDOWN: &str = "\u{1F4DD}";    // 📝 - memo
+    pub const MARKDOWN: &str = "\u{1F89B}";    // 🢛 - downward arrow
     pub const WORD: &str = "\u{1F4C4}";        // 📄 - document
     pub const EXCEL: &str = "\u{1F4CA}";       // 📊 - chart
     pub const POWERPOINT: &str = "\u{1F4CA}";  // 📊 - chart
