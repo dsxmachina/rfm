@@ -147,3 +147,125 @@ impl RateLimiter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_first_request_allowed() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut limiter = RateLimiter::new(Duration::from_millis(100), tx);
+        let key = RateLimitKey::new(1, PathBuf::from("/test"));
+
+        let (send_now, schedule_delayed) = limiter.check_rate_limit(&key);
+        assert!(send_now, "First request should be allowed immediately");
+        assert!(!schedule_delayed, "First request should not schedule delayed");
+    }
+
+    #[test]
+    fn test_rapid_request_schedules_delayed() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut limiter = RateLimiter::new(Duration::from_millis(100), tx);
+        let key = RateLimitKey::new(1, PathBuf::from("/test"));
+
+        // First request
+        limiter.check_rate_limit(&key);
+
+        // Immediate second request
+        let (send_now, schedule_delayed) = limiter.check_rate_limit(&key);
+        assert!(!send_now, "Rapid second request should not send immediately");
+        assert!(schedule_delayed, "Rapid second request should schedule delayed");
+    }
+
+    #[test]
+    fn test_third_rapid_request_dropped() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut limiter = RateLimiter::new(Duration::from_millis(100), tx);
+        let key = RateLimitKey::new(1, PathBuf::from("/test"));
+
+        // First request - allowed
+        limiter.check_rate_limit(&key);
+
+        // Second request - schedules delayed
+        limiter.check_rate_limit(&key);
+
+        // Third request - should be dropped
+        let (send_now, schedule_delayed) = limiter.check_rate_limit(&key);
+        assert!(!send_now, "Third rapid request should not send immediately");
+        assert!(!schedule_delayed, "Third rapid request should be dropped (not schedule another delayed)");
+    }
+
+    #[test]
+    fn test_different_panels_independent() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut limiter = RateLimiter::new(Duration::from_millis(100), tx);
+        let key1 = RateLimitKey::new(1, PathBuf::from("/test"));
+        let key2 = RateLimitKey::new(2, PathBuf::from("/test"));
+
+        // First panel
+        let (send1, _) = limiter.check_rate_limit(&key1);
+        assert!(send1);
+
+        // Different panel - should also be allowed
+        let (send2, _) = limiter.check_rate_limit(&key2);
+        assert!(send2, "Different panel should be allowed independently");
+    }
+
+    #[test]
+    fn test_different_paths_independent() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut limiter = RateLimiter::new(Duration::from_millis(100), tx);
+        let key1 = RateLimitKey::new(1, PathBuf::from("/test1"));
+        let key2 = RateLimitKey::new(1, PathBuf::from("/test2"));
+
+        // First path
+        let (send1, _) = limiter.check_rate_limit(&key1);
+        assert!(send1);
+
+        // Different path - should also be allowed
+        let (send2, _) = limiter.check_rate_limit(&key2);
+        assert!(send2, "Different path should be allowed independently");
+    }
+
+    #[test]
+    fn test_request_after_interval_allowed() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut limiter = RateLimiter::new(Duration::from_millis(10), tx);
+        let key = RateLimitKey::new(1, PathBuf::from("/test"));
+
+        // First request
+        limiter.check_rate_limit(&key);
+
+        // Wait for interval to pass
+        std::thread::sleep(Duration::from_millis(15));
+
+        // Second request after interval
+        let (send_now, schedule_delayed) = limiter.check_rate_limit(&key);
+        assert!(send_now, "Request after interval should be allowed");
+        assert!(!schedule_delayed);
+    }
+
+    #[test]
+    fn test_mark_delayed_executed_resets_state() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut limiter = RateLimiter::new(Duration::from_millis(100), tx);
+        let key = RateLimitKey::new(1, PathBuf::from("/test"));
+
+        // First request
+        limiter.check_rate_limit(&key);
+
+        // Second request - schedules delayed
+        let (_, schedule_delayed) = limiter.check_rate_limit(&key);
+        assert!(schedule_delayed);
+
+        // Mark delayed as executed
+        limiter.mark_delayed_executed(&key);
+
+        // Third request - should schedule delayed again (not drop)
+        let (send_now, schedule_delayed) = limiter.check_rate_limit(&key);
+        assert!(!send_now);
+        assert!(schedule_delayed, "After delayed executed, new request should schedule delayed again");
+    }
+}
