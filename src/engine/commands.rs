@@ -145,6 +145,17 @@ pub enum Command {
     Mark,
     Quit,
     QuitWithoutPath,
+    /// User-defined shell command
+    UserCommand {
+        /// Display name
+        name: String,
+        /// Shell command template (with $@ placeholder)
+        cmd: String,
+        /// Run in foreground (suspend terminal)
+        interactive: bool,
+        /// Separator for $@ expansion
+        separator: String,
+    },
     None,
 }
 
@@ -191,6 +202,7 @@ impl Display for Command {
             Command::Mark => write!(f, "mark selected item"),
             Command::Quit => write!(f, "quit"),
             Command::QuitWithoutPath => write!(f, "quit without changing path"),
+            Command::UserCommand { name, .. } => write!(f, "{}", name),
             Command::None => write!(f, "no command"),
         }
     }
@@ -293,6 +305,19 @@ impl CommandParser {
         );
 
         parser
+    }
+
+    /// Add user-defined commands from config
+    pub fn add_user_commands(&mut self, commands: &crate::command_queue::CommandsConfig) {
+        for (name, entry) in commands {
+            let cmd = Command::UserCommand {
+                name: name.clone(),
+                cmd: entry.cmd.clone(),
+                interactive: entry.interactive,
+                separator: entry.separator.clone(),
+            };
+            self.insert(entry.keys.clone(), cmd);
+        }
     }
 
     pub fn new() -> Self {

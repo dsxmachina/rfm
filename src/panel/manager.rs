@@ -11,12 +11,24 @@ use log::{debug, error, info, trace, Level};
 use tempfile::TempDir;
 
 use crate::{
+    command_queue::QueuedCommand,
     config::color::{color_dir_path, color_main},
     engine::commands::{CloseCmd, Command, CommandParser},
     engine::OpenEngine,
     logger::LogBuffer,
     util::{copy_item, get_destination, move_item, print_metadata},
 };
+
+/// Expand the command template by replacing $@ with the given paths
+fn expand_command(cmd: &str, paths: &[PathBuf], separator: &str) -> String {
+    let paths_str: String = paths
+        .iter()
+        .map(|p| shell_escape::escape(p.to_string_lossy()))
+        .collect::<Vec<_>>()
+        .join(separator);
+
+    cmd.replace("$@", &paths_str)
+}
 
 use self::console::{Console, ConsoleOp, DirConsole, Zoxide};
 
@@ -128,6 +140,9 @@ pub struct PanelManager {
 
     /// Receiver for incoming preview-panels
     prev_rx: mpsc::Receiver<(PreviewPanel, PanelState)>,
+
+    /// Sender for queueing background commands
+    command_tx: Option<mpsc::UnboundedSender<QueuedCommand>>,
 }
 
 impl PanelManager {
@@ -140,6 +155,7 @@ impl PanelManager {
         prev_rx: mpsc::Receiver<(PreviewPanel, PanelState)>,
         logger: LogBuffer,
         opener: OpenEngine,
+        command_tx: Option<mpsc::UnboundedSender<QueuedCommand>>,
     ) -> Result<Self> {
         // Prepare terminal
         let stdout = stdout();
@@ -194,6 +210,7 @@ impl PanelManager {
             stdout,
             dir_rx,
             prev_rx,
+            command_tx,
         })
     }
 
@@ -1070,6 +1087,61 @@ impl PanelManager {
                         }
                         Command::QuitWithoutPath => {
                             return Ok(Some(CloseCmd::Quit));
+                        }
+                        Command::UserCommand {
+                            name,
+                            cmd,
+                            interactive,
+                            separator,
+                        } => {
+                            let paths = self.marked_or_selected();
+                            let expanded_cmd = expand_command(&cmd, &paths, &separator);
+                            let working_dir = self.center.panel().path().to_path_buf();
+
+                            if interactive {
+                                // Run interactively in foreground
+                                info!("Running interactive command '{}': {}", name, expanded_cmd);
+                                if let Err(e) =
+                                    std::env::set_current_dir(&working_dir)
+                                {
+                                    error!("Failed to set working directory: {e}");
+                                }
+                                // TODO: Implement terminal suspend/resume for interactive commands
+                                // For now, just run it blocking
+                                let result = std::process::Command::new("sh")
+                                    .arg("-c")
+                                    .arg(&expanded_cmd)
+                                    .current_dir(&working_dir)
+                                    .status();
+                                match result {
+                                    Ok(status) => {
+                                        if status.success() {
+                                            info!("Command '{}' completed successfully", name);
+                                        } else {
+                                            let code = status.code().unwrap_or(-1);
+                                            error!("Command '{}' failed with exit code {}", name, code);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to run command '{}': {}", name, e);
+                                    }
+                                }
+                                self.redraw_everything();
+                            } else {
+                                // Queue for background execution
+                                info!("Queueing command '{}': {}", name, expanded_cmd);
+                                if let Some(ref cmd_tx) = self.command_tx {
+                                    let queued = crate::command_queue::QueuedCommand {
+                                        name,
+                                        cmd: expanded_cmd,
+                                        working_dir,
+                                    };
+                                    if let Err(e) = cmd_tx.send(queued) {
+                                        error!("Failed to queue command: {}", e);
+                                    }
+                                }
+                            }
+                            self.unmark_all_items();
                         }
                         Command::None => {}
                     }

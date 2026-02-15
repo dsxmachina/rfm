@@ -32,6 +32,7 @@ use util::xdg_config_home;
 
 use crate::config::color::{colors_from_config, colors_from_default};
 
+mod command_queue;
 mod config;
 mod content;
 mod engine;
@@ -139,6 +140,7 @@ async fn main() -> anyhow::Result<()> {
     let mut rate_limit_interval_ms = DEFAULT_RATE_LIMIT_INTERVAL_MS;
     let mut style_config = None;
     let mut fancy_icons = false;
+    let mut user_commands = command_queue::CommandsConfig::default();
 
     if let Ok(content) = std::fs::read_to_string(&general_config_file) {
         match toml::from_str::<config::Config>(&content) {
@@ -153,6 +155,10 @@ async fn main() -> anyhow::Result<()> {
                     info!("Using Nerd Font icons");
                 }
                 style_config = Some(config.styles);
+                user_commands = config.commands;
+                if !user_commands.is_empty() {
+                    info!("Loaded {} user commands", user_commands.len());
+                }
             }
             Err(e) => {
                 warn!("Configuration error: {e}. Using default color config");
@@ -174,7 +180,7 @@ async fn main() -> anyhow::Result<()> {
         file.write_all(&default.data)?;
     }
 
-    let parser = if let Ok(content) = std::fs::read_to_string(&key_config_file) {
+    let mut parser = if let Ok(content) = std::fs::read_to_string(&key_config_file) {
         match toml::from_str(&content) {
             Ok(key_config) => {
                 info!("Using keyboard config: {}", key_config_file.display());
@@ -192,6 +198,9 @@ async fn main() -> anyhow::Result<()> {
         );
         CommandParser::default_bindings()
     };
+
+    // Add user-defined commands from config
+    parser.add_user_commands(&user_commands);
 
     // --- Opener configuration
     let open_config_file = config_dir.join("open.toml");
@@ -293,6 +302,14 @@ async fn main() -> anyhow::Result<()> {
     let dir_mngr_handle = tokio::spawn(dir_manager.run());
     let prev_mngr_handle = tokio::spawn(preview_manager.run());
 
+    // Create command executor for background shell commands
+    let (command_tx, command_rx) = mpsc::unbounded_channel();
+    let (command_status_tx, _command_status_rx) = tokio::sync::watch::channel(
+        command_queue::QueueStatus::default(),
+    );
+    let command_executor = command_queue::CommandExecutor::new(command_rx, command_status_tx);
+    let cmd_exec_handle = tokio::spawn(command_executor.run());
+
     let miller_panels = init_miller_panels(
         starting_path.clone(),
         directory_cache,
@@ -309,6 +326,7 @@ async fn main() -> anyhow::Result<()> {
         prev_rx,
         logger.clone(),
         opener,
+        Some(command_tx),
     )?;
     let panel_handle = tokio::spawn(panel_manager.run());
 
@@ -322,6 +340,7 @@ async fn main() -> anyhow::Result<()> {
     // which makes these two guys instantly return:
     dir_mngr_handle.abort();
     prev_mngr_handle.abort();
+    cmd_exec_handle.abort();
 
     // Be a good citizen, cleanup
     if keyboard_enhancement_enabled {

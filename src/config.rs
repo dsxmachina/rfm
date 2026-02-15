@@ -1,5 +1,6 @@
 use serde::Deserialize;
 
+use crate::command_queue::CommandsConfig;
 use crate::engine::styles::StyleConfig;
 
 #[derive(Deserialize, Debug)]
@@ -8,6 +9,8 @@ pub struct Config {
     pub general: GeneralConfig,
     #[serde(default)]
     pub styles: StyleConfig,
+    #[serde(default)]
+    pub commands: CommandsConfig,
 }
 
 fn default_rate_limit_interval() -> u64 {
