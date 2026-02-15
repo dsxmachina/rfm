@@ -14,6 +14,16 @@ use walkdir::WalkDir;
 use crate::panel::{
     DirElem, DirPanel, FilePreview, PanelContent, PanelState, PanelUpdate, PreviewPanel,
 };
+/*
+ * Hmm, maybe we refine the rate-limiting even more:
+ * - updates in the same directory should be relatively fast (e.g. once every 16ms)
+ * - but we also do a recursive dir-walk; this is expensive, but could be rate-limited much harder
+ * I don't know "how" we could achieve this; but I like it that if I unzip something,
+ * I see the files pop out in realtime in the filemanager.
+ * On the other hand, if the directory would contain a lot of sub-directories,
+ * we would effectively trigger a recursive walk into every directory in this case,
+ * which is absolutely unnecessary.
+ */
 
 /// Shutdown flag
 ///

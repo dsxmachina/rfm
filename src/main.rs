@@ -142,6 +142,7 @@ async fn main() -> anyhow::Result<()> {
                 colors_from_config(config.colors)?;
                 use_trash = config.general.use_trash;
                 rate_limit_interval_ms = config.general.rate_limit_interval_ms;
+                info!("Using rate-limit of {rate_limit_interval_ms}ms");
             }
             Err(e) => {
                 warn!("Configuration error: {e}. Using default color config");
