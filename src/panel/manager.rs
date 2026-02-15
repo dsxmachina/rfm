@@ -1150,7 +1150,13 @@ impl PanelManager {
                                 .parent()
                                 .map(|p| p.join(input.get()))
                                 .unwrap_or_default();
-                            if let Err(e) = std::fs::rename(from, to) {
+                            // Don't rename if it's the same path
+                            if from == to {
+                                // No-op, just exit rename mode
+                            } else if to.exists() {
+                                // Prevent overwriting existing files
+                                warn!("Cannot rename: '{}' already exists", to.display());
+                            } else if let Err(e) = std::fs::rename(from, &to) {
                                 error!("{e}");
                             }
                         }
