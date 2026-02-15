@@ -373,22 +373,6 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
         self.panel.update_content(panel);
     }
 
-    /// Freezes the panel in its current state.
-    ///
-    /// Deactivates all watchers so that the panel will receive no updates until we call "unfreeze".
-    pub fn freeze(&mut self) {
-        unwatch_path(&mut self.watcher, self.panel.path());
-    }
-
-    /// Unfreezes the panel in its current state.
-    ///
-    /// Re-activates all watchers so that the panel will receive new updates.
-    /// Also refreshes the panel in case the content has changed since the last freeze.
-    pub fn unfreeze(&mut self) {
-        watch_path(&mut self.watcher, self.panel.path());
-        self.reload();
-    }
-
     /// Updates an existing panel.
     ///
     /// The panel is directly updated without any further checks!
