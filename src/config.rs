@@ -6,9 +6,16 @@ pub struct Config {
     pub general: GeneralConfig,
 }
 
+fn default_rate_limit_interval() -> u64 {
+    500
+}
+
 #[derive(Deserialize, Debug)]
 pub struct GeneralConfig {
     pub use_trash: bool,
+    /// Rate limit interval for preview updates in milliseconds
+    #[serde(default = "default_rate_limit_interval")]
+    pub rate_limit_interval_ms: u64,
 }
 
 pub mod color {

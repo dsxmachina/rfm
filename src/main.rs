@@ -37,8 +37,8 @@ mod panel;
 mod rate_limiter;
 mod util;
 
-/// Rate limit interval for preview updates (in milliseconds)
-const RATE_LIMIT_INTERVAL_MS: u64 = 500;
+/// Default rate limit interval for preview updates (in milliseconds)
+const DEFAULT_RATE_LIMIT_INTERVAL_MS: u64 = 500;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -134,6 +134,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Weather or not we activate the trash
     let mut use_trash = false;
+    let mut rate_limit_interval_ms = DEFAULT_RATE_LIMIT_INTERVAL_MS;
 
     if let Ok(content) = std::fs::read_to_string(&general_config_file) {
         match toml::from_str::<config::Config>(&content) {
@@ -141,6 +142,7 @@ async fn main() -> anyhow::Result<()> {
                 info!("Using general config: {}", general_config_file.display());
                 colors_from_config(config.colors)?;
                 use_trash = config.general.use_trash;
+                rate_limit_interval_ms = config.general.rate_limit_interval_ms;
             }
             Err(e) => {
                 warn!("Configuration error: {e}. Using default color config");
@@ -237,7 +239,7 @@ async fn main() -> anyhow::Result<()> {
     let (directory_input_tx, directory_input_rx) = mpsc::unbounded_channel();
 
     // Create rate limiters
-    let rate_limit_interval = Duration::from_millis(RATE_LIMIT_INTERVAL_MS);
+    let rate_limit_interval = Duration::from_millis(rate_limit_interval_ms);
     let preview_rate_limiter = rate_limiter::RateLimiter::new(rate_limit_interval, preview_tx);
     let directory_rate_limiter = rate_limiter::RateLimiter::new(rate_limit_interval, directory_tx);
 
