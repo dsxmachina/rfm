@@ -34,7 +34,6 @@ mod content;
 mod engine;
 mod logger;
 mod panel;
-mod rate_limiter;
 mod util;
 
 /// Default rate limit interval for preview updates (in milliseconds)
@@ -227,34 +226,30 @@ async fn main() -> anyhow::Result<()> {
     let directory_cache = PanelCache::with_size(16384);
     let preview_cache = PanelCache::with_size(4096);
 
+    // Channels from managers to PanelManager (bounded)
     let (dir_tx, dir_rx) = mpsc::channel(32);
     let (prev_tx, prev_rx) = mpsc::channel(32);
 
-    // Channels from rate-limiters to managers
-    let (preview_tx, preview_rx) = mpsc::unbounded_channel();
+    // Channels from panels to managers (unbounded, rate-limited inside managers)
     let (directory_tx, directory_rx) = mpsc::unbounded_channel();
+    let (preview_tx, preview_rx) = mpsc::unbounded_channel();
 
-    // Channels from panels to rate-limiters
-    let (preview_input_tx, preview_input_rx) = mpsc::unbounded_channel();
-    let (directory_input_tx, directory_input_rx) = mpsc::unbounded_channel();
-
-    // Create rate limiters
     let rate_limit_interval = Duration::from_millis(rate_limit_interval_ms);
-    let preview_rate_limiter = rate_limiter::RateLimiter::new(rate_limit_interval, preview_tx);
-    let directory_rate_limiter = rate_limiter::RateLimiter::new(rate_limit_interval, directory_tx);
-
-    // Spawn rate limiter tasks
-    tokio::spawn(preview_rate_limiter.run(preview_input_rx));
-    tokio::spawn(directory_rate_limiter.run(directory_input_rx));
 
     let dir_manager = content::DirManager::new(
         directory_cache.clone(),
         preview_cache.clone(),
         dir_tx,
         directory_rx,
+        rate_limit_interval,
     );
 
-    let preview_manager = content::PreviewManager::new(preview_cache.clone(), prev_tx, preview_rx);
+    let preview_manager = content::PreviewManager::new(
+        preview_cache.clone(),
+        prev_tx,
+        preview_rx,
+        rate_limit_interval,
+    );
 
     let dir_mngr_handle = tokio::spawn(dir_manager.run());
     let prev_mngr_handle = tokio::spawn(preview_manager.run());
@@ -263,8 +258,8 @@ async fn main() -> anyhow::Result<()> {
         starting_path.clone(),
         directory_cache,
         preview_cache,
-        directory_input_tx,
-        preview_input_tx,
+        directory_tx,
+        preview_tx,
     );
 
     let panel_manager = PanelManager::new(
