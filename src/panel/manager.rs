@@ -626,7 +626,6 @@ impl PanelManager {
                 // Solution:
                 // "Freeze" the panel and deactivate the watchers while the open function is blocked.
                 info!("Opening '{}'", selected.display());
-                self.center.freeze();
 
                 // Change working directory so that child processes gets spawned from the currently active directory.
                 if let Err(e) = std::env::set_current_dir(self.center.panel().path()) {
@@ -636,7 +635,6 @@ impl PanelManager {
                     /* failed to open selected */
                     error!("Opening failed: {e}");
                 }
-                self.center.unfreeze();
                 self.redraw_everything();
             }
             // self.stack.push(Operation::Move(Movement::Right));
@@ -1045,11 +1043,9 @@ impl PanelManager {
                             if let Err(e) = std::env::set_current_dir(self.center.panel().path()) {
                                 error!("Failed to set working-directory for process: {e}");
                             }
-                            self.center.freeze();
                             if let Err(e) = self.opener.zip(items) {
                                 warn!("Failed to create zip-archive: {e}");
                             }
-                            self.center.unfreeze();
                             self.redraw_center();
                         }
                         Command::Tar => {
@@ -1057,15 +1053,12 @@ impl PanelManager {
                             if let Err(e) = std::env::set_current_dir(self.center.panel().path()) {
                                 error!("Failed to set working-directory for process: {e}");
                             }
-                            self.center.freeze();
                             if let Err(e) = self.opener.tar(items) {
                                 warn!("Failed to create tar-archive: {e}");
                             }
-                            self.center.unfreeze();
                             self.redraw_center();
                         }
                         Command::Extract => {
-                            self.center.freeze();
                             if let Some(archive) = self.center.panel().selected_path() {
                                 if let Err(e) =
                                     std::env::set_current_dir(self.center.panel().path())
@@ -1079,7 +1072,6 @@ impl PanelManager {
                             } else {
                                 warn!("Nothing extractable is selected");
                             }
-                            self.center.unfreeze();
                         }
                         Command::Quit => {
                             return Ok(Some(CloseCmd::QuitWithPath {
