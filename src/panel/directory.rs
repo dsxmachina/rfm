@@ -586,20 +586,22 @@ impl Draw for DirPanel {
 
                 // Insert preview at the partition point
                 if visible_idx == partition && !new_name.is_empty() {
-                    // Format: " symbol name suffix "
+                    // Format: " symbol name suffix " - rendered inverted like selection
                     let suffix_len = original_suffix.chars().count();
                     let name_width = (width as usize)
                         .saturating_sub(4) // lead + symbol overhead
                         .saturating_sub(suffix_len)
-                        .saturating_sub(2); // spacing
+                        .saturating_sub(1); // spacing
 
                     queue!(
                         stdout,
                         cursor::MoveTo(x_range.start, y_range.start + y_offset),
                         print_vertical_bar(),
-                        PrintStyledContent(format!(" {symbol}").with(color_rename())),
-                        PrintStyledContent(new_name.exact_width(name_width).with(color_rename())),
-                        PrintStyledContent(format!(" {} ", original_suffix).with(color_rename())),
+                        PrintStyledContent(
+                            format!(" {symbol}{} {} ", new_name.exact_width(name_width), original_suffix)
+                                .with(color_rename())
+                                .reverse()
+                        ),
                     )?;
                     y_offset += 1;
 
@@ -635,9 +637,11 @@ impl Draw for DirPanel {
                     stdout,
                     cursor::MoveTo(x_range.start, y_range.start + y_offset),
                     print_vertical_bar(),
-                    PrintStyledContent(format!(" {symbol}").with(color_rename())),
-                    PrintStyledContent(new_name.exact_width(name_width).with(color_rename())),
-                    PrintStyledContent(format!(" {} ", original_suffix).with(color_rename())),
+                    PrintStyledContent(
+                        format!(" {symbol}{} {} ", new_name.exact_width(name_width), original_suffix)
+                            .with(color_rename())
+                            .reverse()
+                    ),
                 )?;
                 y_offset += 1;
             }
