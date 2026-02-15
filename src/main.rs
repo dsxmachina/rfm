@@ -3,12 +3,15 @@ use clap::Parser;
 use content::{PanelCache, SHUTDOWN_FLAG};
 use crossterm::{
     cursor,
-    event::DisableMouseCapture,
+    event::{
+        DisableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+        PushKeyboardEnhancementFlags,
+    },
     terminal::{
         disable_raw_mode, enable_raw_mode, Clear, ClearType, DisableLineWrap, EnableLineWrap,
         EnterAlternateScreen, LeaveAlternateScreen,
     },
-    QueueableCommand,
+    ExecutableCommand, QueueableCommand,
 };
 use engine::{
     commands::{CloseCmd, CommandParser},
@@ -218,6 +221,17 @@ async fn main() -> anyhow::Result<()> {
 
     enable_raw_mode()?;
 
+    // Enable Kitty keyboard protocol for proper modifier detection (Shift+Backspace, etc.)
+    // This only works on terminals that support it (Kitty, WezTerm, foot, Alacritty, etc.)
+    let keyboard_enhancement_enabled = stdout
+        .execute(PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
+        ))
+        .is_ok();
+    if keyboard_enhancement_enabled {
+        info!("Kitty keyboard protocol enabled");
+    }
+
     stdout
         .queue(DisableMouseCapture)?
         .queue(DisableLineWrap)?
@@ -297,6 +311,9 @@ async fn main() -> anyhow::Result<()> {
     prev_mngr_handle.abort();
 
     // Be a good citizen, cleanup
+    if keyboard_enhancement_enabled {
+        let _ = stdout.execute(PopKeyboardEnhancementFlags);
+    }
     stdout
         .queue(EnableLineWrap)?
         .queue(Clear(ClearType::All))?

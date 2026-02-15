@@ -61,17 +61,43 @@ impl Input {
         assert!(self.input.is_char_boundary(self.cursor));
     }
 
+    /// Bulk delete helper: either delete left of cursor, or keep only extension
+    fn bulk_delete(&mut self) {
+        if self.cursor == self.input.len() {
+            // Cursor at end: keep only the file extension
+            if let Some(dot_pos) = self.input.rfind('.') {
+                self.input = self.input[dot_pos..].to_owned();
+                self.cursor = 0;
+            } else {
+                // No extension found, clear everything
+                self.input.clear();
+                self.cursor = 0;
+            }
+        } else {
+            // Cursor not at end: delete everything left of cursor
+            self.input = self.input[self.cursor..].to_owned();
+            self.cursor = 0;
+        }
+    }
+
     /// Updates the input field
     pub fn update(&mut self, key_code: KeyCode, modifiers: KeyModifiers) {
+        let has_shift = modifiers.contains(KeyModifiers::SHIFT);
+        let has_ctrl = modifiers.contains(KeyModifiers::CONTROL);
         log::info!(
-            "input-update: {}, input-len: {}, cursor: {}",
+            "input-update: {}, input-len: {}, cursor: {}, shift: {has_shift}, ctrl: {has_ctrl}, keycode: {:?}",
             self.input,
             self.input.len(),
-            self.cursor
+            self.cursor,
+            key_code
         );
         match key_code {
+            // Ctrl+U: bulk delete (common Unix shortcut for "kill line")
+            KeyCode::Char('u') if has_ctrl => {
+                self.bulk_delete();
+            }
             KeyCode::Char(c) => {
-                let insert_char = if modifiers.contains(KeyModifiers::SHIFT) {
+                let insert_char = if has_shift {
                     c.to_ascii_uppercase()
                 } else {
                     c.to_ascii_lowercase()
@@ -84,7 +110,11 @@ impl Input {
                 self.increase_cursor();
             }
             KeyCode::Backspace => {
-                if self.cursor > 0 {
+                if has_shift || has_ctrl {
+                    // Shift+Backspace or Ctrl+Backspace: bulk delete
+                    self.bulk_delete();
+                } else if self.cursor > 0 {
+                    // Normal backspace: delete one character
                     self.decrease_cursor();
                     self.input.remove(self.cursor);
                 }
