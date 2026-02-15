@@ -71,203 +71,207 @@ mod unicode_icons {
 // Nerd Font Icons (require a patched Nerd Font)
 // Icons from mime-types.md reference (Material Design Icons)
 // =============================================================================
+//
+// NOTE: All of these are not standard unicode, so `unicode_width` will return the wrong
+// width for these symbols. This is why (as an easy solution) we simply add a space " " at the end,
+// to account for the correct width of the symbol.
 #[allow(dead_code)]
 mod nerd_icons {
     // Documents
-    pub const TEXT: &str = "\u{F0219}";        // 󰈙 - md file
-    pub const PDF: &str = "\u{F0226}";         // 󰈦 - md file_pdf
-    pub const MARKDOWN: &str = "\u{F0354}";    // 󰍔 - md markdown
-    pub const WORD: &str = "\u{F022C}";        // 󰈬 - md file_word
-    pub const EXCEL: &str = "\u{F021B}";       // 󰈛 - md file_excel
-    pub const POWERPOINT: &str = "\u{F0227}";  // 󰈧 - md file_powerpoint
-    pub const OPENDOC_TEXT: &str = "\u{F022C}";// 󰈬 - md file_word (ODT)
-    pub const OPENDOC_SHEET: &str = "\u{F021B}";// 󰈛 - md file_excel (ODS)
-    pub const OPENDOC_PRES: &str = "\u{F0227}";// 󰈧 - md file_powerpoint (ODP)
-    pub const RTF: &str = "\u{F0219}";         // 󰈙 - md file
-    pub const CSV: &str = "\u{F021B}";         // 󰈛 - md file_excel
-    pub const LATEX: &str = "\u{F0219}";       // 󰈙 - md file
-    pub const BIBTEX: &str = "\u{F0219}";      // 󰈙 - md file
+    pub const TEXT: &str = "\u{F0219} ";        // 󰈙 - md file
+    pub const PDF: &str = "\u{F0226} ";         // 󰈦 - md file_pdf
+    pub const MARKDOWN: &str = "\u{F0354} ";    // 󰍔 - md markdown
+    pub const WORD: &str = "\u{F022C} ";        // 󰈬 - md file_word
+    pub const EXCEL: &str = "\u{F021B} ";       // 󰈛 - md file_excel
+    pub const POWERPOINT: &str = "\u{F0227} ";  // 󰈧 - md file_powerpoint
+    pub const OPENDOC_TEXT: &str = "\u{F022C} ";// 󰈬 - md file_word (ODT)
+    pub const OPENDOC_SHEET: &str = "\u{F021B} ";// 󰈛 - md file_excel (ODS)
+    pub const OPENDOC_PRES: &str = "\u{F0227} ";// 󰈧 - md file_powerpoint (ODP)
+    pub const RTF: &str = "\u{F0219} ";         // 󰈙 - md file
+    pub const CSV: &str = "\u{F021B} ";         // 󰈛 - md file_excel
+    pub const LATEX: &str = "\u{F0219} ";       // 󰈙 - md file
+    pub const BIBTEX: &str = "\u{F0219} ";      // 󰈙 - md file
 
     // Images
-    pub const IMAGE: &str = "\u{F021F}";       // 󰈟 - md file_image
-    pub const JPEG: &str = "\u{F021F}";        // 󰈟 - md file_image
-    pub const PNG: &str = "\u{F021F}";         // 󰈟 - md file_image
-    pub const GIF: &str = "\u{F0D78}";         // 󰵸 - md gif
-    pub const BMP: &str = "\u{F021F}";         // 󰈟 - md file_image
-    pub const SVG: &str = "\u{F0721}";         // 󰜡 - md svg
-    pub const WEBP: &str = "\u{F021F}";        // 󰈟 - md file_image
-    pub const ICO: &str = "\u{F0039}";         // 󰀹 - md image_filter_vintage
-    pub const TIFF: &str = "\u{F021F}";        // 󰈟 - md file_image
-    pub const PSD: &str = "\u{F01E5}";         // 󰇥 - md image_edit
-    pub const XCF: &str = "\u{F021F}";         // 󰈟 - md file_image (GIMP)
-    pub const RAW: &str = "\u{F021F}";         // 󰈟 - md file_image
-    pub const HEIC: &str = "\u{F021F}";        // 󰈟 - md file_image
-    pub const AVIF: &str = "\u{F021F}";        // 󰈟 - md file_image
+    pub const IMAGE: &str = "\u{F021F} ";       // 󰈟 - md file_image
+    pub const JPEG: &str = "\u{F021F} ";        // 󰈟 - md file_image
+    pub const PNG: &str = "\u{F021F} ";         // 󰈟 - md file_image
+    pub const GIF: &str = "\u{F0D78} ";         // 󰵸 - md gif
+    pub const BMP: &str = "\u{F021F} ";         // 󰈟 - md file_image
+    pub const SVG: &str = "\u{F0721} ";         // 󰜡 - md svg
+    pub const WEBP: &str = "\u{F021F} ";        // 󰈟 - md file_image
+    pub const ICO: &str = "\u{F0039} ";         // 󰀹 - md image_filter_vintage
+    pub const TIFF: &str = "\u{F021F} ";        // 󰈟 - md file_image
+    pub const PSD: &str = "\u{F01E5} ";         // 󰇥 - md image_edit
+    pub const XCF: &str = "\u{F021F} ";         // 󰈟 - md file_image (GIMP)
+    pub const RAW: &str = "\u{F021F} ";         // 󰈟 - md file_image
+    pub const HEIC: &str = "\u{F021F} ";        // 󰈟 - md file_image
+    pub const AVIF: &str = "\u{F021F} ";        // 󰈟 - md file_image
 
     // Audio
-    pub const AUDIO: &str = "\u{F0386}";       // 󰎆 - md file_music
-    pub const MP3: &str = "\u{F0386}";         // 󰎆 - md file_music
-    pub const FLAC: &str = "\u{F0386}";        // 󰎆 - md file_music
-    pub const WAV: &str = "\u{F0386}";         // 󰎆 - md file_music
-    pub const OGG: &str = "\u{F0386}";         // 󰎆 - md file_music
-    pub const AAC: &str = "\u{F0386}";         // 󰎆 - md file_music
-    pub const M4A: &str = "\u{F0386}";         // 󰎆 - md file_music
-    pub const OPUS: &str = "\u{F0386}";        // 󰎆 - md file_music
-    pub const MIDI: &str = "\u{F0386}";        // 󰎆 - md file_music
-    pub const AIFF: &str = "\u{F0386}";        // 󰎆 - md file_music
-    pub const WMA: &str = "\u{F0386}";         // 󰎆 - md file_music
+    pub const AUDIO: &str = "\u{F0386} ";       // 󰎆 - md file_music
+    pub const MP3: &str = "\u{F0386} ";         // 󰎆 - md file_music
+    pub const FLAC: &str = "\u{F0386} ";        // 󰎆 - md file_music
+    pub const WAV: &str = "\u{F0386} ";         // 󰎆 - md file_music
+    pub const OGG: &str = "\u{F0386} ";         // 󰎆 - md file_music
+    pub const AAC: &str = "\u{F0386} ";         // 󰎆 - md file_music
+    pub const M4A: &str = "\u{F0386} ";         // 󰎆 - md file_music
+    pub const OPUS: &str = "\u{F0386} ";        // 󰎆 - md file_music
+    pub const MIDI: &str = "\u{F0386} ";        // 󰎆 - md file_music
+    pub const AIFF: &str = "\u{F0386} ";        // 󰎆 - md file_music
+    pub const WMA: &str = "\u{F0386} ";         // 󰎆 - md file_music
 
     // Video
-    pub const VIDEO: &str = "\u{F0567}";       // 󰕧 - md file_video
-    pub const MP4: &str = "\u{F0567}";         // 󰕧 - md file_video
-    pub const MKV: &str = "\u{F0567}";         // 󰕧 - md file_video
-    pub const AVI: &str = "\u{F0567}";         // 󰕧 - md file_video
-    pub const MOV: &str = "\u{F0567}";         // 󰕧 - md file_video
-    pub const WMV: &str = "\u{F0567}";         // 󰕧 - md file_video
-    pub const FLV: &str = "\u{F0567}";         // 󰕧 - md file_video
-    pub const WEBM: &str = "\u{F0567}";        // 󰕧 - md file_video
-    pub const MPEG: &str = "\u{F0567}";        // 󰕧 - md file_video
-    pub const THREE_GPP: &str = "\u{F0567}";   // 󰕧 - md file_video
+    pub const VIDEO: &str = "\u{F0567} ";       // 󰕧 - md file_video
+    pub const MP4: &str = "\u{F0567} ";         // 󰕧 - md file_video
+    pub const MKV: &str = "\u{F0567} ";         // 󰕧 - md file_video
+    pub const AVI: &str = "\u{F0567} ";         // 󰕧 - md file_video
+    pub const MOV: &str = "\u{F0567} ";         // 󰕧 - md file_video
+    pub const WMV: &str = "\u{F0567} ";         // 󰕧 - md file_video
+    pub const FLV: &str = "\u{F0567} ";         // 󰕧 - md file_video
+    pub const WEBM: &str = "\u{F0567} ";        // 󰕧 - md file_video
+    pub const MPEG: &str = "\u{F0567} ";        // 󰕧 - md file_video
+    pub const THREE_GPP: &str = "\u{F0567} ";   // 󰕧 - md file_video
 
     // Archives
-    pub const ARCHIVE: &str = "\u{F05C4}";     // 󰗄 - md folder_zip
-    pub const ZIP: &str = "\u{F05C4}";         // 󰗄 - md folder_zip
-    pub const GZIP: &str = "\u{F05C4}";        // 󰗄 - md folder_zip
-    pub const TAR: &str = "\u{F05C4}";         // 󰗄 - md folder_zip
-    pub const BZIP2: &str = "\u{F05C4}";       // 󰗄 - md folder_zip
-    pub const XZ: &str = "\u{F05C4}";          // 󰗄 - md folder_zip
-    pub const SEVENZ: &str = "\u{F05C4}";      // 󰗄 - md folder_zip
-    pub const RAR: &str = "\u{F05C4}";         // 󰗄 - md folder_zip
-    pub const ZSTD: &str = "\u{F05C4}";        // 󰗄 - md folder_zip
-    pub const LZ4: &str = "\u{F05C4}";         // 󰗄 - md folder_zip
-    pub const DEB: &str = "\u{F08DA}";         // 󰣚 - md debian
-    pub const RPM: &str = "\u{F08DB}";         // 󰣛 - md redhat
-    pub const ISO: &str = "\u{F05EE}";         // 󰗮 - md disc
-    pub const JAR: &str = "\u{F0B37}";         // 󰬷 - md language_java
-    pub const DMG: &str = "\u{F0035}";         // 󰀵 - md apple
-    pub const APK: &str = "\u{F0032}";         // 󰀲 - md android
+    pub const ARCHIVE: &str = "\u{F05C4} ";     // 󰗄 - md folder_zip
+    pub const ZIP: &str = "\u{F05C4} ";         // 󰗄 - md folder_zip
+    pub const GZIP: &str = "\u{F05C4} ";        // 󰗄 - md folder_zip
+    pub const TAR: &str = "\u{F05C4} ";         // 󰗄 - md folder_zip
+    pub const BZIP2: &str = "\u{F05C4} ";       // 󰗄 - md folder_zip
+    pub const XZ: &str = "\u{F05C4} ";          // 󰗄 - md folder_zip
+    pub const SEVENZ: &str = "\u{F05C4} ";      // 󰗄 - md folder_zip
+    pub const RAR: &str = "\u{F05C4} ";         // 󰗄 - md folder_zip
+    pub const ZSTD: &str = "\u{F05C4} ";        // 󰗄 - md folder_zip
+    pub const LZ4: &str = "\u{F05C4} ";         // 󰗄 - md folder_zip
+    pub const DEB: &str = "\u{F08DA} ";         // 󰣚 - md debian
+    pub const RPM: &str = "\u{F08DB} ";         // 󰣛 - md redhat
+    pub const ISO: &str = "\u{F05EE} ";         // 󰗮 - md disc
+    pub const JAR: &str = "\u{F0B37} ";         // 󰬷 - md language_java
+    pub const DMG: &str = "\u{F0035} ";         // 󰀵 - md apple
+    pub const APK: &str = "\u{F0032} ";         // 󰀲 - md android
 
     // Programming Languages
-    pub const PYTHON: &str = "\u{F0320}";      // 󰌠 - md language_python
-    pub const JAVA: &str = "\u{F0B37}";        // 󰬷 - md language_java
-    pub const JAVASCRIPT: &str = "\u{F031E}";  // 󰌞 - md language_javascript
-    pub const TYPESCRIPT: &str = "\u{F06E6}";  // 󰛦 - md language_typescript
-    pub const CSHARP: &str = "\u{F031B}";      // 󰌛 - md language_csharp
-    pub const CPP: &str = "\u{F0672}";         // 󰙲 - md language_cpp
-    pub const C: &str = "\u{F0671}";           // 󰙱 - md language_c
-    pub const RUST: &str = "\u{F1617}";        // 󱘗 - md language_rust
-    pub const GO: &str = "\u{F07D3}";          // 󰟓 - md language_go
-    pub const RUBY: &str = "\u{F0D2D}";        // 󰴭 - md language_ruby
-    pub const PHP: &str = "\u{F031F}";         // 󰌟 - md language_php
-    pub const SWIFT: &str = "\u{F06E5}";       // 󰛥 - md language_swift
-    pub const KOTLIN: &str = "\u{F1219}";      // 󱈙 - md language_kotlin
-    pub const SCALA: &str = "\u{F0617}";       // 󰘗 - md language_scala
-    pub const CLOJURE: &str = "\u{E76A}";      //  - dev clojure
-    pub const HASKELL: &str = "\u{F0C92}";     // 󰲒 - md language_haskell
-    pub const ERLANG: &str = "\u{E7B1}";       //  - dev erlang
-    pub const ELIXIR: &str = "\u{E62D}";       //  - seti elixir
-    pub const LUA: &str = "\u{F08B1}";         // 󰢱 - md language_lua
-    pub const PERL: &str = "\u{E769}";         //  - dev perl
-    pub const R: &str = "\u{F07D4}";           // 󰟔 - md language_r
-    pub const DART: &str = "\u{E798}";         //  - dev dart
-    pub const OCAML: &str = "\u{E67A}";        //  - seti ocaml
-    pub const FSHARP: &str = "\u{E7A7}";       //  - dev fsharp
-    pub const LISP: &str = "\u{F0172}";        // 󰅲 - md lambda
-    pub const FORTRAN: &str = "\u{F121A}";     // 󱈚 - md language_fortran
-    pub const ASSEMBLY: &str = "\u{E6AB}";     //  - seti asm
-    pub const ZIG: &str = "\u{E6A9}";          //  - seti zig
-    pub const NIM: &str = "\u{E677}";          //  - seti nim
-    pub const VLANG: &str = "\u{E6AC}";        //  - seti v
-    pub const JULIA: &str = "\u{E624}";        //  - seti julia
-    pub const CRYSTAL: &str = "\u{E62F}";      //  - seti crystal
+    pub const PYTHON: &str = "\u{F0320} ";      // 󰌠 - md language_python
+    pub const JAVA: &str = "\u{F0B37} ";        // 󰬷 - md language_java
+    pub const JAVASCRIPT: &str = "\u{F031E} ";  // 󰌞 - md language_javascript
+    pub const TYPESCRIPT: &str = "\u{F06E6} ";  // 󰛦 - md language_typescript
+    pub const CSHARP: &str = "\u{F031B} ";      // 󰌛 - md language_csharp
+    pub const CPP: &str = "\u{F0672} ";         // 󰙲 - md language_cpp
+    pub const C: &str = "\u{F0671} ";           // 󰙱 - md language_c
+    pub const RUST: &str = "\u{F1617} ";        // 󱘗 - md language_rust
+    pub const GO: &str = "\u{F07D3} ";          // 󰟓 - md language_go
+    pub const RUBY: &str = "\u{F0D2D} ";        // 󰴭 - md language_ruby
+    pub const PHP: &str = "\u{F031F} ";         // 󰌟 - md language_php
+    pub const SWIFT: &str = "\u{F06E5} ";       // 󰛥 - md language_swift
+    pub const KOTLIN: &str = "\u{F1219} ";      // 󱈙 - md language_kotlin
+    pub const SCALA: &str = "\u{F0617} ";       // 󰘗 - md language_scala
+    pub const CLOJURE: &str = "\u{E76A} ";      //  - dev clojure
+    pub const HASKELL: &str = "\u{F0C92} ";     // 󰲒 - md language_haskell
+    pub const ERLANG: &str = "\u{E7B1} ";       //  - dev erlang
+    pub const ELIXIR: &str = "\u{E62D} ";       //  - seti elixir
+    pub const LUA: &str = "\u{F08B1} ";         // 󰢱 - md language_lua
+    pub const PERL: &str = "\u{E769} ";         //  - dev perl
+    pub const R: &str = "\u{F07D4} ";           // 󰟔 - md language_r
+    pub const DART: &str = "\u{E798} ";         //  - dev dart
+    pub const OCAML: &str = "\u{E67A} ";        //  - seti ocaml
+    pub const FSHARP: &str = "\u{E7A7} ";       //  - dev fsharp
+    pub const LISP: &str = "\u{F0172} ";        // 󰅲 - md lambda
+    pub const FORTRAN: &str = "\u{F121A} ";     // 󱈚 - md language_fortran
+    pub const ASSEMBLY: &str = "\u{E6AB} ";     //  - seti asm
+    pub const ZIG: &str = "\u{E6A9} ";          //  - seti zig
+    pub const NIM: &str = "\u{E677} ";          //  - seti nim
+    pub const VLANG: &str = "\u{E6AC} ";        //  - seti v
+    pub const JULIA: &str = "\u{E624} ";        //  - seti julia
+    pub const CRYSTAL: &str = "\u{E62F} ";      //  - seti crystal
 
     // Web
-    pub const HTML: &str = "\u{F031D}";        // 󰌝 - md language_html5
-    pub const CSS: &str = "\u{F031C}";         // 󰌜 - md language_css3
-    pub const SCSS: &str = "\u{E603}";         //  - seti sass
-    pub const SASS: &str = "\u{E603}";         //  - seti sass
-    pub const LESS: &str = "\u{E60B}";         //  - seti less
-    pub const JSON: &str = "\u{F0626}";        // 󰘦 - md code_json
-    pub const XML: &str = "\u{F05C0}";         // 󰗀 - md xml
-    pub const YAML: &str = "\u{F022E}";        // 󰈮 - md file_code
-    pub const TOML: &str = "\u{F0493}";        // 󰒓 - md cog
-    pub const INI: &str = "\u{F0493}";         // 󰒓 - md cog
-    pub const XSLT: &str = "\u{F05C0}";        // 󰗀 - md xml
+    pub const HTML: &str = "\u{F031D} ";        // 󰌝 - md language_html5
+    pub const CSS: &str = "\u{F031C} ";         // 󰌜 - md language_css3
+    pub const SCSS: &str = "\u{E603} ";         //  - seti sass
+    pub const SASS: &str = "\u{E603} ";         //  - seti sass
+    pub const LESS: &str = "\u{E60B} ";         //  - seti less
+    pub const JSON: &str = "\u{F0626} ";        // 󰘦 - md code_json
+    pub const XML: &str = "\u{F05C0} ";         // 󰗀 - md xml
+    pub const YAML: &str = "\u{F022E} ";        // 󰈮 - md file_code
+    pub const TOML: &str = "\u{F0493} ";        // 󰒓 - md cog
+    pub const INI: &str = "\u{F0493} ";         // 󰒓 - md cog
+    pub const XSLT: &str = "\u{F05C0} ";        // 󰗀 - md xml
 
     // Shell & Config
-    pub const SHELL: &str = "\u{F018D}";       // 󰆍 - md console
-    pub const BASH: &str = "\u{F1183}";        // 󱆃 - md bash
-    pub const ZSH: &str = "\u{F1183}";         // 󱆃 - md bash
-    pub const FISH: &str = "\u{F1183}";        // 󱆃 - md bash
-    pub const POWERSHELL: &str = "\u{F0A0A}";  // 󰨊 - md powershell
-    pub const BATCH: &str = "\u{F018D}";       // 󰆍 - md console
-    pub const AWK: &str = "\u{F018D}";         // 󰆍 - md console
-    pub const SED: &str = "\u{F018D}";         // 󰆍 - md console
-    pub const MAKEFILE: &str = "\u{F1064}";    // 󱁤 - md file_cog
-    pub const CMAKE: &str = "\u{F106F}";       // 󱁯 - md cmake
-    pub const DOCKER: &str = "\u{F0868}";      // 󰡨 - md docker
-    pub const VAGRANT: &str = "\u{F27D}";      //  - custom vagrant
-    pub const TERRAFORM: &str = "\u{E69A}";    //  - seti terraform
-    pub const ANSIBLE: &str = "\u{E6A0}";      //  - seti ansible
-    pub const NGINX: &str = "\u{E776}";        //  - dev nginx
-    pub const APACHE: &str = "\u{E769}";       //  - fa server
-    pub const SYSTEMD: &str = "\u{F033A}";     // 󰌺 - md linux
+    pub const SHELL: &str = "\u{F018D} ";       // 󰆍 - md console
+    pub const BASH: &str = "\u{F1183} ";        // 󱆃 - md bash
+    pub const ZSH: &str = "\u{F1183} ";         // 󱆃 - md bash
+    pub const FISH: &str = "\u{F1183} ";        // 󱆃 - md bash
+    pub const POWERSHELL: &str = "\u{F0A0A} ";  // 󰨊 - md powershell
+    pub const BATCH: &str = "\u{F018D} ";       // 󰆍 - md console
+    pub const AWK: &str = "\u{F018D} ";         // 󰆍 - md console
+    pub const SED: &str = "\u{F018D} ";         // 󰆍 - md console
+    pub const MAKEFILE: &str = "\u{F1064} ";    // 󱁤 - md file_cog
+    pub const CMAKE: &str = "\u{F106F} ";       // 󱁯 - md cmake
+    pub const DOCKER: &str = "\u{F0868} ";      // 󰡨 - md docker
+    pub const VAGRANT: &str = "\u{F27D} ";      //  - custom vagrant
+    pub const TERRAFORM: &str = "\u{E69A} ";    //  - seti terraform
+    pub const ANSIBLE: &str = "\u{E6A0} ";      //  - seti ansible
+    pub const NGINX: &str = "\u{E776} ";        //  - dev nginx
+    pub const APACHE: &str = "\u{E769} ";       //  - fa server
+    pub const SYSTEMD: &str = "\u{F033A} ";     // 󰌺 - md linux
 
     // Databases
-    pub const SQL: &str = "\u{F01BC}";         // 󰆼 - md database
-    pub const SQLITE: &str = "\u{F01BC}";      // 󰆼 - md database
-    pub const MYSQL: &str = "\u{F01BC}";       // 󰆼 - md database
-    pub const POSTGRES: &str = "\u{F01BC}";    // 󰆼 - md database
-    pub const MONGODB: &str = "\u{F01BC}";     // 󰆼 - md database
-    pub const REDIS: &str = "\u{F01BC}";       // 󰆼 - md database
+    pub const SQL: &str = "\u{F01BC} ";         // 󰆼 - md database
+    pub const SQLITE: &str = "\u{F01BC} ";      // 󰆼 - md database
+    pub const MYSQL: &str = "\u{F01BC} ";       // 󰆼 - md database
+    pub const POSTGRES: &str = "\u{F01BC} ";    // 󰆼 - md database
+    pub const MONGODB: &str = "\u{F01BC} ";     // 󰆼 - md database
+    pub const REDIS: &str = "\u{F01BC} ";       // 󰆼 - md database
 
     // Fonts
-    pub const FONT: &str = "\u{F06D6}";        // 󰛖 - md format_font
-    pub const TTF: &str = "\u{F06D6}";         // 󰛖 - md format_font
-    pub const OTF: &str = "\u{F06D6}";         // 󰛖 - md format_font
-    pub const WOFF: &str = "\u{F06D6}";        // 󰛖 - md format_font
-    pub const WOFF2: &str = "\u{F06D6}";       // 󰛖 - md format_font
-    pub const EOT: &str = "\u{F06D6}";         // 󰛖 - md format_font
+    pub const FONT: &str = "\u{F06D6} ";        // 󰛖 - md format_font
+    pub const TTF: &str = "\u{F06D6} ";         // 󰛖 - md format_font
+    pub const OTF: &str = "\u{F06D6} ";         // 󰛖 - md format_font
+    pub const WOFF: &str = "\u{F06D6} ";        // 󰛖 - md format_font
+    pub const WOFF2: &str = "\u{F06D6} ";       // 󰛖 - md format_font
+    pub const EOT: &str = "\u{F06D6} ";         // 󰛖 - md format_font
 
     // Executables & Libraries
-    pub const EXECUTABLE: &str = "\u{F0614}";  // 󰘔 - md application
-    pub const WINDOWS_EXE: &str = "\u{F05B3}"; // 󰖳 - md microsoft_windows
-    pub const SHARED_LIB: &str = "\u{F0614}";  // 󰘔 - md application
-    pub const OBJECT: &str = "\u{F0224}";      // 󰈤 - md file
-    pub const WASM: &str = "\u{E6A1}";         //  - seti wasm
+    pub const EXECUTABLE: &str = "\u{F0614} ";  // 󰘔 - md application
+    pub const WINDOWS_EXE: &str = "\u{F05B3} "; // 󰖳 - md microsoft_windows
+    pub const SHARED_LIB: &str = "\u{F0614} ";  // 󰘔 - md application
+    pub const OBJECT: &str = "\u{F0224} ";      // 󰈤 - md file
+    pub const WASM: &str = "\u{E6A1} ";         //  - seti wasm
 
     // Version Control
-    pub const GIT: &str = "\u{F02A2}";         // 󰊢 - md git
-    pub const GITIGNORE: &str = "\u{F02A2}";   // 󰊢 - md git
+    pub const GIT: &str = "\u{F02A2} ";         // 󰊢 - md git
+    pub const GITIGNORE: &str = "\u{F02A2} ";   // 󰊢 - md git
 
     // Misc
-    pub const CERTIFICATE: &str = "\u{F0124}"; // 󰄤 - md certificate
-    pub const KEY: &str = "\u{F0306}";         // 󰌆 - md key
-    pub const LOCK: &str = "\u{F033E}";        // 󰌾 - md lock
-    pub const LOG: &str = "\u{F0331}";         // 󰌱 - md file_document
-    pub const BINARY: &str = "\u{F0224}";      // 󰈤 - md file
-    pub const DIFF: &str = "\u{F0224}";        // 󰈤 - md file
-    pub const PATCH: &str = "\u{F0224}";       // 󰈤 - md file
-    pub const LICENSE: &str = "\u{F0FC3}";     // 󰿃 - md license
-    pub const README: &str = "\u{F00BA}";      // 󰂺 - md book_open
-    pub const TODO: &str = "\u{F0AE}";         //  - fa tasks
-    pub const TORRENT: &str = "\u{E796}";      //  - seti bittorrent
-    pub const CALENDAR: &str = "\u{F00F5}";    // 󰃵 - md calendar
-    pub const CONTACT: &str = "\u{F007}";      //  - fa user
-    pub const EMAIL: &str = "\u{F01EE}";       // 󰇮 - md email
-    pub const PGP: &str = "\u{F0306}";         // 󰌆 - md key
-    pub const KML: &str = "\u{F018B}";         // 󰆋 - md google_earth
-    pub const ENV: &str = "\u{F066A}";         // 󰙪 - md file_cog
-    pub const EDITORCONFIG: &str = "\u{F0493}";// 󰒓 - md cog
-    pub const NPMRC: &str = "\u{F0399}";       // 󰎙 - md npm
-    pub const CARGO: &str = "\u{F1617}";       // 󱘗 - md language_rust
-    pub const GOMOD: &str = "\u{F07D3}";       // 󰟓 - md language_go
+    pub const CERTIFICATE: &str = "\u{F0124} "; // 󰄤 - md certificate
+    pub const KEY: &str = "\u{F0306} ";         // 󰌆 - md key
+    pub const LOCK: &str = "\u{F033E} ";        // 󰌾 - md lock
+    pub const LOG: &str = "\u{F0331} ";         // 󰌱 - md file_document
+    pub const BINARY: &str = "\u{F0224} ";      // 󰈤 - md file
+    pub const DIFF: &str = "\u{F0224} ";        // 󰈤 - md file
+    pub const PATCH: &str = "\u{F0224} ";       // 󰈤 - md file
+    pub const LICENSE: &str = "\u{F0FC3} ";     // 󰿃 - md license
+    pub const README: &str = "\u{F00BA} ";      // 󰂺 - md book_open
+    pub const TODO: &str = "\u{F0AE} ";         //  - fa tasks
+    pub const TORRENT: &str = "\u{E796} ";      //  - seti bittorrent
+    pub const CALENDAR: &str = "\u{F00F5} ";    // 󰃵 - md calendar
+    pub const CONTACT: &str = "\u{F007} ";      //  - fa user
+    pub const EMAIL: &str = "\u{F01EE} ";       // 󰇮 - md email
+    pub const PGP: &str = "\u{F0306} ";         // 󰌆 - md key
+    pub const KML: &str = "\u{F018B} ";         // 󰆋 - md google_earth
+    pub const ENV: &str = "\u{F066A} ";         // 󰙪 - md file_cog
+    pub const EDITORCONFIG: &str = "\u{F0493} ";// 󰒓 - md cog
+    pub const NPMRC: &str = "\u{F0399} ";       // 󰎙 - md npm
+    pub const CARGO: &str = "\u{F1617} ";       // 󱘗 - md language_rust
+    pub const GOMOD: &str = "\u{F07D3} ";       // 󰟓 - md language_go
 
     // Directory
-    pub const DIRECTORY: &str = "\u{F024B}";   // 󰉋 - md folder
+    pub const DIRECTORY: &str = "\u{F024B} ";   // 󰉋 - md folder
 
     // Default
-    pub const DEFAULT: &str = "\u{F0224}";     // 󰈤 - md file
+    pub const DEFAULT: &str = "\u{F0224} ";     // 󰈤 - md file
 }
 
 /// Default file style (document icon, no color override)
