@@ -145,7 +145,7 @@ impl DirElem {
         self.suffix = if self.path.is_dir() {
             read_dir(&self.path)
                 .map(|res| res.into_iter().count().to_string())
-                .unwrap_or_default()
+                .unwrap_or_else(|_| "?".into())
         } else {
             file_size_str(size)
         };
