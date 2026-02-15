@@ -153,6 +153,10 @@ impl PanelState {
     pub fn path(&self) -> PathBuf {
         self.path.clone()
     }
+
+    pub fn panel_id(&self) -> u64 {
+        self.panel_id
+    }
 }
 
 // Helper function to call 'unwatch' on some watcher
@@ -188,7 +192,7 @@ fn watch_path<P: AsRef<Path>>(watcher: &mut RecommendedWatcher, path: P) {
 /// Combines all data that is necessary to update a panel.
 ///
 /// Will be send as a request to the [`ContentManager`].
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PanelUpdate {
     pub state: PanelState,
 }

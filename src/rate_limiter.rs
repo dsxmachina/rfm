@@ -2,6 +2,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+use tokio::time::sleep;
 
 use crate::panel::PanelUpdate;
 
@@ -96,6 +97,53 @@ impl RateLimiter {
         if let Some(state) = self.states.get_mut(key) {
             state.last_allowed = Instant::now();
             state.has_pending = false;
+        }
+    }
+
+    /// Run the rate limiter, processing incoming requests
+    pub async fn run(
+        mut self,
+        mut rx: mpsc::UnboundedReceiver<PanelUpdate>,
+    ) {
+        // Channel for delayed request notifications
+        let (delay_tx, mut delay_rx) = mpsc::unbounded_channel::<(RateLimitKey, PanelUpdate)>();
+
+        loop {
+            tokio::select! {
+                // Handle incoming requests
+                Some(update) = rx.recv() => {
+                    let key = RateLimitKey::new(
+                        update.state.panel_id(),
+                        update.state.path().to_path_buf(),
+                    );
+
+                    let (send_now, schedule_delayed) = self.check_rate_limit(&key);
+
+                    if send_now {
+                        let _ = self.tx.send(update);
+                    } else if schedule_delayed {
+                        // Spawn a delayed send task
+                        let delay_tx = delay_tx.clone();
+                        let interval = self.interval;
+                        let key_clone = key.clone();
+                        let update_clone = update.clone();
+
+                        tokio::spawn(async move {
+                            sleep(interval).await;
+                            let _ = delay_tx.send((key_clone, update_clone));
+                        });
+                    }
+                    // else: drop the request (has_pending was true)
+                }
+
+                // Handle delayed request execution
+                Some((key, update)) = delay_rx.recv() => {
+                    self.mark_delayed_executed(&key);
+                    let _ = self.tx.send(update);
+                }
+
+                else => break,
+            }
         }
     }
 }
