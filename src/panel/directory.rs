@@ -89,7 +89,7 @@ impl DirElem {
             .saturating_sub(6);
         let name = self.name.exact_width(name_len);
 
-        let string: String;
+        let mut string: String;
         let mut style = ContentStyle::new();
         if self.path.is_dir() {
             style = style.with(color_main()).bold();
@@ -107,6 +107,7 @@ impl DirElem {
         }
         if self.is_marked {
             style = style.with(color_marked());
+            string = string.replacen(" ", "x", 1);
         }
         if selected {
             style = style.negative().bold();
