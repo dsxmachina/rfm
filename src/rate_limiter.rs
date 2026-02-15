@@ -45,3 +45,57 @@ pub struct RateLimiter {
     /// Channel to send rate-limited requests downstream
     tx: mpsc::UnboundedSender<PanelUpdate>,
 }
+
+impl RateLimiter {
+    pub fn new(interval: Duration, tx: mpsc::UnboundedSender<PanelUpdate>) -> Self {
+        Self {
+            interval,
+            states: HashMap::new(),
+            tx,
+        }
+    }
+
+    /// Process an incoming update request.
+    /// Returns: (should_send_now, should_schedule_delayed)
+    fn check_rate_limit(&mut self, key: &RateLimitKey) -> (bool, bool) {
+        let now = Instant::now();
+
+        match self.states.get_mut(key) {
+            None => {
+                // First request for this key - allow immediately
+                self.states.insert(
+                    key.clone(),
+                    RateLimitState {
+                        last_allowed: now,
+                        has_pending: false,
+                    },
+                );
+                (true, false)
+            }
+            Some(state) => {
+                let elapsed = now.duration_since(state.last_allowed);
+                if elapsed >= self.interval {
+                    // Enough time has passed - allow immediately
+                    state.last_allowed = now;
+                    state.has_pending = false;
+                    (true, false)
+                } else if state.has_pending {
+                    // Already have a pending request - drop this one
+                    (false, false)
+                } else {
+                    // Rate limited but no pending - schedule delayed
+                    state.has_pending = true;
+                    (false, true)
+                }
+            }
+        }
+    }
+
+    /// Mark that a delayed request has been executed
+    fn mark_delayed_executed(&mut self, key: &RateLimitKey) {
+        if let Some(state) = self.states.get_mut(key) {
+            state.last_allowed = Instant::now();
+            state.has_pending = false;
+        }
+    }
+}
