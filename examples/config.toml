@@ -1,7 +1,7 @@
 # --- General behaviour of rfm
 [general]
 # Experimental feature
-# 
+#
 # If set to 'true', rfm will not instantly delete files,
 # but will move them to a dedicated trash directory, from which users can retrieve the file.
 #
@@ -9,8 +9,20 @@
 # directory is on the same disk as every file you could delete.
 # If not, or if you try do delete something on another disk, the operation of deleting in rfm
 # may be very expensive, as it effectively copies the file to another disk.
-# 
+#
 use_trash = false
+
+# Use Nerd Font icons for file types.
+#
+# When enabled, rfm will use icons from the Nerd Fonts project (like yazi does).
+# This requires your terminal to be configured with a Nerd Font
+# (e.g., "Hack Nerd Font", "FiraCode Nerd Font", "JetBrainsMono Nerd Font").
+#
+# Nerd Fonts can be downloaded from: https://www.nerdfonts.com/
+#
+# When disabled (default), rfm uses standard Unicode symbols that work in any terminal.
+#
+fancy_icons = false
 
 # --- Color configuration
 #
@@ -48,14 +60,17 @@ dir_path = "dark-blue"
 #   - Then type prefix is tried (e.g., "image" matches all image/* types)
 #
 # Default colors (yazi-like, if not overridden):
-#   - image/*       : magenta (yazi uses purple)
-#   - audio/*       : cyan (yazi uses cyan/blue)
-#   - video/*       : yellow (yazi uses orange)
-#   - archives      : yellow (zip, tar, gz, 7z, rar - yazi uses orange)
-#   - application/pdf: cyan
-#   - text/markdown : blue
-#   - config files  : dark-cyan (toml, json, yaml, xml)
-#   - (other files) : grey
+#   - image/*        : magenta
+#   - audio/*        : cyan
+#   - video/*        : yellow
+#   - archives       : yellow (zip, tar, gz, 7z, rar)
+#   - application/pdf: red
+#   - text/markdown  : white
+#   - text/x-toml    : dark-yellow
+#   - application/json: yellow
+#   - yaml           : dark-cyan
+#   - xml            : yellow
+#   - (other files)  : grey
 #
 # Example configurations (uncomment to use):
 #

@@ -20,13 +20,6 @@ impl FileStyle {
         FileStyle { symbol, color }
     }
 
-    pub const fn with_symbol(symbol: &'static str) -> Self {
-        FileStyle {
-            symbol,
-            color: None,
-        }
-    }
-
     pub const fn with_color(symbol: &'static str, color: Color) -> Self {
         FileStyle {
             symbol,
@@ -35,19 +28,96 @@ impl FileStyle {
     }
 }
 
+// =============================================================================
+// Standard Unicode Icons (work in any terminal)
+// =============================================================================
+mod unicode_icons {
+    pub const IMAGE: &str = "\u{1F5BB}";      // 🖻 - image
+    pub const AUDIO: &str = "\u{266B}";       // ♫ - music note
+    pub const VIDEO: &str = "\u{1F39E}";      // 🎞 - film frames
+    pub const ARCHIVE: &str = "\u{1F5DC}";    // 🗜 - compression
+    pub const PDF: &str = "\u{1F4C4}";        // 📄 - document
+    pub const MARKDOWN: &str = "\u{1F4DD}";   // 📝 - memo
+    pub const CONFIG: &str = "\u{2699}";      // ⚙ - gear
+    pub const DEFAULT: &str = "\u{1F5B9}";    // 🖹 - document
+}
+
+// =============================================================================
+// Nerd Font Icons (require a patched Nerd Font)
+// Icons sourced from yazi file manager
+// =============================================================================
+mod nerd_icons {
+    pub const IMAGE: &str = "\u{E60D}";       //  - seti image
+    pub const AUDIO: &str = "\u{F001}";       //  - fa music
+    pub const VIDEO: &str = "\u{E69F}";       //  - seti video
+    pub const ARCHIVE: &str = "\u{F410}";     //  - oct file_zip
+    pub const PDF: &str = "\u{EAEB}";         //  - md file_pdf_box
+    pub const MARKDOWN: &str = "\u{E609}";    //  - seti markdown
+    pub const TOML: &str = "\u{E6B2}";        //  - seti config
+    pub const JSON: &str = "\u{E60B}";        //  - seti json
+    pub const YAML: &str = "\u{E615}";        //  - seti yaml
+    pub const XML: &str = "\u{F05C0}";        // 󰗀 - md xml
+    pub const DEFAULT: &str = "\u{F15B}";     //  - fa file
+}
+
 /// Default file style (document icon, no color override)
-const DEFAULT_STYLE: FileStyle = FileStyle::new("\u{1F5B9}", None);
+fn default_style(fancy: bool) -> FileStyle {
+    let symbol = if fancy { nerd_icons::DEFAULT } else { unicode_icons::DEFAULT };
+    FileStyle::new(symbol, None)
+}
 
 pub struct StyleEngine {
     styles: StringPatriciaMap<FileStyle>,
+    fancy_icons: bool,
 }
 
 impl StyleEngine {
-    pub fn new() -> Self {
+    /// Create a new StyleEngine with the specified icon set.
+    ///
+    /// If `fancy_icons` is true, Nerd Font icons are used.
+    /// Otherwise, standard Unicode icons are used.
+    pub fn new(fancy_icons: bool) -> Self {
         let mut styles = StringPatriciaMap::new();
 
+        // Select icon set based on fancy_icons
+        let (img_icon, audio_icon, video_icon, archive_icon, pdf_icon, md_icon) = if fancy_icons {
+            (
+                nerd_icons::IMAGE,
+                nerd_icons::AUDIO,
+                nerd_icons::VIDEO,
+                nerd_icons::ARCHIVE,
+                nerd_icons::PDF,
+                nerd_icons::MARKDOWN,
+            )
+        } else {
+            (
+                unicode_icons::IMAGE,
+                unicode_icons::AUDIO,
+                unicode_icons::VIDEO,
+                unicode_icons::ARCHIVE,
+                unicode_icons::PDF,
+                unicode_icons::MARKDOWN,
+            )
+        };
+
+        let (toml_icon, json_icon, yaml_icon, xml_icon) = if fancy_icons {
+            (
+                nerd_icons::TOML,
+                nerd_icons::JSON,
+                nerd_icons::YAML,
+                nerd_icons::XML,
+            )
+        } else {
+            (
+                unicode_icons::CONFIG,
+                unicode_icons::CONFIG,
+                unicode_icons::CONFIG,
+                unicode_icons::CONFIG,
+            )
+        };
+
         // Images - Magenta (yazi uses purple/violet RGB 160,116,196)
-        let image_style = FileStyle::with_color("\u{1F5BB}", Color::Magenta);
+        let image_style = FileStyle::with_color(img_icon, Color::Magenta);
         styles.insert(mime::IMAGE, image_style);
         styles.insert(mime::IMAGE_BMP, image_style);
         styles.insert(mime::IMAGE_PNG, image_style);
@@ -57,15 +127,15 @@ impl StyleEngine {
         styles.insert(mime::IMAGE_STAR, image_style);
 
         // Audio - Cyan (yazi uses cyan/blue RGB 0,175,255)
-        let audio_style = FileStyle::with_color("\u{266B}", Color::Cyan);
+        let audio_style = FileStyle::with_color(audio_icon, Color::Cyan);
         styles.insert(mime::AUDIO, audio_style);
 
         // Video - Yellow (yazi uses orange RGB 253,151,31)
-        let video_style = FileStyle::with_color("\u{1F39E}", Color::Yellow);
+        let video_style = FileStyle::with_color(video_icon, Color::Yellow);
         styles.insert(mime::VIDEO, video_style);
 
         // Archives - Yellow (yazi uses orange/gold RGB 236,165,23)
-        let archive_style = FileStyle::with_color("\u{1F5DC}", Color::Yellow);
+        let archive_style = FileStyle::with_color(archive_icon, Color::Yellow);
         styles.insert("application/zip", archive_style);
         styles.insert("application/gzip", archive_style);
         styles.insert("application/x-tar", archive_style);
@@ -74,37 +144,43 @@ impl StyleEngine {
         styles.insert("application/x-7z-compressed", archive_style);
         styles.insert("application/x-rar-compressed", archive_style);
 
-        // PDF/Documents - Cyan (keeping cyan for documents)
-        let pdf_style = FileStyle::with_color("\u{202C}", Color::Cyan);
+        // PDF/Documents - Red (yazi uses dark red RGB 179,11,0)
+        let pdf_style = FileStyle::with_color(pdf_icon, Color::Red);
         styles.insert(mime::PDF, pdf_style);
 
         // Markdown - Blue
-        let markdown_style = FileStyle::with_color("\u{1F89B}", Color::Blue);
+        let markdown_style = FileStyle::with_color(md_icon, Color::White);
         styles.insert("text/markdown", markdown_style);
 
-        // Config files - DarkCyan
-        let config_style = FileStyle::with_color("\u{2699}", Color::DarkCyan);
-        styles.insert("text/x-toml", config_style);
-        styles.insert("application/json", config_style);
-        styles.insert("application/x-yaml", config_style);
-        styles.insert("text/x-yaml", config_style);
-        styles.insert("text/yaml", config_style);
-        styles.insert("application/xml", config_style);
-        styles.insert("text/xml", config_style);
+        // Config files - specific icons for fancy mode
+        let toml_style = FileStyle::with_color(toml_icon, Color::DarkYellow);
+        styles.insert("text/x-toml", toml_style);
 
-        StyleEngine { styles }
+        let json_style = FileStyle::with_color(json_icon, Color::Yellow);
+        styles.insert("application/json", json_style);
+
+        let yaml_style = FileStyle::with_color(yaml_icon, Color::DarkCyan);
+        styles.insert("application/x-yaml", yaml_style);
+        styles.insert("text/x-yaml", yaml_style);
+        styles.insert("text/yaml", yaml_style);
+
+        let xml_style = FileStyle::with_color(xml_icon, Color::Yellow);
+        styles.insert("application/xml", xml_style);
+        styles.insert("text/xml", xml_style);
+
+        StyleEngine { styles, fancy_icons }
     }
 
     /// Initialize the global style engine with default styles.
-    pub fn init() {
-        if STYLES.set(StyleEngine::new()).is_err() {
+    pub fn init(fancy_icons: bool) {
+        if STYLES.set(StyleEngine::new(fancy_icons)).is_err() {
             error!("Style engine was already initialized.");
         }
     }
 
     /// Initialize the global style engine with user-provided style overrides.
-    pub fn init_with_config(config: &StyleConfig) {
-        let mut engine = StyleEngine::new();
+    pub fn init_with_config(config: &StyleConfig, fancy_icons: bool) {
+        let mut engine = StyleEngine::new(fancy_icons);
         engine.apply_config(config);
         if STYLES.set(engine).is_err() {
             error!("Style engine was already initialized.");
@@ -123,7 +199,7 @@ impl StyleEngine {
                 .styles
                 .get(mime_key)
                 .copied()
-                .unwrap_or(DEFAULT_STYLE);
+                .unwrap_or_else(|| default_style(self.fancy_icons));
 
             // Apply overrides
             let symbol = style_def
@@ -158,10 +234,10 @@ impl StyleEngine {
                 return *style;
             }
             // Return default
-            DEFAULT_STYLE
+            default_style(engine.fancy_icons)
         } else {
             error!("Style engine was not initialized.");
-            DEFAULT_STYLE
+            default_style(false)
         }
     }
 }

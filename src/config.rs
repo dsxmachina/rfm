@@ -20,6 +20,9 @@ pub struct GeneralConfig {
     /// Rate limit interval for preview updates in milliseconds
     #[serde(default = "default_rate_limit_interval")]
     pub rate_limit_interval_ms: u64,
+    /// Use Nerd Font icons (requires a Nerd Font in your terminal)
+    #[serde(default)]
+    pub fancy_icons: bool,
 }
 
 pub mod color {

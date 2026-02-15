@@ -135,6 +135,7 @@ async fn main() -> anyhow::Result<()> {
     let mut use_trash = false;
     let mut rate_limit_interval_ms = DEFAULT_RATE_LIMIT_INTERVAL_MS;
     let mut style_config = None;
+    let mut fancy_icons = false;
 
     if let Ok(content) = std::fs::read_to_string(&general_config_file) {
         match toml::from_str::<config::Config>(&content) {
@@ -143,7 +144,11 @@ async fn main() -> anyhow::Result<()> {
                 colors_from_config(config.colors)?;
                 use_trash = config.general.use_trash;
                 rate_limit_interval_ms = config.general.rate_limit_interval_ms;
+                fancy_icons = config.general.fancy_icons;
                 info!("Using rate-limit of {rate_limit_interval_ms}ms");
+                if fancy_icons {
+                    info!("Using Nerd Font icons");
+                }
                 style_config = Some(config.styles);
             }
             Err(e) => {
@@ -225,9 +230,9 @@ async fn main() -> anyhow::Result<()> {
         .queue(cursor::MoveTo(0, 0))?;
 
     if let Some(styles) = &style_config {
-        StyleEngine::init_with_config(styles);
+        StyleEngine::init_with_config(styles, fancy_icons);
     } else {
-        StyleEngine::init();
+        StyleEngine::init(fancy_icons);
     }
 
     let directory_cache = PanelCache::with_size(16384);
