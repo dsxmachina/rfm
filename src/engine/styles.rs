@@ -184,6 +184,15 @@ mod nerd_icons {
     pub const VLANG: &str = "\u{E6AC} ";        //  - seti v
     pub const JULIA: &str = "\u{E624} ";        //  - seti julia
     pub const CRYSTAL: &str = "\u{E62F} ";      //  - seti crystal
+    pub const NIX: &str = "\u{F1105} ";          // 󱄅 - md nix
+    pub const VUE: &str = "\u{F0844} ";          // 󰡄 - md vuejs
+    pub const SVELTE: &str = "\u{E697} ";        //  - seti svelte
+    pub const GRAPHQL: &str = "\u{F0877} ";      // 󰡷 - md graphql
+    pub const PROTO: &str = "\u{F0626} ";        // 󰘦 - md code_json (protobuf)
+    pub const SOLIDITY: &str = "\u{F0CD8} ";     // 󰳘 - md ethereum
+    pub const ASTRO: &str = "\u{E6B6} ";         //  - seti astro
+    pub const GRADLE: &str = "\u{E660} ";        //  - seti gradle
+    pub const GROOVY: &str = "\u{E775} ";        //  - dev groovy
 
     // Web
     pub const HTML: &str = "\u{F031D} ";        // 󰌝 - md language_html5
@@ -669,6 +678,33 @@ impl StyleEngine {
 
         let crystal_style = FileStyle::with_color(nerd_icons::CRYSTAL, Color::White);
         styles.insert("text/x-crystal", crystal_style);
+
+        let nix_style = FileStyle::with_color(nerd_icons::NIX, Color::Cyan);
+        styles.insert("text/x-nix", nix_style);
+
+        let vue_style = FileStyle::with_color(nerd_icons::VUE, Color::Green);
+        styles.insert("text/x-vue", vue_style);
+
+        let svelte_style = FileStyle::with_color(nerd_icons::SVELTE, Color::Red);
+        styles.insert("text/x-svelte", svelte_style);
+
+        let graphql_style = FileStyle::with_color(nerd_icons::GRAPHQL, Color::Magenta);
+        styles.insert("text/x-graphql", graphql_style);
+
+        let proto_style = FileStyle::with_color(nerd_icons::PROTO, Color::Blue);
+        styles.insert("text/x-protobuf", proto_style);
+
+        let solidity_style = FileStyle::with_color(nerd_icons::SOLIDITY, Color::Blue);
+        styles.insert("text/x-solidity", solidity_style);
+
+        let astro_style = FileStyle::with_color(nerd_icons::ASTRO, Color::Red);
+        styles.insert("text/x-astro", astro_style);
+
+        let gradle_style = FileStyle::with_color(nerd_icons::GRADLE, Color::Blue);
+        styles.insert("text/x-gradle", gradle_style);
+
+        let groovy_style = FileStyle::with_color(nerd_icons::GROOVY, Color::Cyan);
+        styles.insert("text/x-groovy", groovy_style);
 
         // =====================================================================
         // Web Technologies

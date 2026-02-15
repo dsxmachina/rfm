@@ -21,9 +21,18 @@ use crate::util::check_filename;
 /// where mime_guess is wrong, which is why we wrap the functionality here.
 pub fn get_mime_type<P: AsRef<Path>>(path: P) -> Mime {
     let ext = path.as_ref().extension().and_then(|e| e.to_str());
-    // Check the special extensions here
+    // Check the special extensions here (for types that mime_guess doesn't handle correctly)
     match ext {
         Some("ts") => return mime::TEXT_JAVASCRIPT,
+        Some("nix") => return "text/x-nix".parse().unwrap(),
+        Some("vue") => return "text/x-vue".parse().unwrap(),
+        Some("svelte") => return "text/x-svelte".parse().unwrap(),
+        Some("graphql" | "gql") => return "text/x-graphql".parse().unwrap(),
+        Some("proto") => return "text/x-protobuf".parse().unwrap(),
+        Some("sol") => return "text/x-solidity".parse().unwrap(),
+        Some("astro") => return "text/x-astro".parse().unwrap(),
+        Some("gradle") => return "text/x-gradle".parse().unwrap(),
+        Some("groovy") => return "text/x-groovy".parse().unwrap(),
         None => return mime::TEXT_PLAIN,
         _ => (),
     }
