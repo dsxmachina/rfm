@@ -1,11 +1,16 @@
 use std::{
+    fmt::Write,
     fs::read_dir,
     os::unix::prelude::MetadataExt,
     slice::{Iter, IterMut},
     time::SystemTime,
 };
 
-use crossterm::style::{ContentStyle, StyledContent};
+use crossterm::{
+    style::{Attribute, Color, SetAttribute, SetForegroundColor},
+    Command,
+};
+use unicode_display_width::width as unicode_width;
 use unix_mode::is_allowed;
 
 use crate::{
@@ -16,6 +21,94 @@ use crate::{
 };
 
 use super::*;
+
+/// A styled directory entry that renders the symbol with one color
+/// and the filename with another color.
+pub struct StyledEntry {
+    /// Leading character (space or 'x' for marked)
+    lead: char,
+    /// The file type symbol (icon)
+    symbol: String,
+    /// Color for the symbol
+    symbol_color: Color,
+    /// The filename
+    name: String,
+    /// The suffix (file size or dir count)
+    suffix: String,
+    /// Color for the filename and suffix
+    text_color: Color,
+    /// Whether to apply bold
+    bold: bool,
+    /// Whether to apply negative (inverse) style
+    negative: bool,
+}
+
+impl StyledEntry {
+    fn new(
+        lead: char,
+        symbol: String,
+        symbol_color: Color,
+        name: String,
+        suffix: String,
+        text_color: Color,
+        bold: bool,
+        negative: bool,
+    ) -> Self {
+        Self {
+            lead,
+            symbol,
+            symbol_color,
+            name,
+            suffix,
+            text_color,
+            bold,
+            negative,
+        }
+    }
+}
+
+impl Command for StyledEntry {
+    fn write_ansi(&self, f: &mut impl Write) -> std::fmt::Result {
+        // If negative (selected), use inverse video for the whole line
+        if self.negative {
+            // Set foreground color first, then reverse - this ensures proper inversion
+            SetForegroundColor(self.text_color).write_ansi(f)?;
+            SetAttribute(Attribute::Reverse).write_ansi(f)?;
+            if self.bold {
+                SetAttribute(Attribute::Bold).write_ansi(f)?;
+            }
+            // Format: lead + symbol + space + name + space + suffix + space
+            write!(f, "{}{}{} {} ", self.lead, self.symbol, self.name, self.suffix)?;
+            SetAttribute(Attribute::Reset).write_ansi(f)?;
+        } else {
+            // Normal rendering: symbol color, then text color
+            if self.bold {
+                SetAttribute(Attribute::Bold).write_ansi(f)?;
+            }
+
+            // Lead character with text color
+            SetForegroundColor(self.text_color).write_ansi(f)?;
+            write!(f, "{}", self.lead)?;
+
+            // Symbol with symbol color
+            SetForegroundColor(self.symbol_color).write_ansi(f)?;
+            write!(f, "{}", self.symbol)?;
+
+            // Name and suffix with text color
+            SetForegroundColor(self.text_color).write_ansi(f)?;
+            write!(f, "{} {} ", self.name, self.suffix)?;
+
+            SetAttribute(Attribute::Reset).write_ansi(f)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> std::io::Result<()> {
+        // Fallback to ANSI on Windows
+        Ok(())
+    }
+}
 /// An element of a directory.
 ///
 /// Shorthand for saving a path together whith what we want to display.
@@ -77,42 +170,69 @@ impl DirElem {
         self.is_marked = false;
     }
 
-    /// Creates a [`PrintStyledContent`] from the `DirElem` itself.
+    /// Creates a [`StyledEntry`] from the `DirElem` itself.
     ///
+    /// The symbol is colored based on mime-type, while the filename uses a neutral color.
     /// If the element has not been normalized yet, we do so before we create the styled content.
-    pub fn print_styled(&mut self, selected: bool, max_len: u16) -> PrintStyledContent<String> {
+    pub fn print_styled(&mut self, selected: bool, max_len: u16) -> StyledEntry {
         // Only print normalized items
         self.normalize();
-        // Prepare output
-        let name_len = usize::from(max_len)
-            .saturating_sub(self.suffix.chars().count())
-            .saturating_sub(6);
-        let name = self.name.exact_width(name_len);
 
-        let mut string: String;
-        let mut style = ContentStyle::new();
+        // First determine the symbol and colors
+        let symbol: String;
+        let mut symbol_color: Color;
+        let mut text_color: Color;
+        let mut bold = false;
+
         if self.path.is_dir() {
-            style = style.with(color_main()).bold();
-            string = format!(" \u{1F4C1}{name} {} ", self.suffix);
+            symbol = "\u{1F4C1}".to_string();
+            symbol_color = color_main();
+            text_color = color_main();
+            bold = true;
         } else if self.is_executable {
-            style = style.green().bold();
             let file_style = StyleEngine::get_style(self.path());
-            string = format!(" {} {name} {} ", file_style.symbol, self.suffix);
+            symbol = file_style.symbol.to_string();
+            symbol_color = file_style.color.unwrap_or(Color::Green);
+            text_color = Color::Green;
+            bold = true;
         } else {
             let file_style = StyleEngine::get_style(self.path());
-            // Use mime-type color if available, otherwise fall back to grey
-            let color = file_style.color.unwrap_or(crossterm::style::Color::Grey);
-            style = style.with(color);
-            string = format!(" {} {name} {} ", file_style.symbol, self.suffix);
+            symbol = file_style.symbol.to_string();
+            // Symbol gets the mime-type color
+            symbol_color = file_style.color.unwrap_or(Color::Grey);
+            // Text stays grey/neutral
+            text_color = Color::Grey;
         }
-        if self.is_marked {
-            style = style.with(color_marked());
-            string = string.replacen(" ", "x", 1);
-        }
-        if selected {
-            style = style.negative().bold();
-        }
-        PrintStyledContent(StyledContent::new(style, string))
+
+        // Calculate name length accounting for actual symbol display width
+        // Format: lead + symbol + name + space + suffix + space
+        // Overhead: 1 (lead) + symbol_width + 2 (spaces) = 3 + symbol_width
+        let symbol_width = unicode_width(&symbol) as usize;
+        let name_len = usize::from(max_len)
+            .saturating_sub(self.suffix.chars().count())
+            .saturating_sub(symbol_width)
+            .saturating_sub(3);
+        let name = self.name.exact_width(name_len);
+
+        let lead = if self.is_marked {
+            // Override text color when marked
+            text_color = color_marked();
+            symbol_color = color_marked();
+            'x'
+        } else {
+            ' '
+        };
+
+        StyledEntry::new(
+            lead,
+            symbol,
+            symbol_color,
+            name,
+            self.suffix.clone(),
+            text_color,
+            bold,
+            selected,
+        )
     }
 
     /// Normalizes the `DirElem` to make it viewable by the user.
