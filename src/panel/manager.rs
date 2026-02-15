@@ -614,17 +614,6 @@ impl PanelManager {
 
                 self.redraw_panels();
             } else {
-                // NOTE: This is a blocking call, if we have a terminal application.
-                // The watchers are still active in the background.
-                // If the appication somehow triggers a watcher (e.g. by creating a swapfile),
-                // the panel-update is never applied, which means the "state-counter" is never increased.
-                // Any subsequent call to "update_panel", will go out with the same (old) state-counter,
-                // which results in the "real" panel updates being ignored (because their counter is equal to the first update),
-                // when the opener.open(...) function returns.
-                // This is the reason, why we always see the swapfile after leaving vim atm.
-                //
-                // Solution:
-                // "Freeze" the panel and deactivate the watchers while the open function is blocked.
                 info!("Opening '{}'", selected.display());
 
                 // Change working directory so that child processes gets spawned from the currently active directory.

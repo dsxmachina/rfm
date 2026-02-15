@@ -259,8 +259,7 @@ impl DirManager {
     pub async fn run(mut self) {
         let mut last_cache_path = PathBuf::default();
         // Channel for delayed request notifications
-        let (delay_tx, mut delay_rx) =
-            mpsc::unbounded_channel::<(RateLimitKey, PanelUpdate)>();
+        let (delay_tx, mut delay_rx) = mpsc::unbounded_channel::<(RateLimitKey, PanelUpdate)>();
 
         loop {
             tokio::select! {
@@ -368,8 +367,7 @@ impl PreviewManager {
             let dir_path = update.state.path().clone();
             let result = spawn_blocking(move || dir_content(dir_path)).await;
             if let Ok(content) = result {
-                let panel =
-                    PreviewPanel::Dir(DirPanel::new(content, update.state.path().clone()));
+                let panel = PreviewPanel::Dir(DirPanel::new(content, update.state.path().clone()));
                 if let Err(e) = self
                     .tx
                     .send((panel.clone(), update.state.increased()))
@@ -401,8 +399,7 @@ impl PreviewManager {
 
     pub async fn run(mut self) {
         // Channel for delayed request notifications
-        let (delay_tx, mut delay_rx) =
-            mpsc::unbounded_channel::<(RateLimitKey, PanelUpdate)>();
+        let (delay_tx, mut delay_rx) = mpsc::unbounded_channel::<(RateLimitKey, PanelUpdate)>();
 
         loop {
             tokio::select! {
@@ -507,7 +504,10 @@ mod tests {
 
         let (send_now, schedule_delayed) = tester.check_rate_limit(&key);
         assert!(send_now, "First request should be allowed immediately");
-        assert!(!schedule_delayed, "First request should not schedule delayed");
+        assert!(
+            !schedule_delayed,
+            "First request should not schedule delayed"
+        );
     }
 
     #[test]
@@ -520,8 +520,14 @@ mod tests {
 
         // Immediate second request
         let (send_now, schedule_delayed) = tester.check_rate_limit(&key);
-        assert!(!send_now, "Rapid second request should not send immediately");
-        assert!(schedule_delayed, "Rapid second request should schedule delayed");
+        assert!(
+            !send_now,
+            "Rapid second request should not send immediately"
+        );
+        assert!(
+            schedule_delayed,
+            "Rapid second request should schedule delayed"
+        );
     }
 
     #[test]
@@ -606,6 +612,9 @@ mod tests {
         // Third request - should schedule delayed again (not drop)
         let (send_now, schedule_delayed) = tester.check_rate_limit(&key);
         assert!(!send_now);
-        assert!(schedule_delayed, "After delayed executed, new request should schedule delayed again");
+        assert!(
+            schedule_delayed,
+            "After delayed executed, new request should schedule delayed again"
+        );
     }
 }
