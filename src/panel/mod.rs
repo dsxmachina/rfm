@@ -292,11 +292,11 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
                     .and_then(|m| m.modified().ok())
                     .unwrap_or_else(SystemTime::now);
 
-                // If the access time is has not changed, dont trigger an update
+                // If the modification time has not changed, dont trigger an update
                 // by returning early
                 if mod_time == cached_mod_time {
                     debug!(
-                        "new-panel-instant: access-time == cached-access-time, path = {}",
+                        "new-panel-instant: mod-time == cached-mod-time, path = {}",
                         path.display()
                     );
                     return;
@@ -330,19 +330,19 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
             }
 
             if let Some(cached) = self.cache.get(&path) {
-                let cached_access_time = cached.modified();
+                let cached_mod_time = cached.modified();
                 // Update panel with content from cache
                 self.update_panel(cached);
 
-                let access_time = path
+                let mod_time = path
                     .metadata()
                     .ok()
-                    .and_then(|m| m.accessed().ok())
+                    .and_then(|m| m.modified().ok())
                     .unwrap_or_else(SystemTime::now);
 
-                // If the access time is has not changed, dont trigger an update
+                // If the modification time has not changed, dont trigger an update
                 // by returning early
-                if access_time == cached_access_time {
+                if mod_time == cached_mod_time {
                     return;
                 }
             } else {
