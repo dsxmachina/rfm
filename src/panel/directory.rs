@@ -11,7 +11,7 @@ use unix_mode::is_allowed;
 use crate::{
     config::color::{color_highlight, color_main, color_marked, print_vertical_bar},
     content::{dir_content, DirContent},
-    engine::SymbolEngine,
+    engine::StyleEngine,
     util::{file_size_str, ExactWidth},
 };
 
@@ -96,12 +96,14 @@ impl DirElem {
             string = format!(" \u{1F4C1}{name} {} ", self.suffix);
         } else if self.is_executable {
             style = style.green().bold();
-            let symbol = SymbolEngine::get_symbol(self.path());
-            string = format!(" {symbol} {name} {} ", self.suffix);
+            let file_style = StyleEngine::get_style(self.path());
+            string = format!(" {} {name} {} ", file_style.symbol, self.suffix);
         } else {
-            style = style.grey();
-            let symbol = SymbolEngine::get_symbol(self.path());
-            string = format!(" {symbol} {name} {} ", self.suffix);
+            let file_style = StyleEngine::get_style(self.path());
+            // Use mime-type color if available, otherwise fall back to grey
+            let color = file_style.color.unwrap_or(crossterm::style::Color::Grey);
+            style = style.with(color);
+            string = format!(" {} {name} {} ", file_style.symbol, self.suffix);
         }
         if self.is_marked {
             style = style.with(color_marked());

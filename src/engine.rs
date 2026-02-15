@@ -1,9 +1,9 @@
 pub mod commands;
 pub mod opener;
-pub mod symbols;
+pub mod styles;
 
 pub use opener::OpenEngine;
-pub use symbols::SymbolEngine;
+pub use styles::StyleEngine;
 
 // pub mod zoxide {}
 

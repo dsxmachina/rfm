@@ -12,7 +12,7 @@ use crossterm::{
 };
 use engine::{
     commands::{CloseCmd, CommandParser},
-    OpenEngine, SymbolEngine,
+    OpenEngine, StyleEngine,
 };
 use log::{error, info, warn};
 use logger::LogBuffer;
@@ -134,6 +134,7 @@ async fn main() -> anyhow::Result<()> {
     // Weather or not we activate the trash
     let mut use_trash = false;
     let mut rate_limit_interval_ms = DEFAULT_RATE_LIMIT_INTERVAL_MS;
+    let mut style_config = None;
 
     if let Ok(content) = std::fs::read_to_string(&general_config_file) {
         match toml::from_str::<config::Config>(&content) {
@@ -143,6 +144,7 @@ async fn main() -> anyhow::Result<()> {
                 use_trash = config.general.use_trash;
                 rate_limit_interval_ms = config.general.rate_limit_interval_ms;
                 info!("Using rate-limit of {rate_limit_interval_ms}ms");
+                style_config = Some(config.styles);
             }
             Err(e) => {
                 warn!("Configuration error: {e}. Using default color config");
@@ -222,7 +224,11 @@ async fn main() -> anyhow::Result<()> {
         .queue(Clear(ClearType::All))?
         .queue(cursor::MoveTo(0, 0))?;
 
-    SymbolEngine::init();
+    if let Some(styles) = &style_config {
+        StyleEngine::init_with_config(styles);
+    } else {
+        StyleEngine::init();
+    }
 
     let directory_cache = PanelCache::with_size(16384);
     let preview_cache = PanelCache::with_size(4096);

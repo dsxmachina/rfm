@@ -36,3 +36,38 @@ highlight = "red"
 
 # color of the top-row directory path
 dir_path = "dark-blue"
+
+# --- Mime-type styles configuration
+#
+# Configure colors and symbols for files based on their mime-type.
+# Each section is named after a mime-type (e.g., "image", "text/markdown").
+# You can specify 'color' and/or 'symbol' for each mime-type.
+#
+# Mime-type matching:
+#   - Exact match is tried first (e.g., "text/markdown")
+#   - Then type prefix is tried (e.g., "image" matches all image/* types)
+#
+# Default colors (if not overridden):
+#   - image/*       : cyan
+#   - audio/*       : magenta
+#   - video/*       : yellow
+#   - application/pdf: red
+#   - text/markdown : blue
+#   - text/x-toml   : dark-cyan
+#   - (other files) : grey
+#
+# Example configurations (uncomment to use):
+#
+# [styles.image]
+# color = "cyan"
+#
+# [styles.audio]
+# color = "magenta"
+#
+# [styles."text/markdown"]
+# color = "blue"
+# symbol = ""
+#
+# [styles."application/json"]
+# color = "dark-yellow"
+# symbol = "{}"

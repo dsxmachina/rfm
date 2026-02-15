@@ -1,9 +1,13 @@
 use serde::Deserialize;
 
+use crate::engine::styles::StyleConfig;
+
 #[derive(Deserialize, Debug)]
 pub struct Config {
     pub colors: color::ColorConfig,
     pub general: GeneralConfig,
+    #[serde(default)]
+    pub styles: StyleConfig,
 }
 
 fn default_rate_limit_interval() -> u64 {
