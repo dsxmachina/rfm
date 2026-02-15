@@ -46,8 +46,8 @@ impl StyleEngine {
     pub fn new() -> Self {
         let mut styles = StringPatriciaMap::new();
 
-        // Images - Yellow (like yazi)
-        let image_style = FileStyle::with_color("\u{1F5BB}", Color::Yellow);
+        // Images - Magenta (yazi uses purple/violet RGB 160,116,196)
+        let image_style = FileStyle::with_color("\u{1F5BB}", Color::Magenta);
         styles.insert(mime::IMAGE, image_style);
         styles.insert(mime::IMAGE_BMP, image_style);
         styles.insert(mime::IMAGE_PNG, image_style);
@@ -56,16 +56,16 @@ impl StyleEngine {
         styles.insert(mime::IMAGE_SVG, image_style);
         styles.insert(mime::IMAGE_STAR, image_style);
 
-        // Audio - Magenta (like yazi)
-        let audio_style = FileStyle::with_color("\u{266B}", Color::Magenta);
+        // Audio - Cyan (yazi uses cyan/blue RGB 0,175,255)
+        let audio_style = FileStyle::with_color("\u{266B}", Color::Cyan);
         styles.insert(mime::AUDIO, audio_style);
 
-        // Video - Magenta (yazi groups audio/video together)
-        let video_style = FileStyle::with_color("\u{1F39E}", Color::Magenta);
+        // Video - Yellow (yazi uses orange RGB 253,151,31)
+        let video_style = FileStyle::with_color("\u{1F39E}", Color::Yellow);
         styles.insert(mime::VIDEO, video_style);
 
-        // Archives - Red (like yazi)
-        let archive_style = FileStyle::with_color("\u{1F5DC}", Color::Red);
+        // Archives - Yellow (yazi uses orange/gold RGB 236,165,23)
+        let archive_style = FileStyle::with_color("\u{1F5DC}", Color::Yellow);
         styles.insert("application/zip", archive_style);
         styles.insert("application/gzip", archive_style);
         styles.insert("application/x-tar", archive_style);
@@ -74,7 +74,7 @@ impl StyleEngine {
         styles.insert("application/x-7z-compressed", archive_style);
         styles.insert("application/x-rar-compressed", archive_style);
 
-        // PDF/Documents - Cyan (like yazi)
+        // PDF/Documents - Cyan (keeping cyan for documents)
         let pdf_style = FileStyle::with_color("\u{202C}", Color::Cyan);
         styles.insert(mime::PDF, pdf_style);
 
@@ -87,6 +87,7 @@ impl StyleEngine {
         styles.insert("text/x-toml", config_style);
         styles.insert("application/json", config_style);
         styles.insert("application/x-yaml", config_style);
+        styles.insert("text/x-yaml", config_style);
         styles.insert("text/yaml", config_style);
         styles.insert("application/xml", config_style);
         styles.insert("text/xml", config_style);

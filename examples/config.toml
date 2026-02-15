@@ -48,10 +48,10 @@ dir_path = "dark-blue"
 #   - Then type prefix is tried (e.g., "image" matches all image/* types)
 #
 # Default colors (yazi-like, if not overridden):
-#   - image/*       : yellow
-#   - audio/*       : magenta
-#   - video/*       : magenta
-#   - archives      : red (zip, tar, gz, 7z, rar)
+#   - image/*       : magenta (yazi uses purple)
+#   - audio/*       : cyan (yazi uses cyan/blue)
+#   - video/*       : yellow (yazi uses orange)
+#   - archives      : yellow (zip, tar, gz, 7z, rar - yazi uses orange)
 #   - application/pdf: cyan
 #   - text/markdown : blue
 #   - config files  : dark-cyan (toml, json, yaml, xml)
