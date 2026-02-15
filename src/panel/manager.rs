@@ -893,6 +893,7 @@ impl PanelManager {
                 self.parser.clear();
                 self.center.panel_mut().clear_search();
                 self.center.panel_mut().clear_new_element();
+                self.center.panel_mut().clear_rename_preview();
                 self.redraw_panels();
                 self.redraw_footer();
                 self.unmark_all_items();
@@ -1154,11 +1155,16 @@ impl PanelManager {
                             }
                         }
                         self.mode = Mode::Normal;
+                        self.center.panel_mut().clear_rename_preview();
                         self.center.reload();
                         self.right.reload();
                         self.redraw_panels();
                     } else {
                         input.update(key_event.code, key_event.modifiers);
+                        let selected_idx = self.center.panel().selected_idx();
+                        self.center
+                            .panel_mut()
+                            .inject_rename_preview(input.get().to_string(), selected_idx);
                         self.redraw_center();
                     }
                 }

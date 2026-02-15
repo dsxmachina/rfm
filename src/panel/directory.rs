@@ -14,7 +14,7 @@ use unicode_display_width::width as unicode_width;
 use unix_mode::is_allowed;
 
 use crate::{
-    config::color::{color_highlight, color_main, color_marked, print_vertical_bar},
+    config::color::{color_highlight, color_main, color_marked, color_rename, print_vertical_bar},
     content::{dir_content, DirContent},
     engine::StyleEngine,
     util::{file_size_str, ExactWidth},
@@ -355,6 +355,12 @@ pub struct DirPanel {
     /// If boolean is true - the new element is going to be a directory.
     new_element: Option<(String, bool)>,
 
+    /// Rename preview - (new_name, original_index, is_dir)
+    ///
+    /// When set, the original item at original_index is hidden
+    /// and a preview with new_name is shown at the sorted position.
+    rename_preview: Option<(String, usize, bool)>,
+
     /// Selected element
     selected_idx: usize,
 
@@ -519,6 +525,122 @@ impl Draw for DirPanel {
                 )?;
                 y_offset += 1;
             }
+        } else if let Some((new_name, original_idx, is_dir)) = &self.rename_preview {
+            // Rename preview: hide original item, show preview at sorted position
+            let lowercase_name = new_name.to_lowercase();
+
+            // Get the suffix from the original element (file size or dir count)
+            let original_suffix = self
+                .elements
+                .get(*original_idx)
+                .map(|e| {
+                    // We need to normalize to get the suffix
+                    let mut elem = e.clone();
+                    elem.normalize();
+                    elem.suffix.clone()
+                })
+                .unwrap_or_default();
+
+            // Calculate where the renamed item should appear
+            // We count how many items come before it (excluding the original)
+            let partition = if *is_dir {
+                self.elements
+                    .iter()
+                    .enumerate()
+                    .filter(|(idx, _)| idx != original_idx)
+                    .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
+                    .filter(|(_, elem)| elem.path().is_dir())
+                    .take_while(|(_, elem)| elem.lowercase < lowercase_name)
+                    .count()
+            } else {
+                // For files: count all dirs + files that come before alphabetically
+                self.elements
+                    .iter()
+                    .enumerate()
+                    .filter(|(idx, _)| idx != original_idx)
+                    .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
+                    .take_while(|(_, elem)| elem.path().is_dir() || elem.lowercase < lowercase_name)
+                    .count()
+            };
+
+            let symbol = if *is_dir { "\u{1F4C1}" } else { "\u{1F5B9} " };
+            log::debug!(
+                "rename_preview: {new_name}, original_idx: {original_idx}, partition: {partition}"
+            );
+
+            // Track position in the filtered list (excluding original)
+            let mut visible_idx = 0_usize;
+
+            for (idx, entry) in self
+                .elements
+                .iter_mut()
+                .enumerate()
+                .filter(|(_, elem)| self.show_hidden || !elem.is_hidden)
+                .skip(scroll)
+                .take(height as usize)
+            {
+                // Skip the original item being renamed
+                if idx == *original_idx {
+                    continue;
+                }
+
+                // Insert preview at the partition point
+                if visible_idx == partition && !new_name.is_empty() {
+                    // Format: " symbol name suffix "
+                    let suffix_len = original_suffix.chars().count();
+                    let name_width = (width as usize)
+                        .saturating_sub(4) // lead + symbol overhead
+                        .saturating_sub(suffix_len)
+                        .saturating_sub(2); // spacing
+
+                    queue!(
+                        stdout,
+                        cursor::MoveTo(x_range.start, y_range.start + y_offset),
+                        print_vertical_bar(),
+                        PrintStyledContent(format!(" {symbol}").with(color_rename())),
+                        PrintStyledContent(new_name.exact_width(name_width).with(color_rename())),
+                        PrintStyledContent(format!(" {} ", original_suffix).with(color_rename())),
+                    )?;
+                    y_offset += 1;
+
+                    if y_offset >= height {
+                        break;
+                    }
+                }
+
+                // Render the normal entry
+                queue!(
+                    stdout,
+                    cursor::MoveTo(x_range.start, y_range.start + y_offset),
+                    print_vertical_bar(),
+                    entry.print_styled(self.selected_idx == idx, width),
+                )?;
+                y_offset += 1;
+                visible_idx += 1;
+
+                if y_offset >= height {
+                    break;
+                }
+            }
+
+            // Handle case where preview should appear at the end
+            if visible_idx == partition && !new_name.is_empty() && y_offset < height {
+                let suffix_len = original_suffix.chars().count();
+                let name_width = (width as usize)
+                    .saturating_sub(4)
+                    .saturating_sub(suffix_len)
+                    .saturating_sub(2);
+
+                queue!(
+                    stdout,
+                    cursor::MoveTo(x_range.start, y_range.start + y_offset),
+                    print_vertical_bar(),
+                    PrintStyledContent(format!(" {symbol}").with(color_rename())),
+                    PrintStyledContent(new_name.exact_width(name_width).with(color_rename())),
+                    PrintStyledContent(format!(" {} ", original_suffix).with(color_rename())),
+                )?;
+                y_offset += 1;
+            }
         } else {
             // Write "height" items to the screen
             for (idx, entry) in self
@@ -677,6 +799,7 @@ impl DirPanel {
             non_hidden_idx: 0,
             search: None,
             new_element: None,
+            rename_preview: None,
             path,
             modified,
             loading: false,
@@ -691,6 +814,19 @@ impl DirPanel {
 
     pub fn clear_new_element(&mut self) {
         self.new_element = None;
+    }
+
+    pub fn inject_rename_preview(&mut self, new_name: String, original_idx: usize) {
+        let is_dir = self
+            .elements
+            .get(original_idx)
+            .map(|e| e.path().is_dir())
+            .unwrap_or(false);
+        self.rename_preview = Some((new_name, original_idx, is_dir));
+    }
+
+    pub fn clear_rename_preview(&mut self) {
+        self.rename_preview = None;
     }
 
     pub fn update_search(&mut self, pattern: String) {
@@ -860,6 +996,7 @@ impl DirPanel {
             non_hidden_idx: 0,
             search: None,
             new_element: None,
+            rename_preview: None,
             path,
             modified: SystemTime::now(),
             loading: true,
@@ -879,6 +1016,7 @@ impl DirPanel {
             non_hidden_idx: 0,
             search: None,
             new_element: None,
+            rename_preview: None,
             modified: SystemTime::now(),
             path: "path-of-empty-panel".into(),
             loading: false,
