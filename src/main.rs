@@ -37,6 +37,9 @@ mod panel;
 mod rate_limiter;
 mod util;
 
+/// Rate limit interval for preview updates (in milliseconds)
+const RATE_LIMIT_INTERVAL_MS: u64 = 500;
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -225,8 +228,22 @@ async fn main() -> anyhow::Result<()> {
     let (dir_tx, dir_rx) = mpsc::channel(32);
     let (prev_tx, prev_rx) = mpsc::channel(32);
 
+    // Channels from rate-limiters to managers
     let (preview_tx, preview_rx) = mpsc::unbounded_channel();
     let (directory_tx, directory_rx) = mpsc::unbounded_channel();
+
+    // Channels from panels to rate-limiters
+    let (preview_input_tx, preview_input_rx) = mpsc::unbounded_channel();
+    let (directory_input_tx, directory_input_rx) = mpsc::unbounded_channel();
+
+    // Create rate limiters
+    let rate_limit_interval = Duration::from_millis(RATE_LIMIT_INTERVAL_MS);
+    let preview_rate_limiter = rate_limiter::RateLimiter::new(rate_limit_interval, preview_tx);
+    let directory_rate_limiter = rate_limiter::RateLimiter::new(rate_limit_interval, directory_tx);
+
+    // Spawn rate limiter tasks
+    tokio::spawn(preview_rate_limiter.run(preview_input_rx));
+    tokio::spawn(directory_rate_limiter.run(directory_input_rx));
 
     let dir_manager = content::DirManager::new(
         directory_cache.clone(),
@@ -244,8 +261,8 @@ async fn main() -> anyhow::Result<()> {
         starting_path.clone(),
         directory_cache,
         preview_cache,
-        directory_tx,
-        preview_tx,
+        directory_input_tx,
+        preview_input_tx,
     );
 
     let panel_manager = PanelManager::new(
