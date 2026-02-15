@@ -8,8 +8,8 @@ use crossterm::{
         PushKeyboardEnhancementFlags,
     },
     terminal::{
-        disable_raw_mode, enable_raw_mode, Clear, ClearType, DisableLineWrap, EnableLineWrap,
-        EnterAlternateScreen, LeaveAlternateScreen,
+        disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, Clear, ClearType,
+        DisableLineWrap, EnableLineWrap, EnterAlternateScreen, LeaveAlternateScreen,
     },
     ExecutableCommand, QueueableCommand,
 };
@@ -222,12 +222,25 @@ async fn main() -> anyhow::Result<()> {
     enable_raw_mode()?;
 
     // Enable Kitty keyboard protocol for proper modifier detection (Shift+Backspace, etc.)
-    // This only works on terminals that support it (Kitty, WezTerm, foot, Alacritty, etc.)
-    let keyboard_enhancement_enabled = stdout
-        .execute(PushKeyboardEnhancementFlags(
-            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
-        ))
-        .is_ok();
+    // This only works on terminals that support it (Kitty, WezTerm, foot, Alacritty 0.13+, etc.)
+    let keyboard_enhancement_enabled = match supports_keyboard_enhancement() {
+        Ok(true) => {
+            info!("Terminal supports keyboard enhancement, enabling...");
+            stdout
+                .execute(PushKeyboardEnhancementFlags(
+                    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
+                ))
+                .is_ok()
+        }
+        Ok(false) => {
+            info!("Terminal does not support keyboard enhancement (Kitty protocol)");
+            false
+        }
+        Err(e) => {
+            warn!("Failed to query keyboard enhancement support: {e}");
+            false
+        }
+    };
     if keyboard_enhancement_enabled {
         info!("Kitty keyboard protocol enabled");
     }
