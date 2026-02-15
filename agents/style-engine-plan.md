@@ -59,3 +59,14 @@ Replace `SymbolEngine` with a unified `StyleEngine` that returns both symbols AN
 ## Completed: 2026-02-15
 
 All tasks completed successfully. The StyleEngine now provides both symbols and colors based on mime-type, with user-configurable overrides via the `[styles.*]` sections in config.toml.
+
+## Follow-up: 2026-02-15 - Yazi-like colors
+
+Updated default colors to match yazi file manager theme:
+- Images: yellow
+- Audio/Video: magenta (grouped together like yazi)
+- Archives: red (zip, tar, gz, 7z, rar)
+- PDF/Documents: cyan
+- Config files: dark-cyan (toml, json, yaml, xml)
+- Markdown: blue
+- Other files: grey (fallback)

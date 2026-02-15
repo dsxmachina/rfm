@@ -47,13 +47,14 @@ dir_path = "dark-blue"
 #   - Exact match is tried first (e.g., "text/markdown")
 #   - Then type prefix is tried (e.g., "image" matches all image/* types)
 #
-# Default colors (if not overridden):
-#   - image/*       : cyan
+# Default colors (yazi-like, if not overridden):
+#   - image/*       : yellow
 #   - audio/*       : magenta
-#   - video/*       : yellow
-#   - application/pdf: red
+#   - video/*       : magenta
+#   - archives      : red (zip, tar, gz, 7z, rar)
+#   - application/pdf: cyan
 #   - text/markdown : blue
-#   - text/x-toml   : dark-cyan
+#   - config files  : dark-cyan (toml, json, yaml, xml)
 #   - (other files) : grey
 #
 # Example configurations (uncomment to use):

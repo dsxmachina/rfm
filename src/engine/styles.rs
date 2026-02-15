@@ -46,8 +46,8 @@ impl StyleEngine {
     pub fn new() -> Self {
         let mut styles = StringPatriciaMap::new();
 
-        // Images - Cyan
-        let image_style = FileStyle::with_color("\u{1F5BB}", Color::Cyan);
+        // Images - Yellow (like yazi)
+        let image_style = FileStyle::with_color("\u{1F5BB}", Color::Yellow);
         styles.insert(mime::IMAGE, image_style);
         styles.insert(mime::IMAGE_BMP, image_style);
         styles.insert(mime::IMAGE_PNG, image_style);
@@ -56,25 +56,40 @@ impl StyleEngine {
         styles.insert(mime::IMAGE_SVG, image_style);
         styles.insert(mime::IMAGE_STAR, image_style);
 
-        // Audio - Magenta
+        // Audio - Magenta (like yazi)
         let audio_style = FileStyle::with_color("\u{266B}", Color::Magenta);
         styles.insert(mime::AUDIO, audio_style);
 
-        // Video - Yellow
-        let video_style = FileStyle::with_color("\u{1F39E}", Color::Yellow);
+        // Video - Magenta (yazi groups audio/video together)
+        let video_style = FileStyle::with_color("\u{1F39E}", Color::Magenta);
         styles.insert(mime::VIDEO, video_style);
 
-        // PDF - Red
-        let pdf_style = FileStyle::with_color("\u{202C}", Color::Red);
+        // Archives - Red (like yazi)
+        let archive_style = FileStyle::with_color("\u{1F5DC}", Color::Red);
+        styles.insert("application/zip", archive_style);
+        styles.insert("application/gzip", archive_style);
+        styles.insert("application/x-tar", archive_style);
+        styles.insert("application/x-bzip2", archive_style);
+        styles.insert("application/x-xz", archive_style);
+        styles.insert("application/x-7z-compressed", archive_style);
+        styles.insert("application/x-rar-compressed", archive_style);
+
+        // PDF/Documents - Cyan (like yazi)
+        let pdf_style = FileStyle::with_color("\u{202C}", Color::Cyan);
         styles.insert(mime::PDF, pdf_style);
 
         // Markdown - Blue
         let markdown_style = FileStyle::with_color("\u{1F89B}", Color::Blue);
         styles.insert("text/markdown", markdown_style);
 
-        // TOML - DarkCyan
-        let toml_style = FileStyle::with_color("\u{2699}", Color::DarkCyan);
-        styles.insert("text/x-toml", toml_style);
+        // Config files - DarkCyan
+        let config_style = FileStyle::with_color("\u{2699}", Color::DarkCyan);
+        styles.insert("text/x-toml", config_style);
+        styles.insert("application/json", config_style);
+        styles.insert("application/x-yaml", config_style);
+        styles.insert("text/yaml", config_style);
+        styles.insert("application/xml", config_style);
+        styles.insert("text/xml", config_style);
 
         StyleEngine { styles }
     }
