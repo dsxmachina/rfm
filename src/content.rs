@@ -109,15 +109,25 @@ pub struct PreviewManager {
     rate_states: HashMap<RateLimitKey, RateLimitState>,
 }
 
-pub fn dir_content(path: impl AsRef<Path>) -> Vec<DirElem> {
-    // read directory
+/// Result of reading a directory
+#[derive(Debug, Clone)]
+pub enum DirContent {
+    /// Successfully read the directory contents
+    Ok(Vec<DirElem>),
+    /// Could not access the directory (permission denied, etc.)
+    NoAccess,
+}
+
+pub fn dir_content(path: impl AsRef<Path>) -> DirContent {
     match std::fs::read_dir(path) {
-        Ok(dir) => dir
-            .into_iter()
-            .flatten()
-            .map(|p| DirElem::from(p.path()))
-            .collect(),
-        Err(_) => Vec::new(),
+        Ok(dir) => DirContent::Ok(
+            dir.into_iter()
+                .flatten()
+                .map(|p| DirElem::from(p.path()))
+                .collect(),
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => DirContent::NoAccess,
+        Err(_) => DirContent::Ok(Vec::new()),
     }
 }
 

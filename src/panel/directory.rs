@@ -10,7 +10,7 @@ use unix_mode::is_allowed;
 
 use crate::{
     config::color::{color_highlight, color_main, color_marked, print_vertical_bar},
-    content::dir_content,
+    content::{dir_content, DirContent},
     engine::SymbolEngine,
     util::{file_size_str, ExactWidth},
 };
@@ -249,6 +249,9 @@ pub struct DirPanel {
 
     /// Weather or not to show hidden files
     show_hidden: bool,
+
+    /// Whether the directory could not be accessed (permission denied)
+    no_access: bool,
 }
 
 impl Draw for DirPanel {
@@ -439,6 +442,12 @@ impl Draw for DirPanel {
                         .italic()
                 ),
             )?;
+        } else if self.no_access {
+            queue!(
+                stdout,
+                cursor::MoveTo(x_range.start + 1, y_range.start),
+                PrintStyledContent("(no access)".red().italic()),
+            )?;
         } else if self.elements.is_empty() {
             if let Some((new_element, is_dir)) = &self.new_element {
                 if !new_element.is_empty() {
@@ -511,7 +520,12 @@ impl BasePanel for DirPanel {
 }
 
 impl DirPanel {
-    pub fn new(mut elements: Vec<DirElem>, path: PathBuf) -> Self {
+    pub fn new(content: DirContent, path: PathBuf) -> Self {
+        let (mut elements, no_access) = match content {
+            DirContent::Ok(elements) => (elements, false),
+            DirContent::NoAccess => (Vec::new(), true),
+        };
+
         // Sort the elements before you use them
         elements.sort_by_cached_key(|a| a.name_lowercase().clone());
         elements.sort_by_cached_key(|a| !a.path().is_dir());
@@ -544,6 +558,7 @@ impl DirPanel {
             modified,
             loading: false,
             show_hidden: false,
+            no_access,
         }
     }
 
@@ -726,6 +741,7 @@ impl DirPanel {
             modified: SystemTime::now(),
             loading: true,
             show_hidden: false,
+            no_access: false,
         }
     }
 
@@ -744,6 +760,7 @@ impl DirPanel {
             path: "path-of-empty-panel".into(),
             loading: false,
             show_hidden: false,
+            no_access: false,
         }
     }
 

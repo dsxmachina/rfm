@@ -9,7 +9,7 @@ use std::{
 use super::*;
 use crate::{
     config::color::{print_horizontal_bar, print_horz_bot, print_horz_top},
-    content::dir_content,
+    content::{dir_content, DirContent},
 };
 
 pub enum ConsoleOp {
@@ -149,10 +149,11 @@ impl DirConsole {
         self.path = path;
         self.recommendations.clear();
         // parse directory and create recommendations
-        let content = dir_content(self.path.clone());
-        for item in content {
-            if item.path().is_dir() && !item.is_hidden() {
-                self.recommendations.insert(item.name());
+        if let DirContent::Ok(content) = dir_content(self.path.clone()) {
+            for item in content {
+                if item.path().is_dir() && !item.is_hidden() {
+                    self.recommendations.insert(item.name());
+                }
             }
         }
         // clear input and recommendations
