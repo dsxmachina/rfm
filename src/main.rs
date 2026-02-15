@@ -34,6 +34,7 @@ mod content;
 mod engine;
 mod logger;
 mod panel;
+mod rate_limiter;
 mod util;
 
 #[derive(Parser, Debug)]
