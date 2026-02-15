@@ -28,14 +28,6 @@ struct RateLimitState {
     has_pending: bool,
 }
 
-impl RateLimitState {
-    fn new() -> Self {
-        Self {
-            last_allowed: Instant::now(),
-            has_pending: false,
-        }
-    }
-}
 
 /// Rate limiter for panel update requests
 pub struct RateLimiter {
