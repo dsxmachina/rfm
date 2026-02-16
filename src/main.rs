@@ -3,15 +3,12 @@ use clap::Parser;
 use content::{PanelCache, SHUTDOWN_FLAG};
 use crossterm::{
     cursor,
-    event::{
-        DisableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-        PushKeyboardEnhancementFlags,
-    },
+    event::DisableMouseCapture,
     terminal::{
-        disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, Clear, ClearType,
-        DisableLineWrap, EnableLineWrap, EnterAlternateScreen, LeaveAlternateScreen,
+        disable_raw_mode, enable_raw_mode, Clear, ClearType, DisableLineWrap, EnableLineWrap,
+        EnterAlternateScreen, LeaveAlternateScreen,
     },
-    ExecutableCommand, QueueableCommand,
+    QueueableCommand,
 };
 use engine::{
     commands::{CloseCmd, CommandParser},
@@ -230,30 +227,6 @@ async fn main() -> anyhow::Result<()> {
 
     enable_raw_mode()?;
 
-    // Enable Kitty keyboard protocol for proper modifier detection (Shift+Backspace, etc.)
-    // This only works on terminals that support it (Kitty, WezTerm, foot, Alacritty 0.13+, etc.)
-    let keyboard_enhancement_enabled = match supports_keyboard_enhancement() {
-        Ok(true) => {
-            info!("Terminal supports keyboard enhancement, enabling...");
-            stdout
-                .execute(PushKeyboardEnhancementFlags(
-                    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
-                ))
-                .is_ok()
-        }
-        Ok(false) => {
-            info!("Terminal does not support keyboard enhancement (Kitty protocol)");
-            false
-        }
-        Err(e) => {
-            warn!("Failed to query keyboard enhancement support: {e}");
-            false
-        }
-    };
-    if keyboard_enhancement_enabled {
-        info!("Kitty keyboard protocol enabled");
-    }
-
     stdout
         .queue(DisableMouseCapture)?
         .queue(DisableLineWrap)?
@@ -304,9 +277,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Create command executor for background shell commands
     let (command_tx, command_rx) = mpsc::unbounded_channel();
-    let (command_status_tx, _command_status_rx) = tokio::sync::watch::channel(
-        command_queue::QueueStatus::default(),
-    );
+    let (command_status_tx, _command_status_rx) =
+        tokio::sync::watch::channel(command_queue::QueueStatus::default());
     let command_executor = command_queue::CommandExecutor::new(command_rx, command_status_tx);
     let cmd_exec_handle = tokio::spawn(command_executor.run());
 
@@ -343,9 +315,6 @@ async fn main() -> anyhow::Result<()> {
     cmd_exec_handle.abort();
 
     // Be a good citizen, cleanup
-    if keyboard_enhancement_enabled {
-        let _ = stdout.execute(PopKeyboardEnhancementFlags);
-    }
     stdout
         .queue(EnableLineWrap)?
         .queue(Clear(ClearType::All))?
