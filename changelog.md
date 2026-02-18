@@ -1,3 +1,11 @@
+# Dev
+
+- noto-fonts support (more symbols based on mime-type)
+- async-command support (with queue)
+- better renaming (with preview + delete everything)
+- bulkrename: rename multiple marked files using the configured text editor
+- advanced panel updates (rate-limiting; removed freezing, so panels always update; use cache if not modified)
+
 # 0.3.7
 - add `application/x-sql` mime-type to text-preview
 - [add support for aarch64](https://github.com/dsxmachina/rfm/pull/7)

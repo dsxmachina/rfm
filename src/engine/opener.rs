@@ -63,6 +63,24 @@ impl Application {
         }
         Ok(())
     }
+
+    /// Opens a file and always waits for the process to complete.
+    /// Used for operations that need to wait for the editor result (like bulkrename).
+    pub fn open_blocking<P: AsRef<Path>>(&self, path: P) -> Result<std::process::ExitStatus> {
+        info!(
+            "Opening '{}' with '{}' (blocking)",
+            path.as_ref().display(),
+            self.name
+        );
+        stdout().queue(terminal::EnableLineWrap)?.flush()?;
+        let mut handle = Command::new(&self.name)
+            .args(&self.args)
+            .arg(path.as_ref())
+            .spawn()?;
+        let status = handle.wait()?;
+        stdout().queue(terminal::DisableLineWrap)?.flush()?;
+        Ok(status)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +101,19 @@ impl OpenOptions {
             }
         }
         self.default.open(absolute)
+    }
+
+    pub fn open_blocking(&self, absolute: PathBuf) -> Result<std::process::ExitStatus> {
+        if let Some(ext_list) = &self.extensions {
+            info!("checking extensions (blocking): {:?}", ext_list);
+            let path_extension = absolute.extension().and_then(|s| s.to_str());
+            for (ext, application) in ext_list.iter() {
+                if Some(ext.as_str()) == path_extension {
+                    return application.open_blocking(&absolute);
+                }
+            }
+        }
+        self.default.open_blocking(absolute)
     }
 }
 
@@ -192,6 +223,39 @@ impl OpenEngine {
         }
         terminal::enable_raw_mode()?;
         Ok(())
+    }
+
+    /// Opens a text file and blocks until the editor is closed.
+    /// Used for operations that need to wait for the editor result (like bulkrename).
+    /// Falls back to $EDITOR or vi if no text opener is configured.
+    pub fn open_text_blocking(&self, path: PathBuf) -> Result<std::process::ExitStatus> {
+        let absolute = if path.is_absolute() {
+            path
+        } else {
+            path.canonicalize().unwrap_or_default()
+        };
+        terminal::disable_raw_mode()?;
+        let mut stdout = stdout();
+        stdout
+            .queue(Clear(ClearType::All))?
+            .queue(cursor::MoveTo(0, 0))?;
+        stdout.flush()?;
+
+        let status = if let Some(engine) = &self.config.text {
+            engine.open_blocking(absolute)?
+        } else {
+            // Fallback to $EDITOR or vi
+            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+            info!("No text opener configured, using {}", editor);
+            stdout.queue(terminal::EnableLineWrap)?.flush()?;
+            let mut handle = Command::new(&editor).arg(&absolute).spawn()?;
+            let status = handle.wait()?;
+            stdout.queue(terminal::DisableLineWrap)?.flush()?;
+            status
+        };
+
+        terminal::enable_raw_mode()?;
+        Ok(status)
     }
 
     pub fn zip(&self, items: Vec<PathBuf>) -> Result<()> {

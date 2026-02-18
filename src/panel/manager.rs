@@ -16,7 +16,7 @@ use crate::{
     engine::commands::{CloseCmd, Command, CommandParser},
     engine::OpenEngine,
     logger::LogBuffer,
-    util::{copy_item, get_destination, move_item, print_metadata},
+    util::{copy_item, get_destination, move_item, print_metadata, rename_safe},
 };
 
 /// Expand the command template by replacing $@ with the given paths
@@ -818,6 +818,219 @@ impl PanelManager {
         }
     }
 
+    /// Performs bulk rename on multiple files using the configured text editor.
+    fn bulkrename(&mut self, files: Vec<PathBuf>) {
+        use std::io::Write;
+
+        if files.is_empty() {
+            return;
+        }
+
+        // Get the directory where files are located (assume all in same directory)
+        let dir = files[0].parent().unwrap_or(Path::new(".")).to_path_buf();
+
+        // Create temp file with filenames
+        let temp_file = match tempfile::Builder::new()
+            .prefix("rfm-bulkrename-")
+            .suffix(".txt")
+            .tempfile()
+        {
+            Ok(f) => f,
+            Err(e) => {
+                error!("Failed to create temp file for bulkrename: {e}");
+                return;
+            }
+        };
+        let temp_path = temp_file.path().to_path_buf();
+
+        // Write original filenames to temp file
+        let original_names: Vec<String> = files
+            .iter()
+            .filter_map(|p| p.file_name())
+            .filter_map(|n| n.to_str())
+            .map(|s| s.to_string())
+            .collect();
+
+        if let Err(e) = (|| -> std::io::Result<()> {
+            let mut file = std::fs::File::create(&temp_path)?;
+            for name in &original_names {
+                writeln!(file, "{}", name)?;
+            }
+            file.flush()?;
+            Ok(())
+        })() {
+            error!("Failed to write temp file for bulkrename: {e}");
+            return;
+        }
+
+        // Keep temp file alive by keeping the handle
+        let _temp_handle = temp_file;
+
+        // Open editor and wait for it to close
+        loop {
+            match self.opener.open_text_blocking(temp_path.clone()) {
+                Ok(status) if !status.success() => {
+                    info!("Editor exited with non-zero status, aborting bulkrename");
+                    return;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    error!("Failed to open editor: {e}");
+                    return;
+                }
+            }
+
+            // Read edited filenames
+            let new_content = match std::fs::read_to_string(&temp_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    error!("Failed to read temp file after editing: {e}");
+                    return;
+                }
+            };
+
+            let new_names: Vec<&str> = new_content.lines().collect();
+
+            // Check if unchanged - if so, exit silently
+            if new_names.len() == original_names.len()
+                && new_names
+                    .iter()
+                    .zip(original_names.iter())
+                    .all(|(new, old)| *new == old)
+            {
+                info!("Bulkrename: no changes made");
+                return;
+            }
+
+            // Validate: line count must match
+            if new_names.len() != original_names.len() {
+                error!(
+                    "Bulkrename: line count mismatch ({} vs {}). Lines must not be added or removed.",
+                    new_names.len(),
+                    original_names.len()
+                );
+                // Rewrite original file and reopen
+                if let Err(e) = (|| -> std::io::Result<()> {
+                    let mut file = std::fs::File::create(&temp_path)?;
+                    for name in &original_names {
+                        writeln!(file, "{} # DO NOT add or remove lines", name)?;
+                    }
+                    file.flush()?;
+                    Ok(())
+                })() {
+                    error!("Failed to rewrite temp file: {e}");
+                    return;
+                }
+                continue;
+            }
+
+            // Check for errors: duplicates and conflicts
+            let mut errors: Vec<Option<&str>> = vec![None; new_names.len()];
+            let mut has_errors = false;
+
+            // Check for duplicate target names within batch
+            for i in 0..new_names.len() {
+                for j in (i + 1)..new_names.len() {
+                    if new_names[i] == new_names[j] && new_names[i] != original_names[i] {
+                        errors[i] = Some("duplicate target name");
+                        errors[j] = Some("duplicate target name");
+                        has_errors = true;
+                    }
+                }
+            }
+
+            // Check for conflicts with existing files (but not with files being renamed in this batch)
+            for (i, new_name) in new_names.iter().enumerate() {
+                if *new_name == original_names[i] {
+                    continue; // No change for this file
+                }
+                let target_path = dir.join(new_name);
+                // Check if target exists and is not one of the files being renamed
+                if target_path.exists() && !files.contains(&target_path) {
+                    errors[i] = Some("already exists");
+                    has_errors = true;
+                }
+            }
+
+            if has_errors {
+                // Rewrite file with error comments and reopen
+                if let Err(e) = (|| -> std::io::Result<()> {
+                    let mut file = std::fs::File::create(&temp_path)?;
+                    for (i, new_name) in new_names.iter().enumerate() {
+                        if let Some(err_msg) = errors[i] {
+                            writeln!(file, "{} # {}", new_name, err_msg)?;
+                        } else {
+                            writeln!(file, "{}", new_name)?;
+                        }
+                    }
+                    file.flush()?;
+                    Ok(())
+                })() {
+                    error!("Failed to rewrite temp file with errors: {e}");
+                    return;
+                }
+                continue;
+            }
+
+            // All validations passed - perform renames
+            // We need to handle the case where files might be swapped (a->b, b->a)
+            // So we first rename to temporary names, then to final names
+            let mut temp_renames: Vec<(PathBuf, PathBuf)> = Vec::new();
+            let mut final_renames: Vec<(PathBuf, PathBuf, String)> = Vec::new();
+
+            for (i, new_name) in new_names.iter().enumerate() {
+                if *new_name == original_names[i] {
+                    continue; // No change
+                }
+                let from = files[i].clone();
+                let to = dir.join(new_name);
+
+                // Check if target is also being renamed (swap scenario)
+                let is_swap = files.iter().any(|f| *f == to);
+                if is_swap {
+                    // Rename to temp first
+                    let temp_name = format!(".rfm-bulkrename-temp-{}-{}", i, original_names[i]);
+                    let temp_path = dir.join(&temp_name);
+                    temp_renames.push((from.clone(), temp_path.clone()));
+                    final_renames.push((temp_path, to, new_name.to_string()));
+                } else {
+                    final_renames.push((from, to, new_name.to_string()));
+                }
+            }
+
+            // Execute temp renames first
+            for (from, to) in &temp_renames {
+                if let Err(e) = std::fs::rename(from, to) {
+                    error!("Failed to rename {} -> {}: {e}", from.display(), to.display());
+                    return;
+                }
+            }
+
+            // Execute final renames with safety fallback
+            let mut success_count = 0;
+            for (from, to, new_name) in &final_renames {
+                match rename_safe(from, to) {
+                    Ok(actual_path) => {
+                        if actual_path != *to {
+                            info!(
+                                "Renamed '{}' -> '{}' (adjusted due to conflict)",
+                                from.display(),
+                                actual_path.display()
+                            );
+                        }
+                        success_count += 1;
+                    }
+                    Err(e) => {
+                        error!("Failed to rename to '{}': {e}", new_name);
+                    }
+                }
+            }
+
+            info!("Bulkrename: successfully renamed {} files", success_count);
+            return;
+        }
+    }
+
     pub async fn run(mut self) -> Result<CloseCmd> {
         // Initial draw
         self.redraw_everything();
@@ -951,17 +1164,31 @@ impl PanelManager {
                             self.redraw_footer();
                         }
                         Command::Rename => {
-                            let selected = self
-                                .center
-                                .panel()
-                                .selected_path()
-                                .and_then(|p| p.file_name())
-                                .and_then(|f| f.to_owned().into_string().ok())
-                                .unwrap_or_default();
-                            self.mode = Mode::Rename {
-                                input: Input::from_str(selected),
-                            };
-                            self.redraw_footer();
+                            // Check if multiple files are marked - use bulkrename
+                            let marked = self.marked_items();
+                            if marked.len() > 1 {
+                                let files: Vec<PathBuf> =
+                                    marked.iter().map(|e| e.path().to_path_buf()).collect();
+                                self.unmark_all_items();
+                                self.bulkrename(files);
+                                self.left.reload();
+                                self.center.reload();
+                                self.right.reload();
+                                self.redraw_everything();
+                            } else {
+                                // Single file rename - use existing inline mode
+                                let selected = self
+                                    .center
+                                    .panel()
+                                    .selected_path()
+                                    .and_then(|p| p.file_name())
+                                    .and_then(|f| f.to_owned().into_string().ok())
+                                    .unwrap_or_default();
+                                self.mode = Mode::Rename {
+                                    input: Input::from_str(selected),
+                                };
+                                self.redraw_footer();
+                            }
                         }
                         Command::Next => {
                             self.center.panel_mut().select_next_marked();

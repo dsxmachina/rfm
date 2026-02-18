@@ -245,6 +245,80 @@ where
     Ok(())
 }
 
+/// Renames a file to a new path, appending underscores if the target already exists.
+/// Returns the actual path the file was renamed to.
+///
+/// This is a safety mechanism to prevent overwriting files in case of race conditions.
+pub fn rename_safe<P, Q>(source: P, target: Q) -> anyhow::Result<PathBuf>
+where
+    P: AsRef<Path>,
+    Q: AsRef<Path>,
+{
+    let from = source.as_ref();
+    let to = target.as_ref();
+
+    // If source and target are the same, do nothing
+    if from == to {
+        return Ok(to.to_path_buf());
+    }
+
+    // If target doesn't exist, just rename directly
+    if !to.exists() {
+        std::fs::rename(from, to)?;
+        return Ok(to.to_path_buf());
+    }
+
+    // Target exists - append underscores until we find a free name
+    let parent = to.parent().unwrap_or(Path::new("."));
+    let mut filename = to
+        .file_name()
+        .and_then(|f| f.to_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow!("Invalid filename"))?;
+
+    let mut result = to.to_path_buf();
+    while result.exists() {
+        filename.push('_');
+        result = parent.join(&filename);
+    }
+
+    std::fs::rename(from, &result)?;
+    Ok(result)
+}
+
+#[test]
+fn test_rename_safe() {
+    use std::fs;
+    use tempfile::tempdir;
+
+    let dir = tempdir().unwrap();
+    let dir_path = dir.path();
+
+    // Test 1: Simple rename when target doesn't exist
+    let file1 = dir_path.join("file1.txt");
+    fs::write(&file1, "content1").unwrap();
+    let target1 = dir_path.join("renamed.txt");
+    let result1 = rename_safe(&file1, &target1).unwrap();
+    assert_eq!(result1, target1);
+    assert!(target1.exists());
+    assert!(!file1.exists());
+
+    // Test 2: Rename when target exists - should append underscore
+    let file2 = dir_path.join("file2.txt");
+    fs::write(&file2, "content2").unwrap();
+    let result2 = rename_safe(&file2, &target1).unwrap();
+    assert_eq!(result2, dir_path.join("renamed.txt_"));
+    assert!(result2.exists());
+    assert!(!file2.exists());
+
+    // Test 3: Rename to same path - should be no-op
+    let file3 = dir_path.join("file3.txt");
+    fs::write(&file3, "content3").unwrap();
+    let result3 = rename_safe(&file3, &file3).unwrap();
+    assert_eq!(result3, file3);
+    assert!(file3.exists());
+}
+
 /// Query the XDG Config Home (usually ~/.config) according to
 /// https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
 pub fn xdg_config_home() -> anyhow::Result<PathBuf> {
