@@ -978,6 +978,16 @@ impl PanelManager {
             let mut temp_renames: Vec<(PathBuf, PathBuf)> = Vec::new();
             let mut final_renames: Vec<(PathBuf, PathBuf, String)> = Vec::new();
 
+            // Use process ID and timestamp to create unique temp names
+            let unique_id = format!(
+                "{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            );
+
             for (i, new_name) in new_names.iter().enumerate() {
                 if *new_name == original_names[i] {
                     continue; // No change
@@ -988,8 +998,9 @@ impl PanelManager {
                 // Check if target is also being renamed (swap scenario)
                 let is_swap = files.iter().any(|f| *f == to);
                 if is_swap {
-                    // Rename to temp first
-                    let temp_name = format!(".rfm-bulkrename-temp-{}-{}", i, original_names[i]);
+                    // Rename to temp first (unique name to avoid conflicts)
+                    let temp_name =
+                        format!(".rfm-bulkrename-{}-{}-{}", unique_id, i, original_names[i]);
                     let temp_path = dir.join(&temp_name);
                     temp_renames.push((from.clone(), temp_path.clone()));
                     final_renames.push((temp_path, to, new_name.to_string()));
