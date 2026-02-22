@@ -43,6 +43,9 @@ const DEFAULT_RATE_LIMIT_INTERVAL_MS: u64 = 500;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
+    /// Override default config dir (XDG_CONFIG_HOME)
+    #[arg(long)]
+    config: Option<PathBuf>,
     /// Makes rfm act like a diretory chooser. Upon quitting
     /// it will write the full path of the last visited directory to CHOOSEDIR
     #[arg(long)]
@@ -110,9 +113,13 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // --- Read config directory
-    let config_dir = xdg_config_home()
-        .context("failed to get $XDG_CONFIG_HOME")?
-        .join("rfm");
+    let config_dir = if let Some(config_dir) = args.config {
+        config_dir
+    } else {
+        xdg_config_home()
+            .context("failed to get $XDG_CONFIG_HOME")?
+            .join("rfm")
+    };
 
     // Create config files and config directory, if they are not present
     if !config_dir.exists() {
