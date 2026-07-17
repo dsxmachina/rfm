@@ -42,7 +42,7 @@ async fn recv_debug(rx: &mut Option<mpsc::Receiver<DebugRequest>>) -> Option<Deb
 
 use self::console::{Console, ConsoleOp, DirConsole, Zoxide};
 
-use super::mode::{Cleanup, ModalInput, ModalRegion, ModeOp, SearchMode};
+use super::mode::{Cleanup, ModalInput, ModalRegion, ModeOp, RenameMode, SearchMode};
 use super::{input::Input, *};
 
 struct Redraw {
@@ -71,7 +71,6 @@ enum Mode {
     Normal,
     Console { console: Box<dyn Console> },
     CreateItem { input: Input, is_dir: bool },
-    Rename { input: Input },
     Modal(Box<dyn ModalInput>),
 }
 
@@ -406,15 +405,6 @@ impl PanelManager {
                 // normal footer rendering (same as console mode today).
                 ModalRegion::ConsoleOverlay => {}
             }
-        }
-        if let Mode::Rename { input } = &self.mode {
-            self.stdout
-                .queue(PrintStyledContent(
-                    "Rename:".bold().with(color_main()).reverse(),
-                ))?
-                .queue(Print(" "))?;
-            input.print(&mut self.stdout, style::Color::Yellow)?;
-            return self.stdout.flush();
         }
         if let Mode::CreateItem { input, is_dir } = &self.mode {
             let prompt = if *is_dir { "Make Directory:" } else { "Touch:" };
@@ -1151,7 +1141,6 @@ impl PanelManager {
             Mode::Console { .. } => "console",
             Mode::CreateItem { is_dir: true, .. } => "mkdir",
             Mode::CreateItem { .. } => "touch",
-            Mode::Rename { .. } => "rename",
             Mode::Modal(modal) => modal.name(),
         }
     }
@@ -1305,10 +1294,17 @@ impl PanelManager {
                 self.redraw_center();
                 self.redraw_right();
             }
-            ModeOp::RenamePreview(_)
-            | ModeOp::Rename { .. }
-            | ModeOp::CreatePreview { .. }
-            | ModeOp::Create { .. } => {
+            ModeOp::RenamePreview(name) => {
+                // The manager supplies the apply-time context: the preview
+                // is anchored at the currently selected entry.
+                let selected_idx = self.center.panel().selected_idx();
+                self.center
+                    .panel_mut()
+                    .inject_rename_preview(name, selected_idx);
+                self.redraw_center();
+            }
+            ModeOp::Rename { to } => self.apply_rename(to),
+            ModeOp::CreatePreview { .. } | ModeOp::Create { .. } => {
                 unreachable!("wired in a later task")
             }
             ModeOp::Exit { cleanup } => {
@@ -1318,6 +1314,31 @@ impl PanelManager {
                 self.redraw_footer();
             }
         }
+    }
+
+    /// Applies [`ModeOp::Rename`]: renames the selected entry to `to`
+    /// (within its parent directory) and leaves the mode.
+    ///
+    /// Ported verbatim from the old inline rename Enter arm: same-path is
+    /// a no-op, existing targets are never overwritten.
+    fn apply_rename(&mut self, to: String) {
+        if let Some(from) = self.center.panel().selected_path() {
+            let to = from.parent().map(|p| p.join(&to)).unwrap_or_default();
+            // Don't rename if it's the same path
+            if from == to {
+                // No-op, just exit rename mode
+            } else if to.exists() {
+                // Prevent overwriting existing files
+                warn!("Cannot rename: '{}' already exists", to.display());
+            } else if let Err(e) = std::fs::rename(from, &to) {
+                error!("{e}");
+            }
+        }
+        self.mode = Mode::Normal;
+        self.center.panel_mut().clear_rename_preview();
+        self.center.reload();
+        self.right.reload();
+        self.redraw_panels();
     }
 
     /// Undoes the visible traces of a cancelled modal mode.
@@ -1402,7 +1423,8 @@ impl PanelManager {
                                 self.right.reload();
                                 self.redraw_everything();
                             } else {
-                                // Single file rename - use existing inline mode
+                                // Single file rename - modal mode seeded
+                                // with the current file name
                                 let selected = self
                                     .center
                                     .panel()
@@ -1410,9 +1432,7 @@ impl PanelManager {
                                     .and_then(|p| p.file_name())
                                     .and_then(|f| f.to_owned().into_string().ok())
                                     .unwrap_or_default();
-                                self.mode = Mode::Rename {
-                                    input: Input::from_str(selected),
-                                };
+                                self.mode = Mode::Modal(Box::new(RenameMode::new(selected)));
                                 self.redraw_footer();
                             }
                         }
@@ -1653,37 +1673,6 @@ impl PanelManager {
                 Mode::Modal(modal) => {
                     let op = modal.handle_key(key_event);
                     self.apply_mode_op(op);
-                }
-                Mode::Rename { input } => {
-                    if let KeyCode::Enter = key_event.code {
-                        if let Some(from) = self.center.panel().selected_path() {
-                            let to = from
-                                .parent()
-                                .map(|p| p.join(input.get()))
-                                .unwrap_or_default();
-                            // Don't rename if it's the same path
-                            if from == to {
-                                // No-op, just exit rename mode
-                            } else if to.exists() {
-                                // Prevent overwriting existing files
-                                warn!("Cannot rename: '{}' already exists", to.display());
-                            } else if let Err(e) = std::fs::rename(from, &to) {
-                                error!("{e}");
-                            }
-                        }
-                        self.mode = Mode::Normal;
-                        self.center.panel_mut().clear_rename_preview();
-                        self.center.reload();
-                        self.right.reload();
-                        self.redraw_panels();
-                    } else {
-                        input.update(key_event.code, key_event.modifiers);
-                        let selected_idx = self.center.panel().selected_idx();
-                        self.center
-                            .panel_mut()
-                            .inject_rename_preview(input.get().to_string(), selected_idx);
-                        self.redraw_center();
-                    }
                 }
             }
             let mode_after = self.mode_name();

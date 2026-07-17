@@ -8,7 +8,9 @@ use std::path::PathBuf;
 
 use super::Draw;
 
+mod rename;
 mod search;
+pub use rename::RenameMode;
 pub use search::SearchMode;
 
 /// The effect a modal mode requests from the application.
