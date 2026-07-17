@@ -445,17 +445,6 @@ impl PanelManager {
         self.mark_dirty();
     }
 
-    // fn select(&mut self, path: &Path) {
-    //     if self.center.panel().selected_path() == Some(path) {
-    //         return;
-    //     }
-    //     self.center.panel_mut().select_path(path);
-    //     self.right
-    //         .new_panel_delayed(self.center.panel().selected_path());
-    //     self.redraw_center();
-    //     self.redraw_right();
-    // }
-
     fn move_up(&mut self, step: usize) {
         trace!("move-up");
         if self.center.panel_mut().up(step) {
