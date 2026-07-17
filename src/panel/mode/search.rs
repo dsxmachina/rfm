@@ -5,17 +5,15 @@ use std::io::Stdout;
 use std::ops::Range;
 
 use crossterm::{
-    cursor,
     event::{KeyCode, KeyEvent},
-    style::{self, Print, PrintStyledContent, Stylize},
-    QueueableCommand, Result,
+    style::Color,
+    Result,
 };
 
-use crate::config::color::color_main;
 use crate::panel::input::Input;
 use crate::panel::Draw;
 
-use super::{Cleanup, ModalInput, ModalRegion, ModeOp};
+use super::{draw_footer_prompt, Cleanup, ModalInput, ModalRegion, ModeOp};
 
 pub struct SearchMode {
     input: Input,
@@ -36,14 +34,7 @@ impl Draw for SearchMode {
         x_range: Range<u16>,
         y_range: Range<u16>,
     ) -> Result<()> {
-        stdout
-            .queue(cursor::MoveTo(x_range.start, y_range.start))?
-            .queue(PrintStyledContent(
-                "Search".bold().with(color_main()).reverse(),
-            ))?
-            .queue(Print(" "))?;
-        self.input.print(stdout, style::Color::Red)?;
-        Ok(())
+        draw_footer_prompt(stdout, x_range, y_range, "Search", &self.input, Color::Red)
     }
 }
 

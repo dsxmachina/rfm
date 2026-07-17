@@ -1273,8 +1273,9 @@ impl PanelManager {
     /// Applies the op a modal mode requested.
     ///
     /// This is the only place where modal-mode effects touch the panels:
-    /// per-op panel mutations, the derived redraws, and the return to
-    /// [`Mode::Normal`] on concluding ops all live here.
+    /// per-op panel mutations and the derived redraws all live here.
+    /// Concluding ops return to [`Mode::Normal`] here or in their
+    /// `apply_*` helpers (helpers own their mode reset).
     fn apply_mode_op(&mut self, op: ModeOp) {
         match op {
             ModeOp::None => {}
@@ -1323,14 +1324,14 @@ impl PanelManager {
     /// a no-op, existing targets are never overwritten.
     fn apply_rename(&mut self, to: String) {
         if let Some(from) = self.center.panel().selected_path() {
-            let to = from.parent().map(|p| p.join(&to)).unwrap_or_default();
+            let to_path = from.parent().map(|p| p.join(&to)).unwrap_or_default();
             // Don't rename if it's the same path
-            if from == to {
+            if from == to_path {
                 // No-op, just exit rename mode
-            } else if to.exists() {
+            } else if to_path.exists() {
                 // Prevent overwriting existing files
-                warn!("Cannot rename: '{}' already exists", to.display());
-            } else if let Err(e) = std::fs::rename(from, &to) {
+                warn!("Cannot rename: '{}' already exists", to_path.display());
+            } else if let Err(e) = std::fs::rename(from, &to_path) {
                 error!("{e}");
             }
         }

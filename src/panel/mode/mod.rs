@@ -3,8 +3,19 @@
 //! Adapters are pure state machines: they never touch panels, the
 //! filesystem, or redraw flags. The PanelManager applies ops centrally.
 
-use crossterm::event::KeyEvent;
+use std::io::Stdout;
+use std::ops::Range;
 use std::path::PathBuf;
+
+use crossterm::{
+    cursor,
+    event::KeyEvent,
+    style::{Color, Print, PrintStyledContent, Stylize},
+    QueueableCommand, Result,
+};
+
+use crate::config::color::color_main;
+use crate::panel::input::Input;
 
 use super::Draw;
 
@@ -12,6 +23,25 @@ mod rename;
 mod search;
 pub use rename::RenameMode;
 pub use search::SearchMode;
+
+/// Draws the shared FooterLine prompt: a reversed label in the main
+/// color, a space, then the live input in the mode's input color.
+pub(crate) fn draw_footer_prompt(
+    stdout: &mut Stdout,
+    x_range: Range<u16>,
+    y_range: Range<u16>,
+    label: &str,
+    input: &Input,
+    color: Color,
+) -> Result<()> {
+    stdout
+        .queue(cursor::MoveTo(x_range.start, y_range.start))?
+        .queue(PrintStyledContent(
+            label.bold().with(color_main()).reverse(),
+        ))?
+        .queue(Print(" "))?;
+    input.print(stdout, color)
+}
 
 /// The effect a modal mode requests from the application.
 ///
