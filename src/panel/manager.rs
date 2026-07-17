@@ -12,7 +12,7 @@ use tempfile::TempDir;
 use tokio::sync::watch;
 
 use crate::{
-    command_queue::{QueueStatus, QueuedCommand},
+    command_queue::{zoxide_add_dir, QueueStatus, QueuedCommand},
     config::color::{color_dir_path, color_main},
     debug::{ClipboardInfo, DebugRequest, EntryInfo, PaneId, StateSnapshot},
     engine::commands::{CloseCmd, Command, CommandParser},
@@ -152,7 +152,7 @@ pub struct PanelManager {
     prev_rx: mpsc::Receiver<(PreviewPanel, PanelState)>,
 
     /// Sender for queueing background commands
-    command_tx: Option<mpsc::UnboundedSender<QueuedCommand>>,
+    command_tx: mpsc::UnboundedSender<QueuedCommand>,
 
     /// Receiver for status of the background command queue
     command_status_rx: watch::Receiver<QueueStatus>,
@@ -174,7 +174,7 @@ impl PanelManager {
         prev_rx: mpsc::Receiver<(PreviewPanel, PanelState)>,
         logger: LogBuffer,
         opener: OpenEngine,
-        command_tx: Option<mpsc::UnboundedSender<QueuedCommand>>,
+        command_tx: mpsc::UnboundedSender<QueuedCommand>,
         command_status_rx: watch::Receiver<QueueStatus>,
         debug_rx: Option<mpsc::Receiver<DebugRequest>>,
     ) -> Result<Self> {
@@ -615,6 +615,11 @@ impl PanelManager {
         if let Some(selected) = self.center.panel().selected_path().map(|p| p.to_path_buf()) {
             // If the selected item is a directory, all panels will shift to the left
             if selected.is_dir() {
+                if let Some(cmd) = zoxide_add_dir(&selected) {
+                    if let Err(e) = self.command_tx.send(cmd) {
+                        error!("Failed to queue command: {}", e);
+                    }
+                }
                 self.previous = self.center.panel().path().to_path_buf();
                 debug!(
                     "push to history: {}, len={}",
@@ -730,6 +735,11 @@ impl PanelManager {
             return;
         }
         if path.exists() {
+            if let Some(cmd) = zoxide_add_dir(&path) {
+                if let Err(e) = self.command_tx.send(cmd) {
+                    error!("Failed to queue command: {}", e);
+                }
+            }
             self.fwd_history.clear(); // Delete history when jumping
             self.rev_history.clear();
             self.previous = self.center.panel().path().to_path_buf();
@@ -1036,7 +1046,11 @@ impl PanelManager {
             // Execute temp renames first
             for (from, to) in &temp_renames {
                 if let Err(e) = std::fs::rename(from, to) {
-                    error!("Failed to rename {} -> {}: {e}", from.display(), to.display());
+                    error!(
+                        "Failed to rename {} -> {}: {e}",
+                        from.display(),
+                        to.display()
+                    );
                     return;
                 }
             }
@@ -1447,9 +1461,7 @@ impl PanelManager {
                             if interactive {
                                 // Run interactively in foreground
                                 info!("Running interactive command '{}': {}", name, expanded_cmd);
-                                if let Err(e) =
-                                    std::env::set_current_dir(&working_dir)
-                                {
+                                if let Err(e) = std::env::set_current_dir(&working_dir) {
                                     error!("Failed to set working directory: {e}");
                                 }
                                 // TODO: Implement terminal suspend/resume for interactive commands
@@ -1465,7 +1477,10 @@ impl PanelManager {
                                             info!("Command '{}' completed successfully", name);
                                         } else {
                                             let code = status.code().unwrap_or(-1);
-                                            error!("Command '{}' failed with exit code {}", name, code);
+                                            error!(
+                                                "Command '{}' failed with exit code {}",
+                                                name, code
+                                            );
                                         }
                                     }
                                     Err(e) => {
@@ -1476,15 +1491,13 @@ impl PanelManager {
                             } else {
                                 // Queue for background execution
                                 info!("Queueing command '{}': {}", name, expanded_cmd);
-                                if let Some(ref cmd_tx) = self.command_tx {
-                                    let queued = crate::command_queue::QueuedCommand {
-                                        name,
-                                        cmd: expanded_cmd,
-                                        working_dir,
-                                    };
-                                    if let Err(e) = cmd_tx.send(queued) {
-                                        error!("Failed to queue command: {}", e);
-                                    }
+                                let queued = QueuedCommand {
+                                    name,
+                                    cmd: expanded_cmd,
+                                    working_dir,
+                                };
+                                if let Err(e) = self.command_tx.send(queued) {
+                                    error!("Failed to queue command: {}", e);
                                 }
                             }
                             self.unmark_all_items();

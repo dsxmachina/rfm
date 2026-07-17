@@ -322,7 +322,7 @@ async fn main() -> anyhow::Result<()> {
         prev_rx,
         logger.clone(),
         opener,
-        Some(command_tx),
+        command_tx,
         command_status_rx,
         debug_rx,
     )?;

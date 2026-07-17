@@ -91,7 +91,11 @@ impl CommandExecutor {
                                 debug!("[{}] {}", name, line);
                             }
                             if stdout.lines().count() > 10 {
-                                debug!("[{}] ... ({} more lines)", name, stdout.lines().count() - 10);
+                                debug!(
+                                    "[{}] ... ({} more lines)",
+                                    name,
+                                    stdout.lines().count() - 10
+                                );
                             }
                         }
 
