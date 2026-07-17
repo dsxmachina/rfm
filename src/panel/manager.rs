@@ -14,7 +14,7 @@ use tokio::sync::watch;
 use crate::{
     command_queue::{zoxide_add_dir, QueueStatus, QueuedCommand},
     config::color::{color_dir_path, color_main},
-    debug::{ClipboardInfo, DebugRequest, EntryInfo, PaneId, StateSnapshot},
+    debug::{ClipboardInfo, DebugRequest, EntryInfo, LogEntry, PaneId, StateSnapshot},
     engine::commands::{CloseCmd, Command, CommandParser},
     engine::OpenEngine,
     logger::LogBuffer,
@@ -1108,6 +1108,20 @@ impl PanelManager {
                     })
                     .collect();
                 let _ = reply.send(entries);
+            }
+            DebugRequest::Log { count, reply } => {
+                let now = std::time::Instant::now();
+                let lines = self
+                    .logger
+                    .history(count.unwrap_or(crate::logger::HISTORY_CAPACITY))
+                    .into_iter()
+                    .map(|(level, at, message)| LogEntry {
+                        level: level.to_string(),
+                        age_secs: now.duration_since(at).as_secs_f64(),
+                        message,
+                    })
+                    .collect();
+                let _ = reply.send(lines);
             }
         }
     }

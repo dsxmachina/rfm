@@ -395,11 +395,16 @@ async fn main() -> anyhow::Result<()> {
 fn print_all_errors(logger: &LogBuffer) -> anyhow::Result<()> {
     let errors = logger.get_errors();
     if !errors.is_empty() {
-        // Write error.log
+        // Write error.log from the retained history (not just the short-lived
+        // display buffer), so the report survives the periodic log eviction
+        let now = std::time::Instant::now();
         let log_output: String = logger
-            .get()
+            .history(logger::HISTORY_CAPACITY)
             .into_iter()
-            .map(|(level, msg)| format!("{level}: {msg}\n"))
+            .map(|(level, at, msg)| {
+                let age = now.duration_since(at).as_secs();
+                format!("{level} ({age}s ago): {msg}\n")
+            })
             .collect();
         let mut log = std::fs::File::create("./error.log").context("failed to create error log")?;
         log.write_all(log_output.as_bytes())

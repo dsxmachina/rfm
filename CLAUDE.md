@@ -30,6 +30,11 @@ Socket commands (one per connection, JSON reply):
 - `state` — mode, cwd, selection, marked, clipboard, queue, seq counter
 - `await-idle` — blocks until the event loop has drained (max 30s)
 - `entries left|center` — the entries rfm *believes* the pane shows
+- `log [n]` — last n retained log lines (level, age_secs, message).
+  The retention history (200 lines) outlives the log widget's 1-line/sec
+  eviction, so this is where errors live after they vanish from screen.
+  Background command failures (exit codes, stderr) land here — check
+  `log` first when something "silently" fails.
 
 Reading the replies correctly:
 - Directories sort before files: with a.txt/b.txt/c.txt + subdir, the
@@ -63,3 +68,11 @@ Caveats:
   placeholder, poll `state` until `seq` stabilizes.
 - `--config` can point at a scratch dir to isolate config.
 - Use `-x`/`-y` on tmux new-session for a deterministic pane size.
+- On exit with errors, rfm writes `./error.log` from the full retained
+  history (with line ages) — useful post-mortem when the session is gone.
+- Background commands run via `sh -c`: any path interpolated into a
+  queued command string MUST go through `shell_escape::escape`
+  (see `zoxide_add_dir`, `expand_command`). Test fixture names with
+  spaces and `&` (e.g. "a directory with spaces", "Bilder & Videos").
+- Isolate zoxide in tests with `_ZO_DATA_DIR=$(mktemp -d)` in the tmux
+  pane before launching rfm; seed with `zoxide add <path>`.

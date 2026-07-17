@@ -69,6 +69,16 @@ pub enum PaneId {
     Center,
 }
 
+/// One retained log line, with its age relative to the query.
+#[derive(Debug, Clone, Serialize)]
+pub struct LogEntry {
+    /// Log level: ERROR | WARN | INFO | DEBUG | TRACE
+    pub level: String,
+    /// Seconds since this line was logged
+    pub age_secs: f64,
+    pub message: String,
+}
+
 /// Request forwarded into the PanelManager event loop.
 pub enum DebugRequest {
     State {
@@ -81,6 +91,10 @@ pub enum DebugRequest {
         pane: PaneId,
         reply: oneshot::Sender<Vec<EntryInfo>>,
     },
+    Log {
+        count: Option<usize>,
+        reply: oneshot::Sender<Vec<LogEntry>>,
+    },
 }
 
 /// A parsed line-protocol command.
@@ -89,6 +103,7 @@ pub enum DebugCommand {
     State,
     AwaitIdle,
     Entries(PaneId),
+    Log(Option<usize>),
 }
 
 pub fn parse_command(line: &str) -> Option<DebugCommand> {
@@ -98,6 +113,8 @@ pub fn parse_command(line: &str) -> Option<DebugCommand> {
         ("await-idle", None) => Some(DebugCommand::AwaitIdle),
         ("entries", Some("left")) => Some(DebugCommand::Entries(PaneId::Left)),
         ("entries", Some("center")) => Some(DebugCommand::Entries(PaneId::Center)),
+        ("log", None) => Some(DebugCommand::Log(None)),
+        ("log", Some(count)) => count.parse().ok().map(|n| DebugCommand::Log(Some(n))),
         _ => None,
     }
 }
@@ -187,8 +204,24 @@ async fn process_line(line: &str, request_tx: &mpsc::Sender<DebugRequest>) -> St
                 _ => r#"{"error":"timeout: event loop did not respond within 10s"}"#.into(),
             }
         }
+        Some(DebugCommand::Log(count)) => {
+            let (tx, rx) = oneshot::channel();
+            if request_tx
+                .send(DebugRequest::Log { count, reply: tx })
+                .await
+                .is_err()
+            {
+                return MANAGER_GONE.into();
+            }
+            match timeout(Duration::from_secs(10), rx).await {
+                Ok(Ok(lines)) => serde_json::to_string(&lines)
+                    .unwrap_or_else(|e| format!(r#"{{"error":"serialize: {e}"}}"#)),
+                _ => r#"{"error":"timeout: event loop did not respond within 10s"}"#.into(),
+            }
+        }
         None => {
-            r#"{"error":"unknown command (try: state | await-idle | entries left|center)"}"#.into()
+            r#"{"error":"unknown command (try: state | await-idle | entries left|center | log [n])"}"#
+                .into()
         }
     }
 }
@@ -250,6 +283,20 @@ mod tests {
         assert!(parse_command("").is_none());
     }
 
+    #[test]
+    fn parses_log_command() {
+        assert!(matches!(
+            parse_command("log"),
+            Some(DebugCommand::Log(None))
+        ));
+        assert!(matches!(
+            parse_command("log 50"),
+            Some(DebugCommand::Log(Some(50)))
+        ));
+        assert!(parse_command("log abc").is_none());
+        assert!(parse_command("log -5").is_none());
+    }
+
     async fn fake_manager(mut rx: mpsc::Receiver<DebugRequest>) {
         while let Some(req) = rx.recv().await {
             match req {
@@ -279,6 +326,13 @@ mod tests {
                         marked: false,
                         hidden: false,
                         selected: true,
+                    }]);
+                }
+                DebugRequest::Log { count, reply } => {
+                    let _ = reply.send(vec![LogEntry {
+                        level: "ERROR".into(),
+                        age_secs: 2.5,
+                        message: format!("fake failure (count={count:?})"),
                     }]);
                 }
             }
@@ -324,5 +378,11 @@ mod tests {
 
         let reply = query(&socket, "bogus").await;
         assert!(reply.contains("error"), "unexpected reply: {reply}");
+
+        let reply = query(&socket, "log 5").await;
+        assert!(
+            reply.contains("\"level\":\"ERROR\"") && reply.contains("fake failure"),
+            "unexpected reply: {reply}"
+        );
     }
 }
