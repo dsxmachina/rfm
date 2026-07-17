@@ -32,6 +32,7 @@ use crate::config::color::{colors_from_config, colors_from_default};
 mod command_queue;
 mod config;
 mod content;
+mod debug;
 mod engine;
 mod logger;
 mod panel;
