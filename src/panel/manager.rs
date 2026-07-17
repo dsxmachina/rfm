@@ -42,6 +42,7 @@ async fn recv_debug(rx: &mut Option<mpsc::Receiver<DebugRequest>>) -> Option<Deb
 
 use self::console::{Console, ConsoleOp, DirConsole, Zoxide};
 
+use super::mode::{Cleanup, ModalInput, ModalRegion, ModeOp, SearchMode};
 use super::{input::Input, *};
 
 struct Redraw {
@@ -70,8 +71,8 @@ enum Mode {
     Normal,
     Console { console: Box<dyn Console> },
     CreateItem { input: Input, is_dir: bool },
-    Search { input: Input },
     Rename { input: Input },
+    Modal(Box<dyn ModalInput>),
 }
 
 struct Clipboard {
@@ -390,14 +391,18 @@ impl PanelManager {
             Clear(ClearType::CurrentLine),
         )?;
 
-        if let Mode::Search { input } = &self.mode {
-            self.stdout
-                .queue(PrintStyledContent(
-                    "Search".bold().with(color_main()).reverse(),
-                ))?
-                .queue(Print(" "))?;
-            input.print(&mut self.stdout, style::Color::Red)?;
-            return self.stdout.flush();
+        if let Mode::Modal(modal) = &mut self.mode {
+            match modal.region() {
+                ModalRegion::FooterLine => {
+                    let y = self.layout.footer();
+                    let width = self.layout.width();
+                    modal.draw(&mut self.stdout, 0..width, y..y.saturating_add(1))?;
+                    return self.stdout.flush();
+                }
+                // Overlay modals don't own the footer; fall through to the
+                // normal footer rendering (same as console mode today).
+                ModalRegion::ConsoleOverlay => {}
+            }
         }
         if let Mode::Rename { input } = &self.mode {
             self.stdout
@@ -1142,8 +1147,8 @@ impl PanelManager {
             Mode::Console { .. } => "console",
             Mode::CreateItem { is_dir: true, .. } => "mkdir",
             Mode::CreateItem { .. } => "touch",
-            Mode::Search { .. } => "search",
             Mode::Rename { .. } => "rename",
+            Mode::Modal(modal) => modal.name(),
         }
     }
 
@@ -1272,6 +1277,56 @@ impl PanelManager {
         Ok(close_cmd)
     }
 
+    /// Applies the op a modal mode requested.
+    ///
+    /// This is the only place where modal-mode effects touch the panels:
+    /// per-op panel mutations, the derived redraws, and the return to
+    /// [`Mode::Normal`] on concluding ops all live here.
+    fn apply_mode_op(&mut self, op: ModeOp) {
+        match op {
+            ModeOp::None => {}
+            ModeOp::Cd(path) => {
+                self.jump(path);
+            }
+            ModeOp::UpdateSearch(pattern) => {
+                self.center.panel_mut().update_search(pattern);
+                self.redraw_center();
+            }
+            ModeOp::FinishSearch(pattern) => {
+                self.center.panel_mut().finish_search(&pattern);
+                self.center.panel_mut().select_next_marked();
+                self.right
+                    .new_panel_delayed(self.center.panel().selected_path());
+                self.mode = Mode::Normal;
+                self.redraw_center();
+                self.redraw_right();
+            }
+            ModeOp::RenamePreview(_)
+            | ModeOp::Rename { .. }
+            | ModeOp::CreatePreview { .. }
+            | ModeOp::Create { .. } => {
+                unreachable!("wired in a later task")
+            }
+            ModeOp::Exit { cleanup } => {
+                self.apply_cleanup(cleanup);
+                self.mode = Mode::Normal;
+                self.redraw_panels();
+                self.redraw_footer();
+            }
+        }
+    }
+
+    /// Undoes the visible traces of a cancelled modal mode.
+    fn apply_cleanup(&mut self, cleanup: Cleanup) {
+        match cleanup {
+            Cleanup::None => {}
+            Cleanup::Search => self.center.panel_mut().clear_search(),
+            Cleanup::RenamePreview => self.center.panel_mut().clear_rename_preview(),
+            Cleanup::CreatePreview => self.center.panel_mut().clear_new_element(),
+            Cleanup::CdTo(path) => self.jump(path),
+        }
+    }
+
     /// Handles the terminal events.
     ///
     /// Returns Ok(true) if the application needs to shut down.
@@ -1280,18 +1335,22 @@ impl PanelManager {
             let mode_before = self.mode_name();
             trace!("key-event: {key_event:?} (mode: {mode_before})");
             // If we hit escape - go back to normal mode.
+            // Modal modes receive Esc themselves and return their own
+            // cancel op - the blanket cleanup must not fire for them.
             if let KeyCode::Esc = key_event.code {
-                if let Mode::Console { .. } = self.mode {
-                    self.jump(self.pre_console_path.clone());
+                if !matches!(self.mode, Mode::Modal(_)) {
+                    if let Mode::Console { .. } = self.mode {
+                        self.jump(self.pre_console_path.clone());
+                    }
+                    self.mode = Mode::Normal;
+                    self.parser.clear();
+                    self.center.panel_mut().clear_search();
+                    self.center.panel_mut().clear_new_element();
+                    self.center.panel_mut().clear_rename_preview();
+                    self.redraw_panels();
+                    self.redraw_footer();
+                    self.unmark_all_items();
                 }
-                self.mode = Mode::Normal;
-                self.parser.clear();
-                self.center.panel_mut().clear_search();
-                self.center.panel_mut().clear_new_element();
-                self.center.panel_mut().clear_rename_preview();
-                self.redraw_panels();
-                self.redraw_footer();
-                self.unmark_all_items();
             }
             match &mut self.mode {
                 Mode::Normal => {
@@ -1323,9 +1382,7 @@ impl PanelManager {
                             self.redraw_console();
                         }
                         Command::Search => {
-                            self.mode = Mode::Search {
-                                input: Input::empty(),
-                            };
+                            self.mode = Mode::Modal(Box::new(SearchMode::new()));
                             self.redraw_footer();
                         }
                         Command::Rename => {
@@ -1589,22 +1646,9 @@ impl PanelManager {
                         }
                     }
                 }
-                Mode::Search { input } => {
-                    if let KeyCode::Enter = key_event.code {
-                        self.center.panel_mut().finish_search(input.get());
-                        self.center.panel_mut().select_next_marked();
-                        self.right
-                            .new_panel_delayed(self.center.panel().selected_path());
-                        self.mode = Mode::Normal;
-                        self.redraw_center();
-                        self.redraw_right();
-                    } else {
-                        input.update(key_event.code, key_event.modifiers);
-                        self.center
-                            .panel_mut()
-                            .update_search(input.get().to_string());
-                        self.redraw_center();
-                    }
+                Mode::Modal(modal) => {
+                    let op = modal.handle_key(key_event);
+                    self.apply_mode_op(op);
                 }
                 Mode::Rename { input } => {
                     if let KeyCode::Enter = key_event.code {
