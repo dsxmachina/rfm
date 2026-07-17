@@ -611,7 +611,14 @@ mod tests {
     fn dir_console_key_without_effect_maps_to_none() {
         // A char that opens no directory (empty recommendations, no
         // matching dir) has no effect and maps through to ModeOp::None.
-        let mut console = DirConsole::default();
+        // Anchor the console at a nonexistent absolute path: the default
+        // path "" would make the is_dir probe cwd-relative and flaky, and
+        // an existing dir would cd right away (join("") is the dir itself).
+        let tmp = tempfile::tempdir().unwrap();
+        let mut console = DirConsole {
+            path: tmp.path().join("missing"),
+            ..Default::default()
+        };
         assert_eq!(console.handle_key(key(KeyCode::Char('x'))), ModeOp::None);
     }
 

@@ -1299,6 +1299,15 @@ impl PanelManager {
                 self.redraw_footer();
             }
         }
+        // Overlay modals repaint after every key (the old console arm
+        // called redraw_console unconditionally). Ops like Cd/None don't
+        // set redraw.console themselves, and a live-cd (jump ->
+        // redraw_panels) would otherwise paint the panels over the overlay.
+        if let Mode::Modal(modal) = &self.mode {
+            if modal.region() == ModalRegion::ConsoleOverlay {
+                self.redraw_console();
+            }
+        }
     }
 
     /// Applies [`ModeOp::Rename`]: renames the selected entry to `to`
@@ -1349,7 +1358,6 @@ impl PanelManager {
         if let Err(e) = create_fn(current_path.join(name.trim())) {
             error!("{e}");
         }
-        // self.stack.push(Operation::Mkdir { path: new_dir.clone() });
         self.mode = Mode::Normal;
         self.center.panel_mut().clear_new_element();
         self.redraw_panels();
@@ -1373,23 +1381,22 @@ impl PanelManager {
         if let Event::Key(key_event) = event {
             let mode_before = self.mode_name();
             trace!("key-event: {key_event:?} (mode: {mode_before})");
-            // If we hit escape - go back to normal mode.
-            // Modal modes receive Esc themselves and return their own
-            // cancel op - the blanket cleanup must not fire for them.
-            if let KeyCode::Esc = key_event.code {
-                if !matches!(self.mode, Mode::Modal(_)) {
-                    self.mode = Mode::Normal;
-                    self.parser.clear();
-                    self.center.panel_mut().clear_search();
-                    self.center.panel_mut().clear_new_element();
-                    self.center.panel_mut().clear_rename_preview();
-                    self.redraw_panels();
-                    self.redraw_footer();
-                    self.unmark_all_items();
-                }
-            }
             match &mut self.mode {
                 Mode::Normal => {
+                    // Esc resets Normal-mode state: pending key chords and
+                    // marks. Modal modes receive Esc themselves and return
+                    // their own cancel op.
+                    if let KeyCode::Esc = key_event.code {
+                        self.parser.clear();
+                        // The three clears are latent no-ops now that modals
+                        // clean up after themselves — candidates for removal.
+                        self.center.panel_mut().clear_search();
+                        self.center.panel_mut().clear_new_element();
+                        self.center.panel_mut().clear_rename_preview();
+                        self.redraw_panels();
+                        self.redraw_footer();
+                        self.unmark_all_items();
+                    }
                     match self.parser.add_event(key_event) {
                         Command::Move(direction) => {
                             self.move_cursor(direction);
@@ -1625,16 +1632,6 @@ impl PanelManager {
                 Mode::Modal(modal) => {
                     let op = modal.handle_key(key_event);
                     self.apply_mode_op(op);
-                    // Overlay modals repaint after every key (the old
-                    // console arm called redraw_console unconditionally).
-                    // Ops like Cd/None don't set redraw.console themselves,
-                    // and a live-cd (jump -> redraw_panels) would otherwise
-                    // paint the panels over the overlay.
-                    if let Mode::Modal(modal) = &self.mode {
-                        if modal.region() == ModalRegion::ConsoleOverlay {
-                            self.redraw_console();
-                        }
-                    }
                 }
             }
             let mode_after = self.mode_name();
