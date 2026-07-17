@@ -46,28 +46,6 @@ use super::mode::{
 };
 use super::*;
 
-struct Redraw {
-    left: bool,
-    center: bool,
-    right: bool,
-    console: bool,
-    log: bool,
-    header: bool,
-    footer: bool,
-}
-
-impl Redraw {
-    fn any(&self) -> bool {
-        self.left
-            || self.center
-            || self.right
-            || self.console
-            || self.header
-            || self.footer
-            || self.log
-    }
-}
-
 enum Mode {
     Normal,
     Modal(Box<dyn ModalInput>),
@@ -119,8 +97,8 @@ pub struct PanelManager {
     /// Show log
     show_log: bool,
 
-    /// Elements that needs to be redrawn
-    redraw: Redraw,
+    /// Whether the screen needs to be repainted
+    dirty: bool,
 
     /// Event-stream from the terminal
     event_reader: EventStream,
@@ -210,15 +188,7 @@ impl PanelManager {
             // stack: Vec::new(),
             show_hidden: false,
             show_log: false,
-            redraw: Redraw {
-                left: true,
-                center: true,
-                right: true,
-                log: true,
-                console: true,
-                header: true,
-                footer: true,
-            },
+            dirty: true,
             event_reader,
             fwd_history: Vec::new(),
             rev_history: Vec::new(),
@@ -235,64 +205,11 @@ impl PanelManager {
         })
     }
 
-    // fn redraw_header(&mut self) {
-    //     self.redraw.header = true;
-    // }
-
-    fn redraw_footer(&mut self) {
-        self.redraw.footer = true;
-    }
-
-    fn redraw_panels(&mut self) {
-        self.redraw.left = true;
-        self.redraw.center = true;
-        self.redraw.right = true;
-        self.redraw.header = true;
-        self.redraw.footer = true;
-        self.redraw.log = true;
-    }
-
-    fn redraw_left(&mut self) {
-        self.redraw.left = true;
-        self.redraw.log = true;
-    }
-
-    fn redraw_center(&mut self) {
-        self.redraw.center = true;
-        // if something changed in the center,
-        // also redraw header and footer
-        self.redraw.footer = true;
-        self.redraw.header = true;
-        self.redraw.log = true;
-    }
-
-    fn redraw_right(&mut self) {
-        self.redraw.right = true;
-        self.redraw.log = true;
-    }
-
-    fn redraw_console(&mut self) {
-        self.redraw.console = true;
-    }
-
-    fn redraw_everything(&mut self) {
-        self.redraw.header = true;
-        self.redraw.footer = true;
-        self.redraw.left = true;
-        self.redraw.center = true;
-        self.redraw.right = true;
-        self.redraw.console = true;
-    }
-
-    fn redraw_log(&mut self) {
-        self.redraw.log = true;
+    fn mark_dirty(&mut self) {
+        self.dirty = true;
     }
 
     fn draw_log(&mut self) -> Result<()> {
-        if !self.redraw.log {
-            return Ok(());
-        }
-
         let mut y = self.layout.footer().saturating_sub(2); // or 3, if we have the advanced command preview
 
         let print_level = |level| match level {
@@ -333,15 +250,11 @@ impl PanelManager {
                 style::Print("  "),
             )?;
         }
-        self.redraw.log = false;
         Ok(())
     }
 
     // Prints our header
     fn draw_header(&mut self) -> Result<()> {
-        if !self.redraw.header {
-            return Ok(());
-        }
         let prompt = format!(
             "{}@{}",
             whoami::username(),
@@ -371,15 +284,11 @@ impl PanelManager {
             style::PrintStyledContent(prefix.to_string().with(color_dir_path()).bold()),
             style::PrintStyledContent(suffix.to_string().bold()),
         )?;
-        self.redraw.header = false;
         Ok(())
     }
 
     // Prints a footer
     fn draw_footer(&mut self) -> Result<()> {
-        if !self.redraw.footer {
-            return Ok(());
-        }
         // Common operation at the start
         queue!(
             self.stdout,
@@ -393,10 +302,7 @@ impl PanelManager {
                     let y = self.layout.footer();
                     let width = self.layout.width();
                     modal.draw(&mut self.stdout, 0..width, y..y.saturating_add(1))?;
-                    // Parity: intentionally leaves redraw.footer set (the old
-                    // inline blocks did too) — revisit after the migration
-                    // (Task 6), not during it.
-                    return self.stdout.flush();
+                    return Ok(());
                 }
                 // Overlay modals don't own the footer; fall through to the
                 // normal footer rendering (same as console mode today).
@@ -462,24 +368,13 @@ impl PanelManager {
             ),
             style::Print(n_files_string),
         )?;
-        self.redraw.footer = false;
         Ok(())
     }
 
     fn draw(&mut self) -> Result<()> {
-        if !self.redraw.any() {
+        if !self.dirty {
             return Ok(());
         }
-        trace!(
-            "draw: left={} center={} right={} console={} header={} footer={} log={}",
-            self.redraw.left,
-            self.redraw.center,
-            self.redraw.right,
-            self.redraw.console,
-            self.redraw.header,
-            self.redraw.footer,
-            self.redraw.log,
-        );
         self.stdout.execute(BeginSynchronizedUpdate)?;
         self.stdout.queue(cursor::Hide)?;
         self.draw_footer()?;
@@ -488,6 +383,7 @@ impl PanelManager {
         self.draw_console()?;
         self.draw_log()?;
         self.stdout.execute(EndSynchronizedUpdate)?;
+        self.dirty = false;
         Ok(())
     }
 
@@ -499,45 +395,31 @@ impl PanelManager {
         } else {
             start..end
         };
-        if self.redraw.left {
-            self.left.panel_mut().draw(
-                &mut self.stdout,
-                self.layout.left_x_range.clone(),
-                height.clone(),
-            )?;
-            self.redraw.left = false;
-        }
-        if self.redraw.center {
-            self.center.panel_mut().draw(
-                &mut self.stdout,
-                self.layout.center_x_range.clone(),
-                height.clone(),
-            )?;
-            self.redraw.center = false;
-        }
-        if self.redraw.right {
-            self.right.panel_mut().draw(
-                &mut self.stdout,
-                self.layout.right_x_range.clone(),
-                height,
-            )?;
-            self.redraw.right = false;
-        }
+        self.left.panel_mut().draw(
+            &mut self.stdout,
+            self.layout.left_x_range.clone(),
+            height.clone(),
+        )?;
+        self.center.panel_mut().draw(
+            &mut self.stdout,
+            self.layout.center_x_range.clone(),
+            height.clone(),
+        )?;
+        self.right
+            .panel_mut()
+            .draw(&mut self.stdout, self.layout.right_x_range.clone(), height)?;
         Ok(())
     }
 
     fn draw_console(&mut self) -> Result<()> {
-        if self.redraw.console {
-            if let Mode::Modal(modal) = &mut self.mode {
-                if modal.region() == ModalRegion::ConsoleOverlay {
-                    modal.draw(
-                        &mut self.stdout,
-                        self.layout.left_x_range.start..self.layout.right_x_range.end,
-                        self.layout.y_range.clone(),
-                    )?;
-                }
+        if let Mode::Modal(modal) = &mut self.mode {
+            if modal.region() == ModalRegion::ConsoleOverlay {
+                modal.draw(
+                    &mut self.stdout,
+                    self.layout.left_x_range.start..self.layout.right_x_range.end,
+                    self.layout.y_range.clone(),
+                )?;
             }
-            self.redraw.console = false;
         }
         Ok(())
     }
@@ -555,17 +437,12 @@ impl PanelManager {
             self.center.panel().path(),
             Some(self.center.panel().selected_idx()),
         );
-        self.redraw_everything();
+        self.mark_dirty();
     }
 
     fn toggle_log(&mut self) {
         self.show_log = !self.show_log;
-        if self.show_log {
-            self.redraw_log();
-        } else {
-            // Redraw everything, so that the current log gets overdrawn by the panels
-            self.redraw_everything();
-        }
+        self.mark_dirty();
     }
 
     // fn select(&mut self, path: &Path) {
@@ -584,8 +461,7 @@ impl PanelManager {
         if self.center.panel_mut().up(step) {
             self.right
                 .new_panel_delayed(self.center.panel().selected_path());
-            self.redraw_center();
-            self.redraw_right();
+            self.mark_dirty();
             self.rev_history.clear();
             // self.stack.push(Operation::Move(Movement::Up));
         }
@@ -596,8 +472,7 @@ impl PanelManager {
         if self.center.panel_mut().down(step) {
             self.right
                 .new_panel_delayed(self.center.panel().selected_path());
-            self.redraw_center();
-            self.redraw_right();
+            self.mark_dirty();
             self.rev_history.clear();
             // self.stack.push(Operation::Move(Movement::Down));
         }
@@ -651,7 +526,7 @@ impl PanelManager {
                     self.right.panel_mut().select_path(path);
                 }
 
-                self.redraw_panels();
+                self.mark_dirty();
             } else {
                 info!("Opening '{}'", selected.display());
 
@@ -663,7 +538,7 @@ impl PanelManager {
                     /* failed to open selected */
                     error!("Opening failed: {e}");
                 }
-                self.redraw_everything();
+                self.mark_dirty();
             }
             // self.stack.push(Operation::Move(Movement::Right));
             //
@@ -717,7 +592,7 @@ impl PanelManager {
         self.unmark_left_right();
 
         // All panels needs to be redrawn
-        self.redraw_panels();
+        self.mark_dirty();
         // self.stack.push(Operation::Move(Movement::Left));
     }
 
@@ -741,7 +616,7 @@ impl PanelManager {
             self.center.new_panel_instant(Some(&path));
             self.right
                 .new_panel_delayed(self.center.panel().selected_path());
-            self.redraw_panels();
+            self.mark_dirty();
         }
     }
 
@@ -793,7 +668,7 @@ impl PanelManager {
         if let PreviewPanel::Dir(panel) = self.right.panel_mut() {
             panel.elements_mut().for_each(|item| item.unmark());
         }
-        self.redraw_panels();
+        self.mark_dirty();
     }
 
     /// Returns all marked paths *or* the selected path.
@@ -1161,7 +1036,7 @@ impl PanelManager {
 
     pub async fn run(mut self) -> Result<CloseCmd> {
         // Initial draw
-        self.redraw_everything();
+        self.dirty = true;
         self.draw()?;
 
         let close_cmd = loop {
@@ -1170,7 +1045,7 @@ impl PanelManager {
                 biased;
                 // Check incoming new logs
                 () = self.logger.update() => {
-                    self.redraw_log();
+                    self.mark_dirty();
                 }
                 // Check incoming new dir-panels
                 result = self.dir_rx.recv() => {
@@ -1186,15 +1061,12 @@ impl PanelManager {
                         self.center.update_panel(panel);
                         // update preview (if necessary)
                         self.right.new_panel_delayed(self.center.panel().selected_path());
-                        self.redraw_center();
-                        self.redraw_right();
-                        self.redraw_console();
+                        self.mark_dirty();
                     } else if self.left.check_update(&state) {
                         trace!("panel-update: left <- {}", state.path().display());
                         self.left.update_panel(panel);
                         self.left.panel_mut().select_path(self.center.panel().path(), Some(self.center.panel().selected_idx()));
-                        self.redraw_left();
-                        self.redraw_console();
+                        self.mark_dirty();
                     } else {
                         // Reduce log level here, this is not that important
                         debug!("unknown panel update: {:?}", state);
@@ -1211,8 +1083,7 @@ impl PanelManager {
                     if self.right.check_update(&state) {
                         trace!("panel-update: preview <- {}", state.path().display());
                         self.right.update_panel(panel);
-                        self.redraw_right();
-                        self.redraw_console();
+                        self.mark_dirty();
                     }
                 }
                 // Check incoming new events
@@ -1265,7 +1136,6 @@ impl PanelManager {
             }
             ModeOp::UpdateSearch(pattern) => {
                 self.center.panel_mut().update_search(pattern);
-                self.redraw_center();
             }
             ModeOp::FinishSearch(pattern) => {
                 self.center.panel_mut().finish_search(&pattern);
@@ -1273,8 +1143,6 @@ impl PanelManager {
                 self.right
                     .new_panel_delayed(self.center.panel().selected_path());
                 self.mode = Mode::Normal;
-                self.redraw_center();
-                self.redraw_right();
             }
             ModeOp::RenamePreview(name) => {
                 // The manager supplies the apply-time context: the preview
@@ -1283,30 +1151,19 @@ impl PanelManager {
                 self.center
                     .panel_mut()
                     .inject_rename_preview(name, selected_idx);
-                self.redraw_center();
             }
             ModeOp::Rename { to } => self.apply_rename(to),
             ModeOp::CreatePreview { name, is_dir } => {
                 self.center.panel_mut().inject_new_element(name, is_dir);
-                self.redraw_center();
             }
             ModeOp::Create { name, is_dir } => self.apply_create(name, is_dir),
             ModeOp::Exit { cleanup } => {
                 self.apply_cleanup(cleanup);
                 self.mode = Mode::Normal;
-                self.redraw_panels();
-                self.redraw_footer();
             }
         }
-        // Overlay modals repaint after every key (the old console arm
-        // called redraw_console unconditionally). Ops like Cd/None don't
-        // set redraw.console themselves, and a live-cd (jump ->
-        // redraw_panels) would otherwise paint the panels over the overlay.
-        if let Mode::Modal(modal) = &self.mode {
-            if modal.region() == ModalRegion::ConsoleOverlay {
-                self.redraw_console();
-            }
-        }
+        // Every modal key event repaints (draw() perma-redraws now).
+        self.mark_dirty();
     }
 
     /// Applies [`ModeOp::Rename`]: renames the selected entry to `to`
@@ -1331,7 +1188,7 @@ impl PanelManager {
         self.center.panel_mut().clear_rename_preview();
         self.center.reload();
         self.right.reload();
-        self.redraw_panels();
+        self.mark_dirty();
     }
 
     /// Applies [`ModeOp::Create`]: creates the new directory (`is_dir`)
@@ -1359,7 +1216,7 @@ impl PanelManager {
         }
         self.mode = Mode::Normal;
         self.center.panel_mut().clear_new_element();
-        self.redraw_panels();
+        self.mark_dirty();
     }
 
     /// Undoes the visible traces of a cancelled modal mode.
@@ -1394,8 +1251,6 @@ impl PanelManager {
                         self.center.panel_mut().clear_search();
                         self.center.panel_mut().clear_new_element();
                         self.center.panel_mut().clear_rename_preview();
-                        self.redraw_panels();
-                        self.redraw_footer();
                         self.unmark_all_items();
                     }
                     match self.parser.add_event(key_event) {
@@ -1420,11 +1275,9 @@ impl PanelManager {
                             } else {
                                 Mode::Modal(Box::new(DirConsole::from_panel(self.center.panel())))
                             };
-                            self.redraw_console();
                         }
                         Command::Search => {
                             self.mode = Mode::Modal(Box::new(SearchMode::new()));
-                            self.redraw_footer();
                         }
                         Command::Rename => {
                             // Check if multiple files are marked - use bulkrename
@@ -1437,7 +1290,6 @@ impl PanelManager {
                                 self.left.reload();
                                 self.center.reload();
                                 self.right.reload();
-                                self.redraw_everything();
                             } else {
                                 // Single file rename - modal mode seeded
                                 // with the current file name
@@ -1449,30 +1301,23 @@ impl PanelManager {
                                     .and_then(|f| f.to_owned().into_string().ok())
                                     .unwrap_or_default();
                                 self.mode = Mode::Modal(Box::new(RenameMode::new(selected)));
-                                self.redraw_footer();
                             }
                         }
                         Command::Next => {
                             self.center.panel_mut().select_next_marked();
                             self.right
                                 .new_panel_delayed(self.center.panel().selected_path());
-                            self.redraw_center();
-                            self.redraw_right();
                         }
                         Command::Previous => {
                             self.center.panel_mut().select_prev_marked();
                             self.right
                                 .new_panel_delayed(self.center.panel().selected_path());
-                            self.redraw_center();
-                            self.redraw_right();
                         }
                         Command::Mkdir => {
                             self.mode = Mode::Modal(Box::new(CreateItemMode::new(true)));
-                            self.redraw_footer();
                         }
                         Command::Touch => {
                             self.mode = Mode::Modal(Box::new(CreateItemMode::new(false)));
-                            self.redraw_footer();
                         }
                         Command::Mark => {
                             self.center.panel_mut().mark_selected_item();
@@ -1487,7 +1332,6 @@ impl PanelManager {
                             let files = self.marked_or_selected();
                             info!("copying {} items", files.len());
                             self.clipboard = Some(Clipboard { files, cut: false });
-                            self.redraw_center();
                         }
                         Command::Delete => {
                             let files = self.marked_or_selected();
@@ -1526,7 +1370,6 @@ impl PanelManager {
                             self.left.reload();
                             self.center.reload();
                             self.right.reload();
-                            self.redraw_panels();
                         }
                         Command::Zip => {
                             let items = self.marked_or_selected();
@@ -1536,7 +1379,6 @@ impl PanelManager {
                             if let Err(e) = self.opener.zip(items) {
                                 warn!("Failed to create zip-archive: {e}");
                             }
-                            self.redraw_center();
                         }
                         Command::Tar => {
                             let items = self.marked_or_selected();
@@ -1546,7 +1388,6 @@ impl PanelManager {
                             if let Err(e) = self.opener.tar(items) {
                                 warn!("Failed to create tar-archive: {e}");
                             }
-                            self.redraw_center();
                         }
                         Command::Extract => {
                             if let Some(archive) = self.center.panel().selected_path() {
@@ -1558,7 +1399,6 @@ impl PanelManager {
                                 if let Err(e) = self.opener.extract(archive.to_owned()) {
                                     warn!("Failed to extract archive: {e}");
                                 }
-                                self.redraw_center();
                             } else {
                                 warn!("Nothing extractable is selected");
                             }
@@ -1610,7 +1450,6 @@ impl PanelManager {
                                         error!("Failed to run command '{}': {}", name, e);
                                     }
                                 }
-                                self.redraw_everything();
                             } else {
                                 // Queue for background execution
                                 info!("Queueing command '{}': {}", name, expanded_cmd);
@@ -1627,8 +1466,8 @@ impl PanelManager {
                         }
                         Command::None => {}
                     }
-                    // Always redraw footer
-                    self.redraw_footer();
+                    // Every handled key event repaints.
+                    self.mark_dirty();
                 }
                 Mode::Modal(modal) => {
                     let op = modal.handle_key(key_event);
@@ -1642,7 +1481,7 @@ impl PanelManager {
         }
         if let Event::Resize(sx, sy) = event {
             self.layout = MillerColumns::from_size((sx, sy));
-            self.redraw_everything();
+            self.mark_dirty();
         }
         Ok(None)
     }
