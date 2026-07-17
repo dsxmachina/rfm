@@ -68,9 +68,16 @@ pub enum PaneId {
 
 /// Request forwarded into the PanelManager event loop.
 pub enum DebugRequest {
-    State { reply: oneshot::Sender<StateSnapshot> },
-    AwaitIdle { reply: oneshot::Sender<u64> },
-    Entries { pane: PaneId, reply: oneshot::Sender<Vec<EntryInfo>> },
+    State {
+        reply: oneshot::Sender<StateSnapshot>,
+    },
+    AwaitIdle {
+        reply: oneshot::Sender<u64>,
+    },
+    Entries {
+        pane: PaneId,
+        reply: oneshot::Sender<Vec<EntryInfo>>,
+    },
 }
 
 /// A parsed line-protocol command.
@@ -97,7 +104,16 @@ pub fn parse_command(line: &str) -> Option<DebugCommand> {
 pub async fn serve(socket_path: PathBuf, request_tx: mpsc::Sender<DebugRequest>) -> Result<()> {
     // Remove a stale socket file from a previous (crashed) run
     let _ = std::fs::remove_file(&socket_path);
-    let listener = UnixListener::bind(&socket_path)?;
+    let listener = match UnixListener::bind(&socket_path) {
+        Ok(listener) => listener,
+        Err(e) => {
+            error!(
+                "debug socket: failed to bind {}: {e}",
+                socket_path.display()
+            );
+            return Err(e.into());
+        }
+    };
     info!("debug socket listening on {}", socket_path.display());
     loop {
         match listener.accept().await {
@@ -126,7 +142,11 @@ async fn process_line(line: &str, request_tx: &mpsc::Sender<DebugRequest>) -> St
     match parse_command(line) {
         Some(DebugCommand::State) => {
             let (tx, rx) = oneshot::channel();
-            if request_tx.send(DebugRequest::State { reply: tx }).await.is_err() {
+            if request_tx
+                .send(DebugRequest::State { reply: tx })
+                .await
+                .is_err()
+            {
                 return MANAGER_GONE.into();
             }
             match timeout(Duration::from_secs(10), rx).await {
@@ -137,7 +157,11 @@ async fn process_line(line: &str, request_tx: &mpsc::Sender<DebugRequest>) -> St
         }
         Some(DebugCommand::AwaitIdle) => {
             let (tx, rx) = oneshot::channel();
-            if request_tx.send(DebugRequest::AwaitIdle { reply: tx }).await.is_err() {
+            if request_tx
+                .send(DebugRequest::AwaitIdle { reply: tx })
+                .await
+                .is_err()
+            {
                 return MANAGER_GONE.into();
             }
             match timeout(Duration::from_secs(30), rx).await {
@@ -147,7 +171,11 @@ async fn process_line(line: &str, request_tx: &mpsc::Sender<DebugRequest>) -> St
         }
         Some(DebugCommand::Entries(pane)) => {
             let (tx, rx) = oneshot::channel();
-            if request_tx.send(DebugRequest::Entries { pane, reply: tx }).await.is_err() {
+            if request_tx
+                .send(DebugRequest::Entries { pane, reply: tx })
+                .await
+                .is_err()
+            {
                 return MANAGER_GONE.into();
             }
             match timeout(Duration::from_secs(10), rx).await {
@@ -196,7 +224,10 @@ mod tests {
     #[test]
     fn parses_commands() {
         assert!(matches!(parse_command("state"), Some(DebugCommand::State)));
-        assert!(matches!(parse_command("await-idle"), Some(DebugCommand::AwaitIdle)));
+        assert!(matches!(
+            parse_command("await-idle"),
+            Some(DebugCommand::AwaitIdle)
+        ));
         assert!(matches!(
             parse_command("entries left"),
             Some(DebugCommand::Entries(PaneId::Left))
@@ -206,7 +237,10 @@ mod tests {
             Some(DebugCommand::Entries(PaneId::Center))
         ));
         // whitespace tolerance
-        assert!(matches!(parse_command("  state "), Some(DebugCommand::State)));
+        assert!(matches!(
+            parse_command("  state "),
+            Some(DebugCommand::State)
+        ));
         // unknown input
         assert!(parse_command("entries right").is_none());
         assert!(parse_command("bogus").is_none());
@@ -280,7 +314,10 @@ mod tests {
         assert!(reply.contains("\"idle\":true"), "unexpected reply: {reply}");
 
         let reply = query(&socket, "entries center").await;
-        assert!(reply.contains("\"name\":\"a.txt\""), "unexpected reply: {reply}");
+        assert!(
+            reply.contains("\"name\":\"a.txt\""),
+            "unexpected reply: {reply}"
+        );
 
         let reply = query(&socket, "bogus").await;
         assert!(reply.contains("error"), "unexpected reply: {reply}");
