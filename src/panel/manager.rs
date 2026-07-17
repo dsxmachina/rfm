@@ -1209,6 +1209,9 @@ impl PanelManager {
                 // which is exactly the idle guarantee `await-idle` promises.
                 Some(req) = recv_debug(&mut self.debug_rx) => {
                     self.handle_debug_request(req);
+                    // Debug queries are not app events: skip draw() and the
+                    // seq bump so polling `state` doesn't advance seq itself.
+                    continue;
                 }
             }
             // Always redraw what needs to be redrawn

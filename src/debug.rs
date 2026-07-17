@@ -28,6 +28,9 @@ pub struct StateSnapshot {
     pub cwd: PathBuf,
     /// File name of the current selection in the center panel
     pub selection: Option<String>,
+    /// 0-based index of the selection among *visible* entries; do not use
+    /// it to index the `entries` reply, which lists all elements
+    /// (including hidden ones)
     pub selected_idx: usize,
     pub total: usize,
     /// Paths of all marked items in the center panel
