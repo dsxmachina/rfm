@@ -627,7 +627,6 @@ impl PanelManager {
     }
 
     fn move_cursor(&mut self, movement: Move) {
-        // NOTE: Movement functions needs to determine which panels require a redraw.
         match movement {
             Move::Up => self.move_up(1),
             Move::Down => self.move_down(1),
@@ -1114,7 +1113,7 @@ impl PanelManager {
                     continue;
                 }
             }
-            // Always redraw what needs to be redrawn
+            // Repaint if any handler marked the screen dirty.
             self.draw()?;
             self.debug_seq = self.debug_seq.wrapping_add(1);
         };

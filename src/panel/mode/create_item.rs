@@ -62,9 +62,9 @@ impl ModalInput for CreateItemMode {
                 name: self.input.get().to_string(),
                 is_dir: self.is_dir,
             },
-            // The old arm's autocomplete placeholder: only a footer
-            // redraw, which the FooterLine delegation already provides
-            // every cycle (redraw.footer stays set) — plain None.
+            // The old arm's autocomplete placeholder was a footer-only
+            // redraw; the manager repaints on every modal key anyway
+            // (apply_mode_op marks dirty), so plain None is exact parity.
             KeyCode::Tab => ModeOp::None,
             KeyCode::Esc => ModeOp::Exit {
                 cleanup: Cleanup::CreatePreview,
@@ -179,9 +179,9 @@ mod tests {
     #[test]
     fn tab_is_a_no_op_placeholder() {
         // The old arm's Tab branch was `/* autocomplete here ? */` plus
-        // a footer redraw; the footer stays live anyway because the
-        // FooterLine delegation leaves redraw.footer set every cycle,
-        // so plain None is exact parity. Tab must not reach the input.
+        // a footer redraw; the manager repaints on every modal key anyway
+        // (apply_mode_op marks dirty), so plain None is exact parity.
+        // Tab must not reach the input.
         let mut mode = CreateItemMode::new(false);
         mode.handle_key(key(KeyCode::Char('f')));
         assert_eq!(mode.handle_key(key(KeyCode::Tab)), ModeOp::None);
