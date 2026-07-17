@@ -1,5 +1,11 @@
 //! Search mode: live-highlighting footer input, ported verbatim from the
 //! PanelManager's old inline search arm.
+//!
+//! Cancel semantics: Esc requests [`Cleanup::Search`] only. The old
+//! blanket-Esc extras (clear_new_element, clear_rename_preview,
+//! unmark_all_items) intentionally no longer run for search — a modal
+//! mode undoes exactly the traces it created (sanctioned in the
+//! mode-seam plan).
 
 use std::io::Stdout;
 use std::ops::Range;
@@ -20,6 +26,7 @@ pub struct SearchMode {
 }
 
 impl SearchMode {
+    /// Starts with an empty input; the pattern builds up as keys arrive.
     pub fn new() -> Self {
         Self {
             input: Input::empty(),
