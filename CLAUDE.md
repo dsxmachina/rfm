@@ -84,3 +84,12 @@ Caveats:
   spaces and `&` (e.g. "a directory with spaces", "Bilder & Videos").
 - Isolate zoxide in tests with `_ZO_DATA_DIR=$(mktemp -d)` in the tmux
   pane before launching rfm; seed with `zoxide add <path>`.
+
+## Architecture: modal modes
+
+Mode logic lives in `src/panel/mode/` — one adapter per file (the two
+consoles currently share `console.rs`; split pending). Adapters are
+pure state machines: `handle_key → ModeOp`, testable without a
+terminal. All effects and the derived redraws are applied centrally in
+`PanelManager::apply_mode_op` (manager.rs). The mode strings the debug
+socket reports come from `ModalInput::name()`.
