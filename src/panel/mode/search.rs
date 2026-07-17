@@ -116,6 +116,17 @@ mod tests {
     }
 
     #[test]
+    fn enter_with_empty_input_finishes_with_empty_pattern() {
+        // Pin the old arm's permitted edge: Enter without any input
+        // concludes the search with the empty pattern.
+        let mut mode = SearchMode::new();
+        assert_eq!(
+            mode.handle_key(key(KeyCode::Enter)),
+            ModeOp::FinishSearch("".into())
+        );
+    }
+
+    #[test]
     fn backspace_reaches_the_input() {
         let mut mode = SearchMode::new();
         mode.handle_key(key(KeyCode::Char('f')));

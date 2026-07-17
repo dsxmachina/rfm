@@ -16,6 +16,7 @@ pub use search::SearchMode;
 /// Ops that conclude the mode (FinishSearch, Rename, Create, Exit) make
 /// the manager return to Normal after applying them.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // TODO(mode-seam): remove in Task 6
 pub enum ModeOp {
     /// Nothing to apply
     None,
@@ -39,6 +40,7 @@ pub enum ModeOp {
 
 /// What the manager must undo when a modal mode is cancelled.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // TODO(mode-seam): remove in Task 6
 pub enum Cleanup {
     None,
     /// Clear the search highlight
@@ -53,6 +55,7 @@ pub enum Cleanup {
 
 /// Screen area a modal mode is granted for drawing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // TODO(mode-seam): remove in Task 6
 pub enum ModalRegion {
     /// Centered overlay (consoles)
     ConsoleOverlay,

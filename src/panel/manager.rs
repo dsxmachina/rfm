@@ -397,6 +397,9 @@ impl PanelManager {
                     let y = self.layout.footer();
                     let width = self.layout.width();
                     modal.draw(&mut self.stdout, 0..width, y..y.saturating_add(1))?;
+                    // Parity: intentionally leaves redraw.footer set (the old
+                    // inline blocks did too) — revisit after the migration
+                    // (Task 6), not during it.
                     return self.stdout.flush();
                 }
                 // Overlay modals don't own the footer; fall through to the
@@ -551,6 +554,7 @@ impl PanelManager {
     }
 
     fn draw_console(&mut self) -> Result<()> {
+        // ConsoleOverlay modal delegation lands in Task 5 (mode-seam plan)
         if self.redraw.console {
             if let Mode::Console { console } = &mut self.mode {
                 console.draw(
