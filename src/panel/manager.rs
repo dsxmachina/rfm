@@ -9,10 +9,12 @@ use crossterm::{
 use futures::{FutureExt, StreamExt};
 use log::{debug, error, info, trace, Level};
 use tempfile::TempDir;
+use tokio::sync::watch;
 
 use crate::{
-    command_queue::QueuedCommand,
+    command_queue::{QueueStatus, QueuedCommand},
     config::color::{color_dir_path, color_main},
+    debug::{ClipboardInfo, DebugRequest, EntryInfo, PaneId, StateSnapshot},
     engine::commands::{CloseCmd, Command, CommandParser},
     engine::OpenEngine,
     logger::LogBuffer,
@@ -28,6 +30,14 @@ fn expand_command(cmd: &str, paths: &[PathBuf], separator: &str) -> String {
         .join(separator);
 
     cmd.replace("$@", &paths_str)
+}
+
+/// Receive a debug request, or stay pending forever when debug mode is off.
+async fn recv_debug(rx: &mut Option<mpsc::Receiver<DebugRequest>>) -> Option<DebugRequest> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
 }
 
 use self::console::{Console, ConsoleOp, DirConsole, Zoxide};
@@ -143,6 +153,15 @@ pub struct PanelManager {
 
     /// Sender for queueing background commands
     command_tx: Option<mpsc::UnboundedSender<QueuedCommand>>,
+
+    /// Receiver for status of the background command queue
+    command_status_rx: watch::Receiver<QueueStatus>,
+
+    /// Receiver for debug-socket requests (`--debug-socket`)
+    debug_rx: Option<mpsc::Receiver<DebugRequest>>,
+
+    /// Event-loop iteration counter, exposed via the debug socket
+    debug_seq: u64,
 }
 
 impl PanelManager {
@@ -156,6 +175,8 @@ impl PanelManager {
         logger: LogBuffer,
         opener: OpenEngine,
         command_tx: Option<mpsc::UnboundedSender<QueuedCommand>>,
+        command_status_rx: watch::Receiver<QueueStatus>,
+        debug_rx: Option<mpsc::Receiver<DebugRequest>>,
     ) -> Result<Self> {
         // Prepare terminal
         let stdout = stdout();
@@ -211,6 +232,9 @@ impl PanelManager {
             dir_rx,
             prev_rx,
             command_tx,
+            command_status_rx,
+            debug_rx,
+            debug_seq: 0,
         })
     }
 
@@ -1042,6 +1066,79 @@ impl PanelManager {
         }
     }
 
+    fn handle_debug_request(&mut self, req: DebugRequest) {
+        // Replies may fail if the client timed out; that is fine.
+        match req {
+            DebugRequest::State { reply } => {
+                let _ = reply.send(self.state_snapshot());
+            }
+            DebugRequest::AwaitIdle { reply } => {
+                // Answered here means the biased select found nothing else
+                // ready — the event queue is drained.
+                let _ = reply.send(self.debug_seq);
+            }
+            DebugRequest::Entries { pane, reply } => {
+                let panel = match pane {
+                    PaneId::Left => self.left.panel(),
+                    PaneId::Center => self.center.panel(),
+                };
+                let selected_idx = panel.selected_idx();
+                let entries = panel
+                    .elements()
+                    .enumerate()
+                    .map(|(idx, elem)| EntryInfo {
+                        name: elem.name().clone(),
+                        marked: elem.is_marked(),
+                        hidden: elem.is_hidden(),
+                        selected: idx == selected_idx,
+                    })
+                    .collect();
+                let _ = reply.send(entries);
+            }
+        }
+    }
+
+    fn state_snapshot(&self) -> StateSnapshot {
+        let center = self.center.panel();
+        // `index_vs_total()` returns a 1-based position; the snapshot
+        // exposes a 0-based index into the visible entries.
+        let (position, total) = center.index_vs_total();
+        let queue = self.command_status_rx.borrow().clone();
+        StateSnapshot {
+            seq: self.debug_seq,
+            mode: match &self.mode {
+                Mode::Normal => "normal",
+                Mode::Console { .. } => "console",
+                Mode::CreateItem { is_dir: true, .. } => "mkdir",
+                Mode::CreateItem { .. } => "touch",
+                Mode::Search { .. } => "search",
+                Mode::Rename { .. } => "rename",
+            }
+            .to_string(),
+            cwd: center.path().to_path_buf(),
+            selection: center
+                .selected_path()
+                .and_then(|p| p.file_name())
+                .map(|f| f.to_string_lossy().into_owned()),
+            selected_idx: position.saturating_sub(1),
+            total,
+            marked: center
+                .elements()
+                .filter(|e| e.is_marked())
+                .map(|e| e.path().to_path_buf())
+                .collect(),
+            clipboard: self.clipboard.as_ref().map(|c| ClipboardInfo {
+                files: c.files.clone(),
+                op: if c.cut { "cut" } else { "copy" }.to_string(),
+            }),
+            show_hidden: self.show_hidden,
+            left_path: self.left.panel().path().to_path_buf(),
+            preview_path: self.right.panel().path().to_path_buf(),
+            queue_active: queue.active,
+            queue_len: queue.queued_count,
+        }
+    }
+
     pub async fn run(mut self) -> Result<CloseCmd> {
         // Initial draw
         self.redraw_everything();
@@ -1050,6 +1147,7 @@ impl PanelManager {
         let close_cmd = loop {
             let event_reader = self.event_reader.next().fuse();
             tokio::select! {
+                biased;
                 // Check incoming new logs
                 () = self.logger.update() => {
                     self.redraw_log();
@@ -1106,9 +1204,16 @@ impl PanelManager {
                         None => break CloseCmd::QuitErr { error: "event-reader has been dropped" },
                     }
                 }
+                // Debug socket requests; must stay the LAST branch of this
+                // biased select: it may only win when nothing else is ready,
+                // which is exactly the idle guarantee `await-idle` promises.
+                Some(req) = recv_debug(&mut self.debug_rx) => {
+                    self.handle_debug_request(req);
+                }
             }
             // Always redraw what needs to be redrawn
             self.draw()?;
+            self.debug_seq = self.debug_seq.wrapping_add(1);
         };
         // Cleanup after leaving this function
         self.stdout
