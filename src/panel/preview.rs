@@ -35,10 +35,48 @@ pub enum Preview {
 }
 
 #[derive(Debug, Clone)]
+struct ResizeCache {
+    w: u32,
+    h: u32,
+    rgb: image::RgbImage,
+    count: u32,
+}
+
+/// Resize `src` to `w`x`h`, reusing `cache` when the requested dimensions are
+/// unchanged. Operates on the fields directly so callers can pass disjoint
+/// borrows of `FilePreview` (the draw path holds `&self.preview` while
+/// mutating `&mut self.resize_cache`).
+fn resized_rgb<'a>(
+    cache: &'a mut Option<ResizeCache>,
+    src: &DynamicImage,
+    w: u32,
+    h: u32,
+) -> &'a image::RgbImage {
+    let need = cache.as_ref().map_or(true, |c| c.w != w || c.h != h);
+    if need {
+        let prev = cache.as_ref().map_or(0, |c| c.count);
+        log::debug!("converting img: {}x{}", w, h);
+        let rgb = src.thumbnail(w, h).into_rgb8();
+        *cache = Some(ResizeCache {
+            w,
+            h,
+            rgb,
+            count: prev + 1,
+        });
+    }
+    &cache.as_ref().unwrap().rgb
+}
+
+#[derive(Debug, Clone)]
 pub struct FilePreview {
     path: PathBuf,
     modified: SystemTime,
     preview: Preview,
+    /// Cache of the last resized RGB image, keyed on the requested cell
+    /// dimensions. Recomputed only when those change or a new preview
+    /// arrives (a new preview replaces the whole `FilePreview`, so its
+    /// cache starts empty).
+    resize_cache: Option<ResizeCache>,
 }
 
 impl Draw for FilePreview {
@@ -60,20 +98,28 @@ impl Draw for FilePreview {
             )?;
         }
 
-        match &self.preview {
+        // Destructure disjoint fields so the cache can be mutated while the
+        // preview is read.
+        let Self {
+            preview,
+            resize_cache,
+            path,
+            ..
+        } = self;
+        match preview {
             Preview::Image { img, info } => {
                 // load image
-                if let Some(img) = img {
+                if img.is_some() {
                     // Generate thumbnail
                     let thumbnail_height = if info.is_empty() {
                         2 * height
                     } else {
                         4 * height / 3
                     };
-                    log::debug!("converting img: {}x{}", width, height,);
-                    let img = img
-                        .thumbnail(width as u32, thumbnail_height as u32)
-                        .into_rgb8();
+                    let src = img.as_ref().unwrap();
+                    // Rebuild the resized RGB image only when the requested
+                    // cell dimensions change (or on first draw).
+                    let img = resized_rgb(resize_cache, src, width as u32, thumbnail_height as u32);
                     log::debug!(
                         "img: {}x{}, wxh: {}x{}",
                         img.width(),
@@ -130,7 +176,7 @@ impl Draw for FilePreview {
                     queue!(
                         stdout,
                         cursor::MoveTo(x_range.start + 1, y_range.start + 1),
-                        Print(format!("Failed to load image '{}'", self.path().display())),
+                        Print(format!("Failed to load image '{}'", path.display())),
                     )?;
                     for y in y_range.start + 1..y_range.end {
                         for x in x_range.start + 1..x_range.end {
@@ -215,6 +261,43 @@ impl FilePreview {
             path,
             modified,
             preview,
+            resize_cache: None,
+        }
+    }
+
+    /// Return the source image resized to `w`x`h` cells, caching the result.
+    /// Only recomputes when the requested dimensions change (or on first
+    /// call). Must only be called when `self.preview` is a
+    /// `Preview::Image` whose `img` is `Some`.
+    #[cfg(test)]
+    fn resized_rgb(&mut self, w: u32, h: u32) -> &image::RgbImage {
+        let Self {
+            preview,
+            resize_cache,
+            ..
+        } = self;
+        let src = match preview {
+            Preview::Image { img: Some(img), .. } => img,
+            _ => unreachable!("resized_rgb called without a Some image"),
+        };
+        resized_rgb(resize_cache, src, w, h)
+    }
+
+    #[cfg(test)]
+    fn resize_count(&self) -> u32 {
+        self.resize_cache.as_ref().map_or(0, |c| c.count)
+    }
+
+    #[cfg(test)]
+    fn from_image_for_test(img: DynamicImage) -> FilePreview {
+        FilePreview {
+            path: PathBuf::new(),
+            modified: SystemTime::now(),
+            preview: Preview::Image {
+                img: Some(img),
+                info: Vec::new(),
+            },
+            resize_cache: None,
         }
     }
 }
@@ -543,5 +626,33 @@ impl PreviewPanel {
             log::debug!("preview-panel: selecting {}", selection.display());
             panel.select_path(selection, None);
         }
+    }
+}
+
+#[cfg(test)]
+mod render_cache_tests {
+    use super::*;
+    use image::{DynamicImage, RgbImage};
+
+    fn tiny_preview() -> FilePreview {
+        let img = DynamicImage::ImageRgb8(RgbImage::new(64, 64));
+        FilePreview::from_image_for_test(img)
+    }
+
+    #[test]
+    fn resize_is_cached_across_equal_dimensions() {
+        let mut p = tiny_preview();
+        let a = p.resized_rgb(20, 30).clone();
+        let b = p.resized_rgb(20, 30).clone();
+        assert_eq!(p.resize_count(), 1, "second call must hit the cache");
+        assert_eq!(a.dimensions(), b.dimensions());
+    }
+
+    #[test]
+    fn resize_recomputes_when_dimensions_change() {
+        let mut p = tiny_preview();
+        p.resized_rgb(20, 30);
+        p.resized_rgb(21, 30);
+        assert_eq!(p.resize_count(), 2);
     }
 }
