@@ -1,26 +1,23 @@
+//! The two navigation consoles (`cd` and zoxide), drawn as a centered
+//! overlay and navigating live via [`ModeOp::Cd`].
+//!
+//! Cancel semantics: Esc requests [`Cleanup::CdTo`] the console's
+//! starting directory (the panel path captured at entry). The old
+//! blanket-Esc extras (clear_search, clear_new_element,
+//! clear_rename_preview, unmark_all_items, parser.clear) intentionally
+//! no longer run for the consoles — a modal mode undoes exactly the
+//! traces it created (sanctioned in the mode-seam plan).
+
 use crossterm::event::{KeyCode, KeyEvent};
 use patricia_tree::PatriciaSet;
 use std::process::{Command, Stdio};
 
+use super::mode::{Cleanup, ModalInput, ModalRegion, ModeOp};
 use super::*;
 use crate::{
     config::color::{print_horizontal_bar, print_horz_bot, print_horz_top},
     content::{dir_content, DirContent},
 };
-
-pub enum ConsoleOp {
-    Cd(PathBuf),
-    None,
-    Exit,
-}
-
-/// Abstract trait for all possible console implementations
-///
-/// In general, a console must be drawable and it must be able to handle keyboard input.
-pub trait Console: Draw + Send + Sync {
-    /// Inserts the given key to the console
-    fn handle_key(&mut self, key_event: KeyEvent) -> ConsoleOp;
-}
 
 /// Input console for our custom `cd` mode
 ///
@@ -29,6 +26,8 @@ pub trait Console: Draw + Send + Sync {
 pub struct DirConsole {
     input: String,
     path: PathBuf,
+    /// The panel path at entry; Esc cancels back to it
+    starting_path: PathBuf,
     rec_idx: usize,
     rec_total: usize,
     tmp_input: String,
@@ -132,6 +131,7 @@ impl DirConsole {
         let rec_idx = panel.index();
         let rec_total = recommendations.len();
         DirConsole {
+            starting_path: path.clone(),
             path,
             recommendations,
             rec_total,
@@ -307,33 +307,52 @@ impl DirConsole {
     }
 }
 
-impl Console for DirConsole {
-    fn handle_key(&mut self, key_event: KeyEvent) -> ConsoleOp {
+impl ModalInput for DirConsole {
+    fn handle_key(&mut self, key_event: KeyEvent) -> ModeOp {
         match key_event.code {
             KeyCode::Backspace => {
                 if let Some(path) = self.del().map(|p| p.to_path_buf()) {
-                    return ConsoleOp::Cd(path);
+                    return ModeOp::Cd(path);
                 }
             }
-            KeyCode::Enter => return ConsoleOp::Exit,
+            KeyCode::Enter => {
+                return ModeOp::Exit {
+                    cleanup: Cleanup::None,
+                }
+            }
+            KeyCode::Esc => {
+                return ModeOp::Exit {
+                    cleanup: Cleanup::CdTo(self.starting_path.clone()),
+                }
+            }
             KeyCode::Tab => {
                 if let Some(path) = self.tab() {
-                    return ConsoleOp::Cd(path);
+                    return ModeOp::Cd(path);
                 }
             }
             KeyCode::BackTab => {
                 if let Some(path) = self.backtab() {
-                    return ConsoleOp::Cd(path);
+                    return ModeOp::Cd(path);
                 }
             }
             KeyCode::Char(c) => {
                 if let Some(path) = self.insert(c) {
-                    return ConsoleOp::Cd(path);
+                    return ModeOp::Cd(path);
                 }
             }
             _ => (),
         }
-        ConsoleOp::None
+        ModeOp::None
+    }
+
+    fn region(&self) -> ModalRegion {
+        ModalRegion::ConsoleOverlay
+    }
+
+    fn name(&self) -> &'static str {
+        // Both consoles report "console", matching the pre-seam
+        // snapshot string (debug-socket compat).
+        "console"
     }
 }
 
@@ -452,8 +471,8 @@ impl Draw for Zoxide {
     }
 }
 
-impl Console for Zoxide {
-    fn handle_key(&mut self, key_event: KeyEvent) -> ConsoleOp {
+impl ModalInput for Zoxide {
+    fn handle_key(&mut self, key_event: KeyEvent) -> ModeOp {
         match key_event.code {
             KeyCode::Backspace => {
                 self.opt_idx = 0;
@@ -461,18 +480,22 @@ impl Console for Zoxide {
                 self.input.pop();
                 if self.input.is_empty() && len_before > self.input.len() {
                     self.path = ".".to_string();
-                    return ConsoleOp::Cd(self.starting_path.clone());
+                    return ModeOp::Cd(self.starting_path.clone());
                 }
             }
             KeyCode::Enter => {
-                return ConsoleOp::Exit;
+                return ModeOp::Exit {
+                    cleanup: Cleanup::None,
+                };
+            }
+            KeyCode::Esc => {
+                return ModeOp::Exit {
+                    cleanup: Cleanup::CdTo(self.starting_path.clone()),
+                };
             }
             KeyCode::Char(c) => {
                 self.opt_idx = 0;
                 self.input.push(c);
-                // if let Some(path) = self.insert(c) {
-                //     return ConsoleOp::Cd(path);
-                // }
             }
             KeyCode::Tab => {
                 self.opt_idx = self.opt_idx.saturating_add(1);
@@ -500,7 +523,7 @@ impl Console for Zoxide {
                     self.path = output;
                     let path = PathBuf::from(&self.path);
                     if path.exists() && path.is_dir() {
-                        return ConsoleOp::Cd(path);
+                        return ModeOp::Cd(path);
                     } else {
                         warn!(
                             "{} does not exist {}, {}",
@@ -510,7 +533,7 @@ impl Console for Zoxide {
                         );
                     }
                 } else {
-                    return ConsoleOp::Cd(self.starting_path.clone());
+                    return ModeOp::Cd(self.starting_path.clone());
                 }
             }
             Err(e) => {
@@ -520,6 +543,115 @@ impl Console for Zoxide {
             }
         }
 
-        ConsoleOp::None
+        ModeOp::None
+    }
+
+    fn region(&self) -> ModalRegion {
+        ModalRegion::ConsoleOverlay
+    }
+
+    fn name(&self) -> &'static str {
+        "console"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::panel::mode::{Cleanup, ModalInput, ModeOp};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn dir_console_esc_exits_to_its_starting_directory() {
+        let mut console = DirConsole {
+            starting_path: PathBuf::from("/origin"),
+            ..Default::default()
+        };
+        assert_eq!(
+            console.handle_key(key(KeyCode::Esc)),
+            ModeOp::Exit {
+                cleanup: Cleanup::CdTo(PathBuf::from("/origin"))
+            }
+        );
+    }
+
+    #[test]
+    fn dir_console_enter_exits_without_cleanup() {
+        let mut console = DirConsole::default();
+        assert_eq!(
+            console.handle_key(key(KeyCode::Enter)),
+            ModeOp::Exit {
+                cleanup: Cleanup::None
+            }
+        );
+    }
+
+    #[test]
+    fn dir_console_backspace_at_empty_input_maps_del_to_cd() {
+        // del() with empty input walks up to the parent directory: the
+        // key that used to cd via the old console op now maps through
+        // to ModeOp::Cd.
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = tmp.path().parent().unwrap().to_path_buf();
+        let mut console = DirConsole {
+            path: tmp.path().to_path_buf(),
+            ..Default::default()
+        };
+        assert_eq!(
+            console.handle_key(key(KeyCode::Backspace)),
+            ModeOp::Cd(parent)
+        );
+    }
+
+    #[test]
+    fn dir_console_key_without_effect_maps_to_none() {
+        // A char that opens no directory (empty recommendations, no
+        // matching dir) has no effect and maps through to ModeOp::None.
+        let mut console = DirConsole::default();
+        assert_eq!(console.handle_key(key(KeyCode::Char('x'))), ModeOp::None);
+    }
+
+    #[test]
+    fn zoxide_esc_exits_to_its_starting_directory() {
+        let mut console = Zoxide {
+            starting_path: PathBuf::from("/origin"),
+            ..Default::default()
+        };
+        assert_eq!(
+            console.handle_key(key(KeyCode::Esc)),
+            ModeOp::Exit {
+                cleanup: Cleanup::CdTo(PathBuf::from("/origin"))
+            }
+        );
+    }
+
+    #[test]
+    fn zoxide_enter_exits_without_cleanup() {
+        let mut console = Zoxide::default();
+        assert_eq!(
+            console.handle_key(key(KeyCode::Enter)),
+            ModeOp::Exit {
+                cleanup: Cleanup::None
+            }
+        );
+    }
+
+    #[test]
+    fn zoxide_backspace_to_empty_input_cds_back_to_start() {
+        // Emptying the input cds back to the starting directory; this is
+        // the early return before any zoxide process is spawned.
+        let mut console = Zoxide {
+            starting_path: PathBuf::from("/origin"),
+            input: "a".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            console.handle_key(key(KeyCode::Backspace)),
+            ModeOp::Cd(PathBuf::from("/origin"))
+        );
     }
 }

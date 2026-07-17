@@ -40,7 +40,7 @@ async fn recv_debug(rx: &mut Option<mpsc::Receiver<DebugRequest>>) -> Option<Deb
     }
 }
 
-use self::console::{Console, ConsoleOp, DirConsole, Zoxide};
+use self::console::{DirConsole, Zoxide};
 
 use super::mode::{
     Cleanup, CreateItemMode, ModalInput, ModalRegion, ModeOp, RenameMode, SearchMode,
@@ -71,7 +71,6 @@ impl Redraw {
 
 enum Mode {
     Normal,
-    Console { console: Box<dyn Console> },
     Modal(Box<dyn ModalInput>),
 }
 
@@ -135,7 +134,6 @@ pub struct PanelManager {
 
     /// Previous path
     previous: PathBuf,
-    pre_console_path: PathBuf,
 
     /// Trash directory. If `None`, the trash mechanism should not be used.
     trash_dir: Option<TempDir>,
@@ -226,7 +224,6 @@ impl PanelManager {
             fwd_history: Vec::new(),
             rev_history: Vec::new(),
             previous: ".".into(),
-            pre_console_path: ".".into(),
             trash_dir,
             parser,
             stdout,
@@ -531,14 +528,15 @@ impl PanelManager {
     }
 
     fn draw_console(&mut self) -> Result<()> {
-        // ConsoleOverlay modal delegation lands in Task 5 (mode-seam plan)
         if self.redraw.console {
-            if let Mode::Console { console } = &mut self.mode {
-                console.draw(
-                    &mut self.stdout,
-                    self.layout.left_x_range.start..self.layout.right_x_range.end,
-                    self.layout.y_range.clone(),
-                )?;
+            if let Mode::Modal(modal) = &mut self.mode {
+                if modal.region() == ModalRegion::ConsoleOverlay {
+                    modal.draw(
+                        &mut self.stdout,
+                        self.layout.left_x_range.start..self.layout.right_x_range.end,
+                        self.layout.y_range.clone(),
+                    )?;
+                }
             }
             self.redraw.console = false;
         }
@@ -1125,7 +1123,6 @@ impl PanelManager {
     fn mode_name(&self) -> &'static str {
         match &self.mode {
             Mode::Normal => "normal",
-            Mode::Console { .. } => "console",
             Mode::Modal(modal) => modal.name(),
         }
     }
@@ -1381,9 +1378,6 @@ impl PanelManager {
             // cancel op - the blanket cleanup must not fire for them.
             if let KeyCode::Esc = key_event.code {
                 if !matches!(self.mode, Mode::Modal(_)) {
-                    if let Mode::Console { .. } = self.mode {
-                        self.jump(self.pre_console_path.clone());
-                    }
                     self.mode = Mode::Normal;
                     self.parser.clear();
                     self.center.panel_mut().clear_search();
@@ -1410,16 +1404,13 @@ impl PanelManager {
                         Command::ToggleHidden => self.toggle_hidden(),
                         Command::ToggleLog => self.toggle_log(),
                         Command::Cd { zoxide } => {
-                            self.pre_console_path = self.center.panel().path().to_path_buf();
+                            // The console captures its starting path at
+                            // construction (the same panel path the old
+                            // manager-side field recorded before the seam).
                             self.mode = if zoxide {
-                                // TODO WIP: Test out zoxide console
-                                Mode::Console {
-                                    console: Box::new(Zoxide::from_panel(self.center.panel())),
-                                }
+                                Mode::Modal(Box::new(Zoxide::from_panel(self.center.panel())))
                             } else {
-                                Mode::Console {
-                                    console: Box::new(DirConsole::from_panel(self.center.panel())),
-                                }
+                                Mode::Modal(Box::new(DirConsole::from_panel(self.center.panel())))
                             };
                             self.redraw_console();
                         }
@@ -1631,22 +1622,19 @@ impl PanelManager {
                     // Always redraw footer
                     self.redraw_footer();
                 }
-                Mode::Console { console } => {
-                    match console.handle_key(key_event) {
-                        ConsoleOp::Cd(path) => {
-                            self.jump(path);
-                        }
-                        ConsoleOp::None => (),
-                        ConsoleOp::Exit => {
-                            self.mode = Mode::Normal;
-                            self.redraw_panels();
-                        }
-                    }
-                    self.redraw_console();
-                }
                 Mode::Modal(modal) => {
                     let op = modal.handle_key(key_event);
                     self.apply_mode_op(op);
+                    // Overlay modals repaint after every key (the old
+                    // console arm called redraw_console unconditionally).
+                    // Ops like Cd/None don't set redraw.console themselves,
+                    // and a live-cd (jump -> redraw_panels) would otherwise
+                    // paint the panels over the overlay.
+                    if let Mode::Modal(modal) = &self.mode {
+                        if modal.region() == ModalRegion::ConsoleOverlay {
+                            self.redraw_console();
+                        }
+                    }
                 }
             }
             let mode_after = self.mode_name();
