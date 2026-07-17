@@ -7,13 +7,15 @@
 //! clear_rename_preview, unmark_all_items, parser.clear) intentionally
 //! no longer run for the consoles — a modal mode undoes exactly the
 //! traces it created (sanctioned in the mode-seam plan).
+//!
+//! TODO: split per-mode + extract shared overlay frame helper
 
 use crossterm::event::{KeyCode, KeyEvent};
 use patricia_tree::PatriciaSet;
 use std::process::{Command, Stdio};
 
-use super::mode::{Cleanup, ModalInput, ModalRegion, ModeOp};
-use super::*;
+use super::{Cleanup, ModalInput, ModalRegion, ModeOp};
+use crate::panel::*;
 use crate::{
     config::color::{print_horizontal_bar, print_horz_bot, print_horz_top},
     content::{dir_content, DirContent},

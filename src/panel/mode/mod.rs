@@ -19,9 +19,11 @@ use crate::panel::input::Input;
 
 use super::Draw;
 
+mod console;
 mod create_item;
 mod rename;
 mod search;
+pub use console::{DirConsole, Zoxide};
 pub use create_item::CreateItemMode;
 pub use rename::RenameMode;
 pub use search::SearchMode;

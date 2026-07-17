@@ -40,10 +40,9 @@ async fn recv_debug(rx: &mut Option<mpsc::Receiver<DebugRequest>>) -> Option<Deb
     }
 }
 
-use self::console::{DirConsole, Zoxide};
-
 use super::mode::{
-    Cleanup, CreateItemMode, ModalInput, ModalRegion, ModeOp, RenameMode, SearchMode,
+    Cleanup, CreateItemMode, DirConsole, ModalInput, ModalRegion, ModeOp, RenameMode, SearchMode,
+    Zoxide,
 };
 use super::*;
 
@@ -1389,7 +1388,9 @@ impl PanelManager {
                     if let KeyCode::Esc = key_event.code {
                         self.parser.clear();
                         // The three clears are latent no-ops now that modals
-                        // clean up after themselves — candidates for removal.
+                        // clean up after themselves — candidates for removal;
+                        // the redraws stay regardless, because unmark is
+                        // user-visible.
                         self.center.panel_mut().clear_search();
                         self.center.panel_mut().clear_new_element();
                         self.center.panel_mut().clear_rename_preview();
