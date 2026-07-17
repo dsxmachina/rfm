@@ -51,6 +51,13 @@ struct Args {
     /// it will write the full path of the last visited directory to CHOOSEDIR
     #[arg(long)]
     choosedir: Option<PathBuf>,
+    /// Expose a debug/testing socket at the given path.
+    ///
+    /// Line-based protocol for development and automated testing:
+    /// send "state", "await-idle" or "entries <pane>", receive one
+    /// line of JSON. Example: echo state | socat - UNIX-CONNECT:<path>
+    #[arg(long)]
+    debug_socket: Option<PathBuf>,
     /// Path to open (defaults to ".")
     path: Option<PathBuf>,
 }
@@ -285,10 +292,19 @@ async fn main() -> anyhow::Result<()> {
 
     // Create command executor for background shell commands
     let (command_tx, command_rx) = mpsc::unbounded_channel();
-    let (command_status_tx, _command_status_rx) =
+    let (command_status_tx, command_status_rx) =
         tokio::sync::watch::channel(command_queue::QueueStatus::default());
     let command_executor = command_queue::CommandExecutor::new(command_rx, command_status_tx);
     let cmd_exec_handle = tokio::spawn(command_executor.run());
+
+    // Debug socket (only with --debug-socket)
+    let debug_rx = if let Some(socket_path) = args.debug_socket.clone() {
+        let (debug_tx, debug_rx) = mpsc::channel(8);
+        tokio::spawn(debug::serve(socket_path, debug_tx));
+        Some(debug_rx)
+    } else {
+        None
+    };
 
     let miller_panels = init_miller_panels(
         starting_path.clone(),
@@ -307,6 +323,8 @@ async fn main() -> anyhow::Result<()> {
         logger.clone(),
         opener,
         Some(command_tx),
+        command_status_rx,
+        debug_rx,
     )?;
     let panel_handle = tokio::spawn(panel_manager.run());
 
@@ -331,6 +349,10 @@ async fn main() -> anyhow::Result<()> {
         .queue(cursor::Show)?
         .flush()?;
     disable_raw_mode()?;
+
+    if let Some(socket_path) = &args.debug_socket {
+        let _ = std::fs::remove_file(socket_path);
+    }
 
     match panel_result {
         Ok(Ok(close_cmd)) => {
