@@ -489,6 +489,16 @@ impl PanelManager {
         if !self.redraw.any() {
             return Ok(());
         }
+        trace!(
+            "draw: left={} center={} right={} console={} header={} footer={} log={}",
+            self.redraw.left,
+            self.redraw.center,
+            self.redraw.right,
+            self.redraw.console,
+            self.redraw.header,
+            self.redraw.footer,
+            self.redraw.log,
+        );
         self.stdout.execute(BeginSynchronizedUpdate)?;
         self.stdout.queue(cursor::Hide)?;
         self.draw_footer()?;
@@ -1126,6 +1136,17 @@ impl PanelManager {
         }
     }
 
+    fn mode_name(&self) -> &'static str {
+        match &self.mode {
+            Mode::Normal => "normal",
+            Mode::Console { .. } => "console",
+            Mode::CreateItem { is_dir: true, .. } => "mkdir",
+            Mode::CreateItem { .. } => "touch",
+            Mode::Search { .. } => "search",
+            Mode::Rename { .. } => "rename",
+        }
+    }
+
     fn state_snapshot(&self) -> StateSnapshot {
         let center = self.center.panel();
         // `index_vs_total()` returns a 1-based position; the snapshot
@@ -1134,15 +1155,7 @@ impl PanelManager {
         let queue = self.command_status_rx.borrow().clone();
         StateSnapshot {
             seq: self.debug_seq,
-            mode: match &self.mode {
-                Mode::Normal => "normal",
-                Mode::Console { .. } => "console",
-                Mode::CreateItem { is_dir: true, .. } => "mkdir",
-                Mode::CreateItem { .. } => "touch",
-                Mode::Search { .. } => "search",
-                Mode::Rename { .. } => "rename",
-            }
-            .to_string(),
+            mode: self.mode_name().to_string(),
             cwd: center.path().to_path_buf(),
             selection: center
                 .selected_path()
@@ -1190,6 +1203,7 @@ impl PanelManager {
 
                     // Find panel and update it
                     if self.center.check_update(&state) {
+                        trace!("panel-update: center <- {}", state.path().display());
                         self.center.update_panel(panel);
                         // update preview (if necessary)
                         self.right.new_panel_delayed(self.center.panel().selected_path());
@@ -1197,6 +1211,7 @@ impl PanelManager {
                         self.redraw_right();
                         self.redraw_console();
                     } else if self.left.check_update(&state) {
+                        trace!("panel-update: left <- {}", state.path().display());
                         self.left.update_panel(panel);
                         self.left.panel_mut().select_path(self.center.panel().path(), Some(self.center.panel().selected_idx()));
                         self.redraw_left();
@@ -1215,6 +1230,7 @@ impl PanelManager {
                     let (panel, state) = result.unwrap();
 
                     if self.right.check_update(&state) {
+                        trace!("panel-update: preview <- {}", state.path().display());
                         self.right.update_panel(panel);
                         self.redraw_right();
                         self.redraw_console();
@@ -1261,6 +1277,8 @@ impl PanelManager {
     /// Returns Ok(true) if the application needs to shut down.
     fn handle_event(&mut self, event: Event) -> Result<Option<CloseCmd>> {
         if let Event::Key(key_event) = event {
+            let mode_before = self.mode_name();
+            trace!("key-event: {key_event:?} (mode: {mode_before})");
             // If we hit escape - go back to normal mode.
             if let KeyCode::Esc = key_event.code {
                 if let Mode::Console { .. } = self.mode {
@@ -1619,6 +1637,10 @@ impl PanelManager {
                         self.redraw_center();
                     }
                 }
+            }
+            let mode_after = self.mode_name();
+            if mode_before != mode_after {
+                trace!("mode: {mode_before} -> {mode_after}");
             }
         }
         if let Event::Resize(sx, sy) = event {

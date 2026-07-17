@@ -103,11 +103,18 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Initialize logger
-    let logger = LogBuffer::default()
-        .with_level(log::Level::Debug)
-        .with_capacity(15);
+    //
+    // With an active debug socket everything down to trace level is logged:
+    // the verbose detail lands in the retention history (readable via the
+    // `log` socket command) while the log widget still only shows Info+
+    let (log_level, log_filter) = if args.debug_socket.is_some() {
+        (log::Level::Trace, log::LevelFilter::Trace)
+    } else {
+        (log::Level::Debug, log::LevelFilter::Info)
+    };
+    let logger = LogBuffer::default().with_level(log_level).with_capacity(15);
     log::set_boxed_logger(Box::new(logger.clone())).context("failed to initialize logger")?;
-    log::set_max_level(log::LevelFilter::Info);
+    log::set_max_level(log_filter);
 
     // Spawn a task that periodically removes the oldest log line
     //

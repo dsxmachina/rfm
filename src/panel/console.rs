@@ -1,10 +1,6 @@
-use anyhow::Context;
 use crossterm::event::{KeyCode, KeyEvent};
 use patricia_tree::PatriciaSet;
-use std::{
-    io::{BufRead, BufReader},
-    process::{Command, Stdio},
-};
+use std::process::{Command, Stdio};
 
 use super::*;
 use crate::{
@@ -364,19 +360,30 @@ impl Zoxide {
     }
 
     fn query_zoxide(&mut self) -> anyhow::Result<()> {
-        let mut handle = Command::new("zoxide")
+        // output() waits for the child (no zombies) and captures stderr,
+        // which would otherwise be written straight onto the TUI
+        let output = Command::new("zoxide")
             .arg("query")
             .arg("-l")
             .args(self.input.split_ascii_whitespace())
-            .stdin(Stdio::piped())
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .spawn()?;
+            .stderr(Stdio::piped())
+            .output()?;
 
-        let stdout = handle
-            .stdout
-            .take()
-            .context("could not get stdout of child process")?;
-        self.options = BufReader::new(stdout).lines().flatten().collect();
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!("zoxide query failed ({}): {}", output.status, stderr.trim());
+        }
+        self.options = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(String::from)
+            .collect();
+        trace!(
+            "zoxide query '{}' -> {} results",
+            self.input,
+            self.options.len()
+        );
         Ok(())
     }
 }

@@ -36,6 +36,14 @@ Socket commands (one per connection, JSON reply):
   Background command failures (exit codes, stderr) land here — check
   `log` first when something "silently" fails.
 
+With `--debug-socket` active, verbosity is raised to TRACE (rfm targets
+only; dependency noise is filtered, and the on-screen widget still shows
+only info+). The history then contains a full causal trail per
+interaction: `key-event:` (with mode), `mode: x -> y`, `draw:` (which
+panes were considered dirty — the stale-pane diagnostic), `panel-update:`
+(async panel arrivals), `jump-to`, `zoxide query`, watcher
+`watching`/`unwatching`. Correlate via age_secs.
+
 Reading the replies correctly:
 - Directories sort before files: with a.txt/b.txt/c.txt + subdir, the
   initial selection is `subdir`, not `a.txt` — don't mis-assert.

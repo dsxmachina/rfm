@@ -903,7 +903,7 @@ impl DirPanel {
             None => {
                 // In this case use the alt index, if given
                 let new_idx = alt_idx.unwrap_or(self.selected_idx);
-                log::info!(
+                log::debug!(
                     "selection not found {}, using new idx={}, n-elements={}",
                     selection.display(),
                     new_idx,

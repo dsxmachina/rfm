@@ -70,6 +70,11 @@ impl log::Log for LogBuffer {
     }
 
     fn log(&self, record: &log::Record) {
+        // Verbose levels are only interesting for our own code; at trace
+        // level dependencies like mio/inotify would flood the history
+        if record.level() > Level::Info && !record.target().starts_with("rfm") {
+            return;
+        }
         let line = format!("{}", record.args());
         let mut history = self.history.lock();
         history.push_back((record.level(), Instant::now(), line.clone()));
@@ -77,13 +82,17 @@ impl log::Log for LogBuffer {
             history.pop_front();
         }
         drop(history);
-        let mut inner = self.buffer.lock();
-        inner.push_back((record.level(), line));
-        if inner.len() > self.capacity {
-            inner.pop_front();
+        // The display buffer (log widget) only shows Info and above; debug
+        // and trace detail is retained in the history for the debug socket
+        if record.level() <= Level::Info {
+            let mut inner = self.buffer.lock();
+            inner.push_back((record.level(), line));
+            if inner.len() > self.capacity {
+                inner.pop_front();
+            }
+            drop(inner);
+            self.notify.notify_one();
         }
-        drop(inner);
-        self.notify.notify_one();
     }
 
     fn flush(&self) {}
@@ -107,11 +116,37 @@ mod tests {
     use log::Log;
 
     fn log_line(buffer: &LogBuffer, level: Level, msg: &str) {
+        log_line_from(buffer, level, msg, "rfm::panel::manager");
+    }
+
+    fn log_line_from(buffer: &LogBuffer, level: Level, msg: &str, target: &str) {
         buffer.log(
             &log::Record::builder()
                 .level(level)
+                .target(target)
                 .args(format_args!("{}", msg))
                 .build(),
+        );
+    }
+
+    #[test]
+    fn verbose_lines_from_foreign_crates_are_dropped() {
+        // At trace level, dependencies (mio, inotify, ...) would flood the
+        // history and drown rfm's own signal — only rfm targets may pass
+        let buffer = LogBuffer::default().with_level(Level::Trace);
+        log_line_from(&buffer, Level::Trace, "poller detail", "mio::poll");
+        log_line_from(&buffer, Level::Debug, "inotify detail", "inotify");
+        log_line_from(&buffer, Level::Info, "foreign info", "mio::poll");
+        log_line_from(&buffer, Level::Trace, "own detail", "rfm::panel::manager");
+
+        let history: Vec<String> = buffer
+            .history(10)
+            .into_iter()
+            .map(|(_, _, msg)| msg)
+            .collect();
+        assert_eq!(
+            history,
+            vec!["foreign info".to_string(), "own detail".to_string()]
         );
     }
 
@@ -155,6 +190,33 @@ mod tests {
         assert_eq!(history.len(), HISTORY_CAPACITY);
         // Oldest entries were dropped
         assert_eq!(history[0].2, "line-20");
+    }
+
+    #[test]
+    fn verbose_lines_go_to_history_only() {
+        // In trace mode (debug socket active) the widget must stay calm:
+        // debug/trace lines are retained for the socket but never displayed.
+        let buffer = LogBuffer::default().with_level(Level::Trace);
+        log_line(&buffer, Level::Trace, "trace-detail");
+        log_line(&buffer, Level::Debug, "debug-detail");
+        log_line(&buffer, Level::Info, "user-visible");
+
+        let displayed: Vec<String> = buffer.get().into_iter().map(|(_, msg)| msg).collect();
+        assert_eq!(displayed, vec!["user-visible".to_string()]);
+
+        let history: Vec<String> = buffer
+            .history(10)
+            .into_iter()
+            .map(|(_, _, msg)| msg)
+            .collect();
+        assert_eq!(
+            history,
+            vec![
+                "trace-detail".to_string(),
+                "debug-detail".to_string(),
+                "user-visible".to_string()
+            ]
+        );
     }
 
     #[test]

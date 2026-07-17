@@ -84,7 +84,7 @@ impl Input {
     pub fn update(&mut self, key_code: KeyCode, modifiers: KeyModifiers) {
         let has_shift = modifiers.contains(KeyModifiers::SHIFT);
         let has_ctrl = modifiers.contains(KeyModifiers::CONTROL);
-        log::info!(
+        log::trace!(
             "input-update: {}, input-len: {}, cursor: {}, shift: {has_shift}, ctrl: {has_ctrl}, keycode: {:?}",
             self.input,
             self.input.len(),
