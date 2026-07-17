@@ -22,7 +22,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{stdout, IsTerminal, Write},
     path::PathBuf,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
 use util::xdg_config_home;
@@ -116,14 +116,17 @@ async fn main() -> anyhow::Result<()> {
     log::set_boxed_logger(Box::new(logger.clone())).context("failed to initialize logger")?;
     log::set_max_level(log_filter);
 
-    // Spawn a task that periodically removes the oldest log line
+    // Spawn a task that periodically expires stale display log lines
     //
-    // This automatically ensures that any error message will be removed after 2 * LOG_CAPACITY seconds
+    // Each display line carries an Instant; once it is older than DISPLAY_TTL
+    // it is dropped and the UI is woken (only when something was removed), so
+    // an expired line disappears on its own rather than lingering until the
+    // next keypress.
     let periodic_logger = logger.clone();
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
-            periodic_logger.remove_oldest();
+            periodic_logger.remove_expired(Instant::now());
         }
     });
 

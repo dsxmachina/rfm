@@ -1,4 +1,8 @@
-use std::{collections::VecDeque, sync::Arc, time::Instant};
+use std::{
+    collections::VecDeque,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use log::Level;
 use parking_lot::Mutex;
@@ -8,9 +12,14 @@ use tokio::sync::Notify;
 /// independent of the small display buffer shown in the log widget.
 pub const HISTORY_CAPACITY: usize = 200;
 
+/// How long a display line stays visible in the log widget before the
+/// periodic cleanup drops it. Tunable: long enough to read a message,
+/// short enough that transient status doesn't clutter the screen.
+pub const DISPLAY_TTL: Duration = Duration::from_secs(10);
+
 #[derive(Clone)]
 pub struct LogBuffer {
-    buffer: Arc<Mutex<VecDeque<(Level, String)>>>,
+    buffer: Arc<Mutex<VecDeque<(Level, Instant, String)>>>,
     /// Retention ring for debugging: unlike `buffer`, entries are never
     /// evicted by the periodic display cleanup, only by capacity.
     history: Arc<Mutex<VecDeque<(Level, Instant, String)>>>,
@@ -33,7 +42,11 @@ impl LogBuffer {
     }
 
     pub fn get(&self) -> VecDeque<(Level, String)> {
-        self.buffer.lock().clone()
+        self.buffer
+            .lock()
+            .iter()
+            .map(|(level, _, msg)| (*level, msg.clone()))
+            .collect()
     }
 
     pub fn get_errors(&self) -> Vec<String> {
@@ -53,10 +66,19 @@ impl LogBuffer {
         history.iter().skip(skip).cloned().collect()
     }
 
-    /// Removes the oldest log line
-    pub fn remove_oldest(&self) {
+    /// Drop all display lines older than DISPLAY_TTL relative to `now`.
+    /// Returns true (and wakes the UI via notify) iff ≥1 line was removed,
+    /// so the widget repaints only when something visibly expired.
+    pub fn remove_expired(&self, now: Instant) -> bool {
         let mut buffer = self.buffer.lock();
-        buffer.pop_front();
+        let before = buffer.len();
+        buffer.retain(|(_, at, _)| now.duration_since(*at) < DISPLAY_TTL);
+        let removed = buffer.len() < before;
+        drop(buffer);
+        if removed {
+            self.notify.notify_one();
+        }
+        removed
     }
 
     pub async fn update(&self) {
@@ -86,7 +108,7 @@ impl log::Log for LogBuffer {
         // and trace detail is retained in the history for the debug socket
         if record.level() <= Level::Info {
             let mut inner = self.buffer.lock();
-            inner.push_back((record.level(), line));
+            inner.push_back((record.level(), Instant::now(), line));
             if inner.len() > self.capacity {
                 inner.pop_front();
             }
@@ -151,16 +173,36 @@ mod tests {
     }
 
     #[test]
+    fn expired_lines_are_removed_by_ttl() {
+        let buffer = LogBuffer::default();
+        log_line(&buffer, Level::Info, "old");
+        assert!(!buffer.remove_expired(Instant::now())); // nothing expired yet
+        assert_eq!(buffer.get().len(), 1);
+        let future = Instant::now() + DISPLAY_TTL + Duration::from_secs(1);
+        assert!(
+            buffer.remove_expired(future),
+            "must report it removed a line"
+        );
+        assert!(buffer.get().is_empty());
+    }
+
+    #[test]
+    fn remove_expired_reports_false_when_nothing_expires() {
+        let buffer = LogBuffer::default();
+        log_line(&buffer, Level::Info, "fresh");
+        assert!(!buffer.remove_expired(Instant::now()));
+    }
+
+    #[test]
     fn history_survives_display_eviction() {
         let buffer = LogBuffer::default().with_capacity(10);
         log_line(&buffer, Level::Info, "first");
         log_line(&buffer, Level::Error, "second");
         log_line(&buffer, Level::Warn, "third");
 
-        // The periodic task evicts from the display buffer...
-        buffer.remove_oldest();
-        buffer.remove_oldest();
-        buffer.remove_oldest();
+        // The periodic task evicts everything past the TTL from the display buffer...
+        let future = Instant::now() + DISPLAY_TTL + Duration::from_secs(1);
+        assert!(buffer.remove_expired(future));
         assert!(buffer.get().is_empty(), "display buffer should be drained");
 
         // ...but the history keeps everything
@@ -223,7 +265,8 @@ mod tests {
     fn get_errors_reads_history_not_display_buffer() {
         let buffer = LogBuffer::default();
         log_line(&buffer, Level::Error, "important failure");
-        buffer.remove_oldest();
+        let future = Instant::now() + DISPLAY_TTL + Duration::from_secs(1);
+        assert!(buffer.remove_expired(future));
         assert!(buffer.get().is_empty());
         assert_eq!(buffer.get_errors(), vec!["important failure".to_string()]);
     }
