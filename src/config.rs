@@ -93,9 +93,7 @@ pub mod color {
         COLOR_DIR_PATH
             .set(Color::DarkBlue)
             .expect("color must be unset");
-        COLOR_RENAME
-            .set(Color::Blue)
-            .expect("color must be unset");
+        COLOR_RENAME.set(Color::Blue).expect("color must be unset");
     }
 
     #[inline]

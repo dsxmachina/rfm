@@ -133,7 +133,9 @@ pub enum Command {
     Zip,
     Tar,
     Extract,
-    Cd { zoxide: bool },
+    Cd {
+        zoxide: bool,
+    },
     Search,
     Rename,
     Mkdir,
@@ -141,7 +143,9 @@ pub enum Command {
     Cut,
     Copy,
     Delete,
-    Paste { overwrite: bool },
+    Paste {
+        overwrite: bool,
+    },
     Mark,
     Quit,
     QuitWithoutPath,

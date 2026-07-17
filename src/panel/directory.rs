@@ -78,7 +78,11 @@ impl Command for StyledEntry {
                 SetAttribute(Attribute::Bold).write_ansi(f)?;
             }
             // Format: lead + symbol + space + name + space + suffix + space
-            write!(f, "{}{}{} {} ", self.lead, self.symbol, self.name, self.suffix)?;
+            write!(
+                f,
+                "{}{}{} {} ",
+                self.lead, self.symbol, self.name, self.suffix
+            )?;
             SetAttribute(Attribute::Reset).write_ansi(f)?;
         } else {
             // Normal rendering: symbol color, then text color
@@ -598,9 +602,13 @@ impl Draw for DirPanel {
                         cursor::MoveTo(x_range.start, y_range.start + y_offset),
                         print_vertical_bar(),
                         PrintStyledContent(
-                            format!(" {symbol}{} {} ", new_name.exact_width(name_width), original_suffix)
-                                .with(color_rename())
-                                .reverse()
+                            format!(
+                                " {symbol}{} {} ",
+                                new_name.exact_width(name_width),
+                                original_suffix
+                            )
+                            .with(color_rename())
+                            .reverse()
                         ),
                     )?;
                     y_offset += 1;
@@ -638,9 +646,13 @@ impl Draw for DirPanel {
                     cursor::MoveTo(x_range.start, y_range.start + y_offset),
                     print_vertical_bar(),
                     PrintStyledContent(
-                        format!(" {symbol}{} {} ", new_name.exact_width(name_width), original_suffix)
-                            .with(color_rename())
-                            .reverse()
+                        format!(
+                            " {symbol}{} {} ",
+                            new_name.exact_width(name_width),
+                            original_suffix
+                        )
+                        .with(color_rename())
+                        .reverse()
                     ),
                 )?;
                 y_offset += 1;
