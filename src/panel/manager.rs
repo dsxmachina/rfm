@@ -210,7 +210,8 @@ impl PanelManager {
     }
 
     fn draw_log(&mut self) -> Result<()> {
-        let mut y = self.layout.footer().saturating_sub(2); // or 3, if we have the advanced command preview
+        let bottom = self.layout.footer().saturating_sub(2); // or 3, if we have the advanced command preview
+        let mut y = bottom;
 
         let print_level = |level| match level {
             log::Level::Error => PrintStyledContent("error".red().bold()),
@@ -220,12 +221,29 @@ impl PanelManager {
             log::Level::Trace => PrintStyledContent("trace".grey()),
         };
 
+        // Perma-redraw: own the entire log region. When expanded the widget can
+        // span the bottom `capacity` rows; collapsed it uses a single row. Blank
+        // every row first so lines dropped by TTL/capacity don't leave stale
+        // glyphs behind (previously only drawn rows were cleared).
+        let span = if self.show_log {
+            self.logger.capacity() as u16
+        } else {
+            1
+        };
+        let top = bottom.saturating_sub(span.saturating_sub(1));
+        for row in top..=bottom {
+            queue!(
+                self.stdout,
+                cursor::MoveTo(0, row),
+                Clear(ClearType::CurrentLine),
+            )?;
+        }
+
         if self.show_log {
             for (level, line) in self.logger.get().into_iter().rev() {
                 queue!(
                     self.stdout,
                     cursor::MoveTo(0, y),
-                    Clear(ClearType::CurrentLine),
                     print_level(level),
                     style::Print(": "),
                     style::PrintStyledContent(line.grey()),
@@ -243,7 +261,6 @@ impl PanelManager {
             queue!(
                 self.stdout,
                 cursor::MoveTo(0, y),
-                Clear(ClearType::CurrentLine),
                 print_level(level),
                 style::Print(": "),
                 style::PrintStyledContent(line.grey()),
