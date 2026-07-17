@@ -232,3 +232,52 @@ Log lines shown in the widget expire after DISPLAY_TTL (logger.rs); the
 **Step 4 — commit:** `docs: record the single-dirty-bit render model`
 
 Then final whole-diff review of the four tasks.
+
+## Outcome
+
+Shipped in five commits (plus this docs commit) on top of the plan
+commit `64c5086`:
+
+- `80ab29e` feat(preview): cache the image resize instead of recomputing
+  per draw — FilePreview keyed on cell dimensions.
+- `2da27c4` refactor(render): replace the Redraw flag tree with a single
+  `dirty` bit — perma-redraw; `mark_dirty()` on any state change.
+- `c4c43f1` refactor(render): delete the dead commented `select()` that
+  still referenced the old per-element redraw methods.
+- `bf50edc` feat(logger): per-line display TTL (10s), wake the UI only on
+  real expiry — the 1 s cleanup task notifies only when ≥1 line drops.
+- `b0f73ed` fix(render): clear the full log-widget region so shrinking
+  doesn't leave stale rows (this task, commit 1).
+- docs commit (this task, commit 2): render-model recipe card in
+  CLAUDE.md + this outcome.
+
+**What shipped:** a single dirty bit replacing the Redraw flag tree
+(perma-redraw, every element fully owns its region), the image-resize
+cache, a per-line 10s display TTL for the log widget, and the
+log-region clear fix that makes the widget self-clean vacated rows on
+the expiry repaint (verified e2e: info lines in the widget went blank
+after 10s with no input — no resize/toggle needed).
+
+**Tests:** 62 green (+6 net new vs. the pre-refactor baseline: 2 image
+cache + 2 TTL + updated logger coverage).
+
+**Bugs fixed for free / quirks deleted:** collapsing to the single dirty
+bit eliminated a stale-mark bug in `Cut` (it forgot to flag its redraw
+under the old flag tree, so the marked source could paint stale until an
+unrelated event). The `FooterLine`-stays-dirty quirk from the flag tree
+(the footer kept re-asserting its own dirty flag) is gone — there are no
+per-element flags left to get stuck.
+
+**Honest behavior note:** log lines now expire on a fixed per-line 10s
+TTL (`DISPLAY_TTL`, logger.rs) rather than the old one-pop-per-second
+eviction. A burst of lines all disappear ~10s after they were logged
+(each on its own clock) instead of draining one row per second; the
+200-line retention history for the debug socket is unchanged.
+
+**Deferred / optional follow-ups (from review):**
+- The collapsed `!show_log` branch of `draw_log` clones the whole display
+  buffer via `logger.get()` just to `find()` the newest warning; a
+  `get_last_matching(level)` accessor on `LogBuffer` would avoid the
+  throwaway clone. Cosmetic (buffer ≤ 10 lines); deferred.
+- One of the TTL tests is redundant with another (overlapping expiry
+  assertions); could be merged. Left as-is — harmless, and explicit.

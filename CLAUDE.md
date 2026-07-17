@@ -31,8 +31,9 @@ Socket commands (one per connection, JSON reply):
 - `await-idle` — blocks until the event loop has drained (max 30s)
 - `entries left|center` — the entries rfm *believes* the pane shows
 - `log [n]` — last n retained log lines (level, age_secs, message).
-  The retention history (200 lines) outlives the log widget's 1-line/sec
-  eviction, so this is where errors live after they vanish from screen.
+  The retention history (200 lines, capacity-evicted only) outlives the
+  log widget's per-line 10s display TTL, so this is where errors live
+  after they vanish from screen.
   Background command failures (exit codes, stderr) land here — check
   `log` first when something "silently" fails.
 
@@ -93,3 +94,18 @@ pure state machines: `handle_key → ModeOp`, testable without a
 terminal. All effects and the derived redraws are applied centrally in
 `PanelManager::apply_mode_op` (manager.rs). The mode strings the debug
 socket reports come from `ModalInput::name()`.
+
+## Architecture: rendering
+
+Event-driven, not a render loop: the select loop draws only when an event
+sets the single `dirty` bit (PanelManager). `draw()` repaints everything
+in call order (footer → header → panels → console → log, overlay last —
+that ordering *is* the z-order) and clears the bit. No per-element dirty
+flags: any state change calls `mark_dirty()`, so panels can't go stale.
+Full repaint is cheap because every draw is a blit except the image
+preview, whose resize is cached (FilePreview, keyed on cell dimensions).
+Adding a window ≈ carve its layout region + a draw call at the right spot
+in the sequence; no flag plumbing.
+
+Log lines shown in the widget expire after DISPLAY_TTL (logger.rs, 10s);
+the 1 s task wakes the UI only when a line actually expires.
