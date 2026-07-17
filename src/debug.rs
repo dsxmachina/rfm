@@ -73,6 +73,25 @@ pub enum DebugRequest {
     Entries { pane: PaneId, reply: oneshot::Sender<Vec<EntryInfo>> },
 }
 
+/// A parsed line-protocol command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DebugCommand {
+    State,
+    AwaitIdle,
+    Entries(PaneId),
+}
+
+pub fn parse_command(line: &str) -> Option<DebugCommand> {
+    let mut words = line.split_whitespace();
+    match (words.next()?, words.next()) {
+        ("state", None) => Some(DebugCommand::State),
+        ("await-idle", None) => Some(DebugCommand::AwaitIdle),
+        ("entries", Some("left")) => Some(DebugCommand::Entries(PaneId::Left)),
+        ("entries", Some("center")) => Some(DebugCommand::Entries(PaneId::Center)),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,5 +121,25 @@ mod tests {
         assert!(json.contains("\"mode\":\"normal\""));
         assert!(json.contains("\"selection\":\"b.txt\""));
         assert!(json.contains("\"op\":\"copy\""));
+    }
+
+    #[test]
+    fn parses_commands() {
+        assert!(matches!(parse_command("state"), Some(DebugCommand::State)));
+        assert!(matches!(parse_command("await-idle"), Some(DebugCommand::AwaitIdle)));
+        assert!(matches!(
+            parse_command("entries left"),
+            Some(DebugCommand::Entries(PaneId::Left))
+        ));
+        assert!(matches!(
+            parse_command("entries center"),
+            Some(DebugCommand::Entries(PaneId::Center))
+        ));
+        // whitespace tolerance
+        assert!(matches!(parse_command("  state "), Some(DebugCommand::State)));
+        // unknown input
+        assert!(parse_command("entries right").is_none());
+        assert!(parse_command("bogus").is_none());
+        assert!(parse_command("").is_none());
     }
 }
