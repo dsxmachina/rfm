@@ -42,8 +42,10 @@ async fn recv_debug(rx: &mut Option<mpsc::Receiver<DebugRequest>>) -> Option<Deb
 
 use self::console::{Console, ConsoleOp, DirConsole, Zoxide};
 
-use super::mode::{Cleanup, ModalInput, ModalRegion, ModeOp, RenameMode, SearchMode};
-use super::{input::Input, *};
+use super::mode::{
+    Cleanup, CreateItemMode, ModalInput, ModalRegion, ModeOp, RenameMode, SearchMode,
+};
+use super::*;
 
 struct Redraw {
     left: bool,
@@ -70,7 +72,6 @@ impl Redraw {
 enum Mode {
     Normal,
     Console { console: Box<dyn Console> },
-    CreateItem { input: Input, is_dir: bool },
     Modal(Box<dyn ModalInput>),
 }
 
@@ -405,20 +406,6 @@ impl PanelManager {
                 // normal footer rendering (same as console mode today).
                 ModalRegion::ConsoleOverlay => {}
             }
-        }
-        if let Mode::CreateItem { input, is_dir } = &self.mode {
-            let prompt = if *is_dir { "Make Directory:" } else { "Touch:" };
-            self.stdout
-                .queue(PrintStyledContent(
-                    prompt.bold().with(color_main()).reverse(),
-                ))?
-                .queue(Print(" "))?;
-            if *is_dir {
-                input.print(&mut self.stdout, color_main())?;
-            } else {
-                input.print(&mut self.stdout, style::Color::Grey)?;
-            }
-            return self.stdout.flush();
         }
         let (permissions, metadata) = print_metadata(self.center.panel().selected_path());
         queue!(
@@ -1139,8 +1126,6 @@ impl PanelManager {
         match &self.mode {
             Mode::Normal => "normal",
             Mode::Console { .. } => "console",
-            Mode::CreateItem { is_dir: true, .. } => "mkdir",
-            Mode::CreateItem { .. } => "touch",
             Mode::Modal(modal) => modal.name(),
         }
     }
@@ -1305,9 +1290,11 @@ impl PanelManager {
                 self.redraw_center();
             }
             ModeOp::Rename { to } => self.apply_rename(to),
-            ModeOp::CreatePreview { .. } | ModeOp::Create { .. } => {
-                unreachable!("wired in a later task")
+            ModeOp::CreatePreview { name, is_dir } => {
+                self.center.panel_mut().inject_new_element(name, is_dir);
+                self.redraw_center();
             }
+            ModeOp::Create { name, is_dir } => self.apply_create(name, is_dir),
             ModeOp::Exit { cleanup } => {
                 self.apply_cleanup(cleanup);
                 self.mode = Mode::Normal;
@@ -1339,6 +1326,35 @@ impl PanelManager {
         self.center.panel_mut().clear_rename_preview();
         self.center.reload();
         self.right.reload();
+        self.redraw_panels();
+    }
+
+    /// Applies [`ModeOp::Create`]: creates the new directory (`is_dir`)
+    /// or file named `name` in the current directory and leaves the mode.
+    ///
+    /// Ported verbatim from the old inline CreateItem Enter arm: the
+    /// typed name is trimmed here (at apply time), creation errors are
+    /// only logged.
+    fn apply_create(&mut self, name: String, is_dir: bool) {
+        let current_path = self.center.panel().path();
+        let create_fn = if is_dir {
+            |item| fs_extra::dir::create(item, false)
+        } else {
+            |item| {
+                let _ = OpenOptions::new()
+                    .read(true)
+                    .append(true)
+                    .create(true)
+                    .open(item)?;
+                Ok(())
+            }
+        };
+        if let Err(e) = create_fn(current_path.join(name.trim())) {
+            error!("{e}");
+        }
+        // self.stack.push(Operation::Mkdir { path: new_dir.clone() });
+        self.mode = Mode::Normal;
+        self.center.panel_mut().clear_new_element();
         self.redraw_panels();
     }
 
@@ -1452,17 +1468,11 @@ impl PanelManager {
                             self.redraw_right();
                         }
                         Command::Mkdir => {
-                            self.mode = Mode::CreateItem {
-                                input: Input::empty(),
-                                is_dir: true,
-                            };
+                            self.mode = Mode::Modal(Box::new(CreateItemMode::new(true)));
                             self.redraw_footer();
                         }
                         Command::Touch => {
-                            self.mode = Mode::CreateItem {
-                                input: Input::empty(),
-                                is_dir: false,
-                            };
+                            self.mode = Mode::Modal(Box::new(CreateItemMode::new(false)));
                             self.redraw_footer();
                         }
                         Command::Mark => {
@@ -1633,43 +1643,6 @@ impl PanelManager {
                         }
                     }
                     self.redraw_console();
-                }
-                Mode::CreateItem { input, is_dir } => {
-                    match key_event.code {
-                        KeyCode::Enter => {
-                            let current_path = self.center.panel().path();
-                            let create_fn = if *is_dir {
-                                |item| fs_extra::dir::create(item, false)
-                            } else {
-                                |item| {
-                                    let _ = OpenOptions::new()
-                                        .read(true)
-                                        .append(true)
-                                        .create(true)
-                                        .open(item)?;
-                                    Ok(())
-                                }
-                            };
-                            if let Err(e) = create_fn(current_path.join(input.get().trim())) {
-                                error!("{e}");
-                            }
-                            // self.stack.push(Operation::Mkdir { path: new_dir.clone() });
-                            self.mode = Mode::Normal;
-                            self.center.panel_mut().clear_new_element();
-                            self.redraw_panels();
-                        }
-                        KeyCode::Tab => {
-                            /* autocomplete here ? */
-                            self.redraw_footer();
-                        }
-                        key_code => {
-                            input.update(key_code, key_event.modifiers);
-                            self.center
-                                .panel_mut()
-                                .inject_new_element(input.get().to_string(), *is_dir);
-                            self.redraw_center();
-                        }
-                    }
                 }
                 Mode::Modal(modal) => {
                     let op = modal.handle_key(key_event);

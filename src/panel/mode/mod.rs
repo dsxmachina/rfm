@@ -19,8 +19,10 @@ use crate::panel::input::Input;
 
 use super::Draw;
 
+mod create_item;
 mod rename;
 mod search;
+pub use create_item::CreateItemMode;
 pub use rename::RenameMode;
 pub use search::SearchMode;
 
