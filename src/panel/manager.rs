@@ -1209,6 +1209,19 @@ impl PanelManager {
                 self.center.panel_mut().inject_new_element(name, is_dir);
             }
             ModeOp::Create { name, is_dir } => self.apply_create(name, is_dir),
+            ModeOp::RestoreFromTrash { items } => {
+                let n = items.len();
+                match trash::os_limited::restore_all(items) {
+                    Ok(()) => info!("wiederhergestellt: {n} Element(e) aus dem Papierkorb"),
+                    Err(e) => error!("Wiederherstellen fehlgeschlagen: {e}"),
+                }
+                // Restore from the trash view is intentionally not recorded on
+                // the undo stack in v1.
+                self.mode = Mode::Normal;
+                self.left.reload();
+                self.center.reload();
+                self.right.reload();
+            }
             ModeOp::Exit { cleanup } => {
                 self.apply_cleanup(cleanup);
                 self.mode = Mode::Normal;

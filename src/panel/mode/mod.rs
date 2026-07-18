@@ -23,10 +23,12 @@ mod console;
 mod create_item;
 mod rename;
 mod search;
+mod trash_view;
 pub use console::{DirConsole, Zoxide};
 pub use create_item::CreateItemMode;
 pub use rename::RenameMode;
 pub use search::SearchMode;
+pub use trash_view::TrashView;
 
 /// Draws the shared FooterLine prompt: a reversed label in the main
 /// color, a space, then the live input in the mode's input color.
@@ -69,6 +71,8 @@ pub enum ModeOp {
     CreatePreview { name: String, is_dir: bool },
     /// Create the element and leave the mode
     Create { name: String, is_dir: bool },
+    /// Restore the given trash items to their original location, then exit
+    RestoreFromTrash { items: Vec<trash::TrashItem> },
     /// Leave the mode without a concluding action; cleanup says what to undo
     Exit { cleanup: Cleanup },
 }
