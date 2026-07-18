@@ -67,7 +67,8 @@ fn create_empty(path: &Path, is_dir: bool) -> Result<()> {
         std::fs::create_dir_all(path)?;
     } else {
         use std::fs::OpenOptions;
-        OpenOptions::new().write(true).create(true).open(path)?;
+        // Mirror the `touch` semantics: create if absent, never truncate.
+        OpenOptions::new().append(true).create(true).open(path)?;
     }
     Ok(())
 }

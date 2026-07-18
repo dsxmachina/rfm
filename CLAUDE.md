@@ -27,7 +27,8 @@ tmux kill-session -t rfm-test; rm -rf "$FIXTURE" /tmp/rfm.sock
 ```
 
 Socket commands (one per connection, JSON reply):
-- `state` — mode, cwd, selection, marked, clipboard, queue, seq counter
+- `state` — mode, cwd, selection, marked, clipboard, queue, seq counter,
+  undo_depth/redo_depth
 - `await-idle` — blocks until the event loop has drained (max 30s)
 - `entries left|center` — the entries rfm *believes* the pane shows
 - `log [n]` — last n retained log lines (level, age_secs, message).
@@ -109,3 +110,24 @@ in the sequence; no flag plumbing.
 
 Log lines shown in the widget expire after DISPLAY_TTL (logger.rs, 10s);
 the 1 s task wakes the UI only when a line actually expires.
+
+## Architecture: undo/redo
+
+In-session, in-memory only (`src/undo/`, terminal-free + unit-tested).
+Everything reduces to three atomic reversible changes — `FsChange::{Create,
+Move, Copy}`; one user action = one `Transaction` of N changes. The FS
+primitives (`move_item`/`copy_item` in util.rs, `delete_file`, zip/tar)
+return the `FsChange` they made, carrying the *actually-reached* path so
+the `_`-suffix collision fallback stays correct. The command handlers in
+`manager.rs` assemble transactions and call `undo.record()`; undo/redo are
+applied via `apply_undo`/`apply_redo` without re-recording (they push onto
+the opposite stack). The async paste task hands its transaction back over
+`undo_tx`/`undo_rx` to be recorded on the main loop.
+
+Non-reversible actions push a `Barrier` (permanent delete — trash off);
+undo hitting it stops and reports, never reverting past it. External
+commands/opener/extract are untracked (ignored). zip/tar are undoable
+(delete the archive) but `no_redo` (content can't be replayed). Keys:
+`u` / `ctrl-r` (opt-in `undo`/`redo` in keys.toml — pre-existing user
+configs won't have them until added). Debug socket `state` exposes
+`undo_depth` / `redo_depth`.
