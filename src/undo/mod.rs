@@ -82,18 +82,54 @@ impl FsChange {
     }
 }
 
+thread_local! {
+    /// True while a `guard_trash` `catch_unwind` is in flight. The global panic
+    /// hook reads it (via `is_guarding_trash`) to demote a contained trash-crate
+    /// `assert!` to a calm debug line instead of a scary ERROR.
+    static GUARDING_TRASH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the current thread is inside a `guard_trash` call — i.e. a panic
+/// unwinding right now is a trash-crate `assert!` we deliberately contain.
+pub(crate) fn is_guarding_trash() -> bool {
+    GUARDING_TRASH.with(|g| g.get())
+}
+
 /// Runs a `trash`-crate operation, containing any panic (the crate uses
 /// `assert!` rather than returning `Err` for "shouldn't happen" states, e.g. a
 /// missing entry) and turning it into an error so it can never crash the
-/// process. The panic message is still captured by the global panic hook, which
-/// logs it. Relies on `panic = "unwind"` (set in Cargo.toml).
+/// process. The panic message is captured by the global panic hook, which — via
+/// `is_guarding_trash` — logs it calmly at debug level rather than as an ERROR.
+/// Relies on `panic = "unwind"` (set in Cargo.toml).
 pub(crate) fn guard_trash<T>(op: impl FnOnce() -> Result<T>) -> Result<T> {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(op)) {
+    GUARDING_TRASH.with(|g| g.set(true));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(op));
+    GUARDING_TRASH.with(|g| g.set(false));
+    match result {
         Ok(res) => res,
         Err(_) => Err(anyhow::anyhow!(
             "trash operation panicked and was contained (see log for the assertion)"
         )),
     }
+}
+
+/// Lists the freedesktop trash as `(item, is_dir)` pairs, containing any panic
+/// from the trash crate (it `assert!`s on corrupt/dangling entries — a
+/// `.trashinfo` whose backing file in `<trash>/files/` is gone). Entries whose
+/// metadata can't be read are skipped — they are unrestorable anyway, so hiding
+/// them from the trash view is correct.
+pub(crate) fn list_trash_entries() -> Vec<(trash::TrashItem, bool)> {
+    let items = guard_trash(|| Ok(trash::os_limited::list()?)).unwrap_or_default();
+    items
+        .into_iter()
+        .filter_map(|item| {
+            let md = guard_trash(|| Ok(trash::os_limited::metadata(&item)?));
+            match md {
+                Ok(m) => Some((item, matches!(m.size, trash::TrashItemSize::Entries(_)))),
+                Err(_) => None, // dangling/corrupt entry — skip
+            }
+        })
+        .collect()
 }
 
 /// Finds the trash item that `trash::delete(original)` just created: match by
@@ -102,7 +138,7 @@ pub(crate) fn guard_trash<T>(op: impl FnOnce() -> Result<T>) -> Result<T> {
 pub(crate) fn capture_trashed(original: &Path) -> Option<trash::TrashItem> {
     let parent = original.parent()?;
     let name = original.file_name()?;
-    let mut hits: Vec<trash::TrashItem> = trash::os_limited::list()
+    let mut hits: Vec<trash::TrashItem> = guard_trash(|| Ok(trash::os_limited::list()?))
         .ok()?
         .into_iter()
         .filter(|i| i.original_parent == parent && i.name == name)
@@ -416,6 +452,51 @@ mod tests {
     }
 
     #[test]
+    fn list_trash_entries_skips_dangling_entry_without_panicking() {
+        // Reproduces the `gT` crash: a `.trashinfo` in `<trash>/info/` whose
+        // backing file in `<trash>/files/` is gone (another tool removed it, or
+        // a partially-failed op). The trash crate `assert!`s on such an entry;
+        // list_trash_entries must contain that panic and simply skip the entry.
+        let _guard = TRASH_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempdir().unwrap();
+        std::env::set_var("XDG_DATA_HOME", home.path());
+
+        let work = tempdir().unwrap();
+        let intact = work.path().join("intact.txt");
+        let dangling = work.path().join("dangling.txt");
+        fs::write(&intact, "keep").unwrap();
+        fs::write(&dangling, "gone").unwrap();
+        trash::delete(&intact).unwrap();
+        trash::delete(&dangling).unwrap();
+
+        // Both entries are present before corruption.
+        assert_eq!(list_trash_entries().len(), 2);
+
+        // Corrupt one entry: remove its file from `<trash>/files/` while leaving
+        // the matching `.trashinfo` behind. Locate the file via the live item.
+        let victim = trash::os_limited::list()
+            .unwrap()
+            .into_iter()
+            .find(|i| i.original_parent == work.path() && i.name == "dangling.txt")
+            .expect("dangling item is in the trash");
+        let files_path = home.path().join("Trash").join("files").join(&victim.name);
+        assert!(files_path.exists(), "trashed file should exist before removal");
+        fs::remove_file(&files_path).unwrap();
+        // The `.trashinfo` remains — that is what makes the entry dangling.
+        let info_path = home
+            .path()
+            .join("Trash")
+            .join("info")
+            .join(format!("{}.trashinfo", victim.name.to_string_lossy()));
+        assert!(info_path.exists(), ".trashinfo must survive to make it dangling");
+
+        // Must not panic, and must skip the dangling entry (only the intact one).
+        let entries = list_trash_entries();
+        assert_eq!(entries.len(), 1, "the dangling entry must be skipped");
+        assert_eq!(entries[0].0.name, std::ffi::OsString::from("intact.txt"));
+    }
+
+    #[test]
     fn trash_delete_redo_cycle_stays_consistent() {
         // delete → undo (restore) → redo (re-trash, new item) → undo again.
         let _guard = TRASH_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -461,6 +542,30 @@ mod tests {
 
         assert!(panicked.is_err(), "a panic must be contained as an error");
         assert_eq!(passthrough.unwrap(), 42);
+    }
+
+    #[test]
+    fn guarding_trash_flag_tracks_the_guard() {
+        // False outside any guard.
+        assert!(!is_guarding_trash());
+
+        // True inside the guarded closure...
+        let ok: Result<()> = guard_trash(|| {
+            assert!(is_guarding_trash(), "flag must be set inside the guard");
+            Ok(())
+        });
+        ok.unwrap();
+        // ...and cleared once the guard returns normally.
+        assert!(!is_guarding_trash());
+
+        // And also cleared after a contained panic. Suppress the default hook
+        // so the expected panic prints nothing.
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let panicked: Result<()> = guard_trash(|| panic!("simulated trash assert"));
+        std::panic::set_hook(prev);
+        assert!(panicked.is_err());
+        assert!(!is_guarding_trash(), "flag must be reset after a contained panic");
     }
 
     #[test]

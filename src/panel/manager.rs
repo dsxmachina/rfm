@@ -734,7 +734,9 @@ impl PanelManager {
     /// recorded change (undoable); otherwise deletes permanently, returns None.
     fn delete_file(&self, file: &Path) -> Option<FsChange> {
         if self.use_trash {
-            if let Err(e) = trash::delete(file) {
+            // guard_trash contains any panic from the trash crate (it asserts
+            // instead of erroring on odd states), so a delete can never crash.
+            if let Err(e) = crate::undo::guard_trash(|| Ok(trash::delete(file)?)) {
                 error!("Cannot trash {}: {e}", file.display());
                 return None;
             }
@@ -1393,16 +1395,11 @@ impl PanelManager {
                             if self.use_trash {
                                 // The manager owns filesystem access: resolve each
                                 // item's dir-ness here so the adapter stays pure.
-                                let entries = trash::os_limited::list()
-                                    .unwrap_or_default()
+                                // list_trash_entries contains the trash crate's
+                                // panic on dangling/corrupt entries and skips them.
+                                let entries = crate::undo::list_trash_entries()
                                     .into_iter()
-                                    .map(|item| {
-                                        let is_dir = matches!(
-                                            trash::os_limited::metadata(&item),
-                                            Ok(m) if matches!(m.size, trash::TrashItemSize::Entries(_))
-                                        );
-                                        TrashEntry { item, is_dir }
-                                    })
+                                    .map(|(item, is_dir)| TrashEntry { item, is_dir })
                                     .collect();
                                 self.mode = Mode::Modal(Box::new(TrashView::new(entries)));
                             } else {

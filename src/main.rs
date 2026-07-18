@@ -93,7 +93,13 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     std::panic::set_hook(Box::new(|panic_info| {
-        error!("{panic_info}");
+        if undo::is_guarding_trash() {
+            // A trash-crate assert we deliberately contain in guard_trash — keep
+            // the raw assertion out of the visible ERROR log.
+            log::debug!("contained trash-operation panic: {panic_info}");
+        } else {
+            error!("{panic_info}");
+        }
     }));
 
     // Remember starting path
