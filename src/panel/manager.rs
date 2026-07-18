@@ -1219,10 +1219,21 @@ impl PanelManager {
             }
             ModeOp::Create { name, is_dir } => self.apply_create(name, is_dir),
             ModeOp::RestoreFromTrash { items } => {
-                let n = items.len();
-                match trash::os_limited::restore_all(items) {
-                    Ok(()) => info!("wiederhergestellt: {n} Element(e) aus dem Papierkorb"),
-                    Err(e) => error!("Wiederherstellen fehlgeschlagen: {e}"),
+                // Only restore entries that still exist: one may have been
+                // removed out of band (another trash tool), and restore_all
+                // panics on a missing entry. guard_trash contains any panic.
+                let (live, gone): (Vec<_>, Vec<_>) = items
+                    .into_iter()
+                    .partition(|i| std::path::Path::new(&i.id).exists());
+                if !gone.is_empty() {
+                    warn!("{} trash entrie(s) vanished before restore; skipped", gone.len());
+                }
+                let n = live.len();
+                if n > 0 {
+                    match crate::undo::guard_trash(|| Ok(trash::os_limited::restore_all(live)?)) {
+                        Ok(()) => info!("wiederhergestellt: {n} Element(e) aus dem Papierkorb"),
+                        Err(e) => error!("Wiederherstellen fehlgeschlagen: {e}"),
+                    }
                 }
                 // Restore from the trash view is intentionally not recorded on
                 // the undo stack in v1.

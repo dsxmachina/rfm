@@ -44,7 +44,7 @@ impl FsChange {
                 // where undo would have put it. (restore_all also removes the
                 // .trashinfo, so its existence tracks the live entry.)
                 if std::path::Path::new(&item.id).exists() {
-                    trash::os_limited::restore_all([item.clone()])?;
+                    guard_trash(|| Ok(trash::os_limited::restore_all([item.clone()])?))?;
                 } else {
                     log::info!(
                         "'{}' is no longer in the trash (already restored); nothing to undo",
@@ -63,7 +63,7 @@ impl FsChange {
                 // Re-trash the (restored) file. This mints a NEW trash entry,
                 // so re-capture it and overwrite the stored item, keeping the
                 // delete↔undo↔redo cycle consistent for the next undo.
-                trash::delete(&*original)?;
+                guard_trash(|| Ok(trash::delete(&*original)?))?;
                 match capture_trashed(original) {
                     Some(fresh) => {
                         *item = fresh;
@@ -79,6 +79,20 @@ impl FsChange {
             FsChange::Move { from, to } => restore(from, to),
             FsChange::Copy { from, to } => copy_exact(from, to),
         }
+    }
+}
+
+/// Runs a `trash`-crate operation, containing any panic (the crate uses
+/// `assert!` rather than returning `Err` for "shouldn't happen" states, e.g. a
+/// missing entry) and turning it into an error so it can never crash the
+/// process. The panic message is still captured by the global panic hook, which
+/// logs it. Relies on `panic = "unwind"` (set in Cargo.toml).
+pub(crate) fn guard_trash<T>(op: impl FnOnce() -> Result<T>) -> Result<T> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(op)) {
+        Ok(res) => res,
+        Err(_) => Err(anyhow::anyhow!(
+            "trash operation panicked and was contained (see log for the assertion)"
+        )),
     }
 }
 
@@ -434,6 +448,19 @@ mod tests {
         assert!(!file.exists());
         change.undo().unwrap();
         assert_eq!(fs::read_to_string(&file).unwrap(), "payload");
+    }
+
+    #[test]
+    fn guard_trash_contains_a_panic() {
+        // Silence the default panic hook's backtrace for this expected panic.
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let panicked: Result<()> = guard_trash(|| panic!("simulated trash assert"));
+        let passthrough: Result<i32> = guard_trash(|| Ok(42));
+        std::panic::set_hook(prev);
+
+        assert!(panicked.is_err(), "a panic must be contained as an error");
+        assert_eq!(passthrough.unwrap(), 42);
     }
 
     #[test]
