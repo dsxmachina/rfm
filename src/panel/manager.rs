@@ -221,6 +221,31 @@ impl PanelManager {
         self.dirty = true;
     }
 
+    /// Reloads all three panels from disk (after a filesystem mutation).
+    fn reload_all(&mut self) {
+        self.left.reload();
+        self.center.reload();
+        self.right.reload();
+    }
+
+    /// Records a freshly created archive (`archive` is the opener's result, a
+    /// path relative to `dir`) as an undoable-but-not-redoable transaction —
+    /// archive content can't be replayed on redo.
+    fn record_archive(&mut self, label: &str, dir: &Path, archive: std::io::Result<PathBuf>) {
+        match archive {
+            Ok(rel) => {
+                let path = dir.join(rel.file_name().unwrap_or_default());
+                let mut tx = Transaction::new(label);
+                tx.push(FsChange::Create {
+                    path,
+                    is_dir: false,
+                });
+                self.undo.record(tx.no_redo());
+            }
+            Err(e) => warn!("Failed to create {label}-archive: {e}"),
+        }
+    }
+
     fn draw_log(&mut self) -> Result<()> {
         let bottom = self.layout.footer().saturating_sub(2); // or 3, if we have the advanced command preview
         let mut y = bottom;
@@ -1132,9 +1157,7 @@ impl PanelManager {
                 result = self.undo_rx.recv() => {
                     if let Some(tx) = result {
                         self.undo.record(tx);
-                        self.left.reload();
-                        self.center.reload();
-                        self.right.reload();
+                        self.reload_all();
                         self.mark_dirty();
                     }
                 }
@@ -1218,9 +1241,7 @@ impl PanelManager {
                 // Restore from the trash view is intentionally not recorded on
                 // the undo stack in v1.
                 self.mode = Mode::Normal;
-                self.left.reload();
-                self.center.reload();
-                self.right.reload();
+                self.reload_all();
             }
             ModeOp::Exit { cleanup } => {
                 self.apply_cleanup(cleanup);
@@ -1328,9 +1349,7 @@ impl PanelManager {
             }
             UndoOutcome::Failed(e) => error!("undo fehlgeschlagen: {e}"),
         }
-        self.left.reload();
-        self.center.reload();
-        self.right.reload();
+        self.reload_all();
         self.mark_dirty();
     }
 
@@ -1342,9 +1361,7 @@ impl PanelManager {
             UndoOutcome::Blocked(reason) => warn!("redo blockiert: {reason}"),
             UndoOutcome::Failed(e) => error!("redo fehlgeschlagen: {e}"),
         }
-        self.left.reload();
-        self.center.reload();
-        self.right.reload();
+        self.reload_all();
         self.mark_dirty();
     }
 
@@ -1406,9 +1423,7 @@ impl PanelManager {
                                     marked.iter().map(|e| e.path().to_path_buf()).collect();
                                 self.unmark_all_items();
                                 self.bulkrename(files);
-                                self.left.reload();
-                                self.center.reload();
-                                self.right.reload();
+                                self.reload_all();
                             } else {
                                 // Single file rename - modal mode seeded
                                 // with the current file name
@@ -1476,9 +1491,7 @@ impl PanelManager {
                                 // Permanent deletion cannot be undone.
                                 self.undo.barrier("permanentes Löschen");
                             }
-                            self.left.reload();
-                            self.center.reload();
-                            self.right.reload();
+                            self.reload_all();
                         }
                         Command::Paste { overwrite } => {
                             self.unmark_all_items();
@@ -1518,9 +1531,7 @@ impl PanelManager {
                                     let _ = undo_tx.send(tx);
                                 }
                             });
-                            self.left.reload();
-                            self.center.reload();
-                            self.right.reload();
+                            self.reload_all();
                         }
                         Command::Zip => {
                             let items = self.marked_or_selected();
@@ -1528,19 +1539,8 @@ impl PanelManager {
                             if let Err(e) = std::env::set_current_dir(&dir) {
                                 error!("Failed to set working-directory for process: {e}");
                             }
-                            match self.opener.zip(items) {
-                                Ok(rel) => {
-                                    let path = dir.join(rel.file_name().unwrap_or_default());
-                                    let mut tx = Transaction::new("zip");
-                                    tx.push(FsChange::Create {
-                                        path,
-                                        is_dir: false,
-                                    });
-                                    // Archive content can't be replayed: undoable, not redoable.
-                                    self.undo.record(tx.no_redo());
-                                }
-                                Err(e) => warn!("Failed to create zip-archive: {e}"),
-                            }
+                            let archive = self.opener.zip(items);
+                            self.record_archive("zip", &dir, archive);
                         }
                         Command::Tar => {
                             let items = self.marked_or_selected();
@@ -1548,18 +1548,8 @@ impl PanelManager {
                             if let Err(e) = std::env::set_current_dir(&dir) {
                                 error!("Failed to set working-directory for process: {e}");
                             }
-                            match self.opener.tar(items) {
-                                Ok(rel) => {
-                                    let path = dir.join(rel.file_name().unwrap_or_default());
-                                    let mut tx = Transaction::new("tar");
-                                    tx.push(FsChange::Create {
-                                        path,
-                                        is_dir: false,
-                                    });
-                                    self.undo.record(tx.no_redo());
-                                }
-                                Err(e) => warn!("Failed to create tar-archive: {e}"),
-                            }
+                            let archive = self.opener.tar(items);
+                            self.record_archive("tar", &dir, archive);
                         }
                         Command::Extract => {
                             if let Some(archive) = self.center.panel().selected_path() {
