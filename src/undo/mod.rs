@@ -20,6 +20,11 @@ pub enum FsChange {
     Move { from: PathBuf, to: PathBuf },
     /// `from` was copied to `to`. Undo deletes `to`; `from` is untouched.
     Copy { from: PathBuf, to: PathBuf },
+    /// A file moved to the freedesktop trash. Undo restores it to `original`.
+    Trash {
+        item: trash::TrashItem,
+        original: PathBuf,
+    },
 }
 
 impl FsChange {
@@ -29,6 +34,10 @@ impl FsChange {
             FsChange::Create { path, .. } => remove_path(path),
             FsChange::Move { from, to } => restore(to, from),
             FsChange::Copy { to, .. } => remove_path(to),
+            FsChange::Trash { item, .. } => {
+                trash::os_limited::restore_all([item.clone()])?;
+                Ok(())
+            }
         }
     }
 
@@ -38,6 +47,8 @@ impl FsChange {
             FsChange::Create { path, is_dir } => create_empty(path, *is_dir),
             FsChange::Move { from, to } => restore(from, to),
             FsChange::Copy { from, to } => copy_exact(from, to),
+            // Trash transactions are `no_redo`; this arm exists only for totality.
+            FsChange::Trash { .. } => Ok(()),
         }
     }
 }
@@ -284,6 +295,34 @@ mod tests {
         assert_eq!(s.redo_depth(), 1);
         assert!(matches!(s.redo(), UndoOutcome::Done(_)));
         assert!(to.exists());
+    }
+
+    #[test]
+    fn trash_change_undo_restores_original() {
+        // Isolate the home trash so we never touch the developer's real trash.
+        let home = tempdir().unwrap();
+        std::env::set_var("XDG_DATA_HOME", home.path());
+
+        let work = tempdir().unwrap();
+        let file = work.path().join("victim.txt");
+        fs::write(&file, "data").unwrap();
+
+        trash::delete(&file).unwrap();
+        assert!(!file.exists());
+
+        // Capture the just-trashed item.
+        let item = trash::os_limited::list()
+            .unwrap()
+            .into_iter()
+            .find(|i| i.original_parent == work.path() && i.name == "victim.txt")
+            .expect("item is in the trash");
+
+        let change = FsChange::Trash {
+            item,
+            original: file.clone(),
+        };
+        change.undo().unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "data");
     }
 
     #[test]
