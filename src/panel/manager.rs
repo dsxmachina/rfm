@@ -8,7 +8,6 @@ use crossterm::{
 };
 use futures::{FutureExt, StreamExt};
 use log::{debug, error, info, trace, Level};
-use tempfile::TempDir;
 use tokio::sync::watch;
 
 use crate::{
@@ -19,7 +18,7 @@ use crate::{
     engine::OpenEngine,
     logger::LogBuffer,
     undo::{FsChange, Transaction, UndoOutcome, UndoStack},
-    util::{copy_item, get_destination, move_item, print_metadata, rename_safe},
+    util::{copy_item, move_item, print_metadata, rename_safe},
 };
 
 /// Expand the command template by replacing $@ with the given paths
@@ -33,6 +32,20 @@ fn expand_command(cmd: &str, paths: &[PathBuf], separator: &str) -> String {
     cmd.replace("$@", &paths_str)
 }
 
+/// Finds the trash item that `trash::delete(original)` just created: match by
+/// original parent + name, newest deletion first.
+fn capture_trashed(original: &Path) -> Option<trash::TrashItem> {
+    let parent = original.parent()?;
+    let name = original.file_name()?;
+    let mut hits: Vec<trash::TrashItem> = trash::os_limited::list()
+        .ok()?
+        .into_iter()
+        .filter(|i| i.original_parent == parent && i.name == name)
+        .collect();
+    hits.sort_by_key(|i| i.time_deleted);
+    hits.pop() // greatest time_deleted
+}
+
 /// Receive a debug request, or stay pending forever when debug mode is off.
 async fn recv_debug(rx: &mut Option<mpsc::Receiver<DebugRequest>>) -> Option<DebugRequest> {
     match rx {
@@ -43,7 +56,7 @@ async fn recv_debug(rx: &mut Option<mpsc::Receiver<DebugRequest>>) -> Option<Deb
 
 use super::mode::{
     Cleanup, CreateItemMode, DirConsole, ModalInput, ModalRegion, ModeOp, RenameMode, SearchMode,
-    Zoxide,
+    TrashView, Zoxide,
 };
 use super::*;
 
@@ -120,8 +133,8 @@ pub struct PanelManager {
     /// Previous path
     previous: PathBuf,
 
-    /// Trash directory. If `None`, the trash mechanism should not be used.
-    trash_dir: Option<TempDir>,
+    /// Whether deletes go to the freedesktop trash (undoable) or are permanent.
+    use_trash: bool,
 
     /// command-parser
     parser: CommandParser,
@@ -171,19 +184,6 @@ impl PanelManager {
         // Split panels
         let (left, center, right) = miller_panels;
 
-        // TODO: If the user has multiple disks, the temp-dir may be on another disk,
-        // so deleting would effectively be a copy - which is not what we want here.
-        // Add a mechanism to check, if the file that should get deleted is on the same disk or not
-        //
-        // -> For now we mark the feature as experimental and turn it off by default
-        let trash_dir = if use_trash {
-            let trash_dir = tempfile::tempdir()?;
-            debug!("Using {} as temporary trash", trash_dir.path().display());
-            Some(trash_dir)
-        } else {
-            None
-        };
-
         let (undo_tx, undo_rx) = mpsc::unbounded_channel();
 
         Ok(PanelManager {
@@ -205,7 +205,7 @@ impl PanelManager {
             fwd_history: Vec::new(),
             rev_history: Vec::new(),
             previous: ".".into(),
-            trash_dir,
+            use_trash,
             parser,
             stdout,
             dir_rx,
@@ -719,31 +719,31 @@ impl PanelManager {
 
     /// Deletes a file or directory, based on the trash strategy.
     ///
-    /// Returns the `Move` into the trash when the trash is active (undoable),
-    /// or `None` for a permanent deletion (not reversible).
+    /// With the trash on, moves it to the freedesktop trash and returns the
+    /// recorded change (undoable); otherwise deletes permanently, returns None.
     fn delete_file(&self, file: &Path) -> Option<FsChange> {
-        // Check if we use the trash or not
-        if let Some(trash_path) = &self.trash_dir {
-            let destination = get_destination(file, trash_path.path()).unwrap();
-            match std::fs::rename(file, &destination) {
-                Ok(()) => Some(FsChange::Move {
-                    from: file.to_path_buf(),
-                    to: destination,
+        if self.use_trash {
+            if let Err(e) = trash::delete(file) {
+                error!("Cannot trash {}: {e}", file.display());
+                return None;
+            }
+            match capture_trashed(file) {
+                Some(item) => Some(FsChange::Trash {
+                    item,
+                    original: file.to_path_buf(),
                 }),
-                Err(e) => {
-                    error!("Cannot delete {}: {e}", file.display());
+                None => {
+                    warn!("trashed {} but could not locate it for undo", file.display());
                     None
                 }
             }
         } else {
             if file.is_file() {
-                let result = std::fs::remove_file(file);
-                if let Err(e) = result {
+                if let Err(e) = std::fs::remove_file(file) {
                     error!("Cannot delete {}: {e}", file.display());
                 }
             } else if file.is_dir() {
-                let result = std::fs::remove_dir_all(file);
-                if let Err(e) = result {
+                if let Err(e) = std::fs::remove_dir_all(file) {
                     error!("Cannot delete {}: {e}", file.display());
                 }
             }
@@ -1372,10 +1372,11 @@ impl PanelManager {
                             self.move_cursor(direction);
                         }
                         Command::ViewTrash => {
-                            if let Some(trash_path) = &self.trash_dir {
-                                self.jump(trash_path.path().to_path_buf());
+                            if self.use_trash {
+                                let items = trash::os_limited::list().unwrap_or_default();
+                                self.mode = Mode::Modal(Box::new(TrashView::new(items)));
                             } else {
-                                warn!("Trash feature is not activated - therefore there is no trash-directory to jump to.")
+                                warn!("Trash is disabled (use_trash = false) — nothing to show.");
                             }
                         }
                         Command::ToggleHidden => self.toggle_hidden(),
@@ -1453,7 +1454,7 @@ impl PanelManager {
                             let files = self.marked_or_selected();
                             info!("Deleted {} items", files.len());
                             self.unmark_all_items();
-                            if self.trash_dir.is_some() {
+                            if self.use_trash {
                                 let mut tx =
                                     Transaction::new(format!("delete ({} items)", files.len()));
                                 for file in files {
@@ -1461,7 +1462,9 @@ impl PanelManager {
                                         tx.push(change);
                                     }
                                 }
-                                self.undo.record(tx);
+                                // Re-trashing would mint a new TrashItem and stale
+                                // the stored one, so trash-deletes are not redoable.
+                                self.undo.record(tx.no_redo());
                             } else {
                                 for file in files {
                                     self.delete_file(&file);
