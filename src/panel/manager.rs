@@ -908,8 +908,10 @@ impl PanelManager {
             // All validations passed - perform renames
             // We need to handle the case where files might be swapped (a->b, b->a)
             // So we first rename to temporary names, then to final names
+            // (from, to, new_name, original) — `original` is the pre-rename
+            // path, needed so undo can reverse to it (from may be a temp path).
             let mut temp_renames: Vec<(PathBuf, PathBuf)> = Vec::new();
-            let mut final_renames: Vec<(PathBuf, PathBuf, String)> = Vec::new();
+            let mut final_renames: Vec<(PathBuf, PathBuf, String, PathBuf)> = Vec::new();
 
             // Use process ID and timestamp to create unique temp names
             let unique_id = format!(
@@ -926,6 +928,7 @@ impl PanelManager {
                     continue; // No change
                 }
                 let from = files[i].clone();
+                let original = files[i].clone();
                 let to = dir.join(new_name);
 
                 // Check if target is also being renamed (swap scenario)
@@ -936,9 +939,9 @@ impl PanelManager {
                         format!(".rfm-bulkrename-{}-{}-{}", unique_id, i, original_names[i]);
                     let temp_path = dir.join(&temp_name);
                     temp_renames.push((from.clone(), temp_path.clone()));
-                    final_renames.push((temp_path, to, new_name.to_string()));
+                    final_renames.push((temp_path, to, new_name.to_string(), original));
                 } else {
-                    final_renames.push((from, to, new_name.to_string()));
+                    final_renames.push((from, to, new_name.to_string(), original));
                 }
             }
 
@@ -955,8 +958,9 @@ impl PanelManager {
             }
 
             // Execute final renames with safety fallback
+            let mut tx = Transaction::new(format!("bulk rename ({} files)", final_renames.len()));
             let mut success_count = 0;
-            for (from, to, new_name) in &final_renames {
+            for (from, to, new_name, original) in &final_renames {
                 match rename_safe(from, to) {
                     Ok(actual_path) => {
                         if actual_path != *to {
@@ -966,6 +970,10 @@ impl PanelManager {
                                 actual_path.display()
                             );
                         }
+                        tx.push(FsChange::Move {
+                            from: original.clone(),
+                            to: actual_path,
+                        });
                         success_count += 1;
                     }
                     Err(e) => {
@@ -973,6 +981,7 @@ impl PanelManager {
                     }
                 }
             }
+            self.undo.record(tx);
 
             info!("Bulkrename: successfully renamed {} files", success_count);
             return;
