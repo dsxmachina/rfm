@@ -1461,20 +1461,41 @@ impl PanelManager {
                         }
                         Command::Zip => {
                             let items = self.marked_or_selected();
-                            if let Err(e) = std::env::set_current_dir(self.center.panel().path()) {
+                            let dir = self.center.panel().path().to_path_buf();
+                            if let Err(e) = std::env::set_current_dir(&dir) {
                                 error!("Failed to set working-directory for process: {e}");
                             }
-                            if let Err(e) = self.opener.zip(items) {
-                                warn!("Failed to create zip-archive: {e}");
+                            match self.opener.zip(items) {
+                                Ok(rel) => {
+                                    let path = dir.join(rel.file_name().unwrap_or_default());
+                                    let mut tx = Transaction::new("zip");
+                                    tx.push(FsChange::Create {
+                                        path,
+                                        is_dir: false,
+                                    });
+                                    // Archive content can't be replayed: undoable, not redoable.
+                                    self.undo.record(tx.no_redo());
+                                }
+                                Err(e) => warn!("Failed to create zip-archive: {e}"),
                             }
                         }
                         Command::Tar => {
                             let items = self.marked_or_selected();
-                            if let Err(e) = std::env::set_current_dir(self.center.panel().path()) {
+                            let dir = self.center.panel().path().to_path_buf();
+                            if let Err(e) = std::env::set_current_dir(&dir) {
                                 error!("Failed to set working-directory for process: {e}");
                             }
-                            if let Err(e) = self.opener.tar(items) {
-                                warn!("Failed to create tar-archive: {e}");
+                            match self.opener.tar(items) {
+                                Ok(rel) => {
+                                    let path = dir.join(rel.file_name().unwrap_or_default());
+                                    let mut tx = Transaction::new("tar");
+                                    tx.push(FsChange::Create {
+                                        path,
+                                        is_dir: false,
+                                    });
+                                    self.undo.record(tx.no_redo());
+                                }
+                                Err(e) => warn!("Failed to create tar-archive: {e}"),
                             }
                         }
                         Command::Extract => {

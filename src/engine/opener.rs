@@ -258,7 +258,8 @@ impl OpenEngine {
         Ok(status)
     }
 
-    pub fn zip(&self, items: Vec<PathBuf>) -> Result<()> {
+    /// Creates a zip archive and returns the path it was written to.
+    pub fn zip(&self, items: Vec<PathBuf>) -> Result<PathBuf> {
         info!("Creating zip archive from {} files", items.len());
         let mut process = std::process::Command::new("zip");
         let archive_path = check_filename("output", ".", "zip")?;
@@ -273,10 +274,11 @@ impl OpenEngine {
             .stdin(std::process::Stdio::null());
         let mut handle = process.spawn()?;
         handle.wait()?;
-        Ok(())
+        Ok(archive_path)
     }
 
-    pub fn tar(&self, items: Vec<PathBuf>) -> Result<()> {
+    /// Creates a tar.gz archive and returns the path it was written to.
+    pub fn tar(&self, items: Vec<PathBuf>) -> Result<PathBuf> {
         info!("Creating tar.gz archive from {} files", items.len());
         let mut process = std::process::Command::new("tar");
         process.arg("-czf");
@@ -292,7 +294,7 @@ impl OpenEngine {
             .stdin(std::process::Stdio::null());
         let mut handle = process.spawn()?;
         handle.wait()?;
-        Ok(())
+        Ok(archive_path)
     }
 
     pub fn extract(&self, archive: PathBuf) -> Result<()> {
