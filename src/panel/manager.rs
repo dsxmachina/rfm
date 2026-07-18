@@ -1071,6 +1071,8 @@ impl PanelManager {
             preview_path: self.right.panel().path().to_path_buf(),
             queue_active: queue.active,
             queue_len: queue.queued_count,
+            undo_depth: self.undo.undo_depth(),
+            redo_depth: self.undo.redo_depth(),
         }
     }
 

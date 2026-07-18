@@ -45,6 +45,10 @@ pub struct StateSnapshot {
     pub queue_active: Option<String>,
     /// Number of queued background commands
     pub queue_len: usize,
+    /// Number of entries on the undo stack (transactions + barriers)
+    pub undo_depth: usize,
+    /// Number of transactions available to redo
+    pub redo_depth: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -249,6 +253,8 @@ mod tests {
             preview_path: "/tmp/fixture/b.txt".into(),
             queue_active: None,
             queue_len: 0,
+            undo_depth: 0,
+            redo_depth: 0,
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         assert!(json.contains("\"seq\":42"));
@@ -315,6 +321,8 @@ mod tests {
                         preview_path: "/tmp".into(),
                         queue_active: None,
                         queue_len: 0,
+                        undo_depth: 0,
+                        redo_depth: 0,
                     });
                 }
                 DebugRequest::AwaitIdle { reply } => {
