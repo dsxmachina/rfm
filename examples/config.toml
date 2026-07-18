@@ -5,7 +5,15 @@
 # If set to 'true', rfm will not instantly delete files,
 # but will move them to a dedicated trash directory, from which users can retrieve the file.
 #
-# However, this is only desirable if you have a unix system with a single disk, where the temp
+# This also determines whether a deletion can be undone (see the 'undo'/'redo' keys):
+#   - use_trash = true  : delete moves to the trash and IS undoable.
+#   - use_trash = false : delete is permanent and canNOT be undone. It is
+#                         recorded as a barrier that stops the undo history
+#                         (undo will not revert operations from before it).
+#
+# The undo stack itself lives only for the current session (it is not persisted).
+#
+# However, the trash is only desirable if you have a unix system with a single disk, where the temp
 # directory is on the same disk as every file you could delete.
 # If not, or if you try do delete something on another disk, the operation of deleting in rfm
 # may be very expensive, as it effectively copies the file to another disk.
