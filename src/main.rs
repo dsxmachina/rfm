@@ -158,8 +158,9 @@ async fn main() -> anyhow::Result<()> {
         file.write_all(&default.data)?;
     }
 
-    // Weather or not we activate the trash
-    let mut use_trash = false;
+    // Weather or not we activate the trash (default on; freedesktop trash is
+    // cheap per-device and deletes are undoable)
+    let mut use_trash = true;
     let mut rate_limit_interval_ms = DEFAULT_RATE_LIMIT_INTERVAL_MS;
     let mut style_config = None;
     let mut fancy_icons = false;

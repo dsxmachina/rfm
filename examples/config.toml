@@ -1,24 +1,24 @@
 # --- General behaviour of rfm
 [general]
-# Experimental feature
+# If set to 'true' (the default), rfm does not delete files instantly but moves
+# them to the freedesktop.org trash (~/.local/share/Trash, plus a per-device
+# trash on other mounts). Browse it with the 'gT' key; press 'r' there to
+# restore an item to its original location. Trashed files also show up in your
+# desktop's normal trash (Nautilus, gio, trash-cli) and vice versa.
 #
-# If set to 'true', rfm will not instantly delete files,
-# but will move them to a dedicated trash directory, from which users can retrieve the file.
+# The freedesktop trash lives on the same disk as each deleted file, so deleting
+# stays a cheap rename even across multiple disks (no expensive cross-disk copy).
 #
-# This also determines whether a deletion can be undone (see the 'undo'/'redo' keys):
-#   - use_trash = true  : delete moves to the trash and IS undoable.
+# This flag also determines whether a deletion can be undone (see 'undo'/'redo'):
+#   - use_trash = true  : delete moves to the trash and IS undoable ('u').
 #   - use_trash = false : delete is permanent and canNOT be undone. It is
 #                         recorded as a barrier that stops the undo history
 #                         (undo will not revert operations from before it).
 #
-# The undo stack itself lives only for the current session (it is not persisted).
+# The undo stack itself lives only for the current session (it is not persisted);
+# the trash, however, is persistent.
 #
-# However, the trash is only desirable if you have a unix system with a single disk, where the temp
-# directory is on the same disk as every file you could delete.
-# If not, or if you try do delete something on another disk, the operation of deleting in rfm
-# may be very expensive, as it effectively copies the file to another disk.
-#
-use_trash = false
+use_trash = true
 
 # Use Nerd Font icons for file types.
 #

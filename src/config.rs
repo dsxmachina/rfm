@@ -17,8 +17,15 @@ fn default_rate_limit_interval() -> u64 {
     500
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Deserialize, Debug)]
 pub struct GeneralConfig {
+    /// Move deleted files to the freedesktop trash (undoable) instead of
+    /// deleting permanently. Defaults to `true`.
+    #[serde(default = "default_true")]
     pub use_trash: bool,
     /// Rate limit interval for preview updates in milliseconds
     #[serde(default = "default_rate_limit_interval")]
