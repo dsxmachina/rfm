@@ -28,7 +28,7 @@ pub use console::{DirConsole, Zoxide};
 pub use create_item::CreateItemMode;
 pub use rename::RenameMode;
 pub use search::SearchMode;
-pub use trash_view::TrashView;
+pub use trash_view::{TrashEntry, TrashView};
 
 /// Draws the shared FooterLine prompt: a reversed label in the main
 /// color, a space, then the live input in the mode's input color.

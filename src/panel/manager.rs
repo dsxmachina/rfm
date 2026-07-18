@@ -42,7 +42,7 @@ async fn recv_debug(rx: &mut Option<mpsc::Receiver<DebugRequest>>) -> Option<Deb
 
 use super::mode::{
     Cleanup, CreateItemMode, DirConsole, ModalInput, ModalRegion, ModeOp, RenameMode, SearchMode,
-    TrashView, Zoxide,
+    TrashEntry, TrashView, Zoxide,
 };
 use super::*;
 
@@ -1380,8 +1380,20 @@ impl PanelManager {
                         }
                         Command::ViewTrash => {
                             if self.use_trash {
-                                let items = trash::os_limited::list().unwrap_or_default();
-                                self.mode = Mode::Modal(Box::new(TrashView::new(items)));
+                                // The manager owns filesystem access: resolve each
+                                // item's dir-ness here so the adapter stays pure.
+                                let entries = trash::os_limited::list()
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .map(|item| {
+                                        let is_dir = matches!(
+                                            trash::os_limited::metadata(&item),
+                                            Ok(m) if matches!(m.size, trash::TrashItemSize::Entries(_))
+                                        );
+                                        TrashEntry { item, is_dir }
+                                    })
+                                    .collect();
+                                self.mode = Mode::Modal(Box::new(TrashView::new(entries)));
                             } else {
                                 warn!("Trash is disabled (use_trash = false) — nothing to show.");
                             }

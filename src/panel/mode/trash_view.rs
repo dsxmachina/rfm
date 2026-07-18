@@ -8,6 +8,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use crossterm::style::Color;
 use time::OffsetDateTime;
+use unicode_display_width::width as unicode_width;
 
 use super::{Cleanup, ModalInput, ModalRegion, ModeOp};
 use crate::config::color::{color_main, print_horizontal_bar, print_horz_bot, print_horz_top};
@@ -15,16 +16,26 @@ use crate::engine::StyleEngine;
 use crate::panel::*;
 use crate::util::ExactWidth;
 
+/// Directory icon (matches the panels' folder glyph).
+const DIR_ICON: &str = "\u{1F4C1}";
+
+/// A trash entry plus whether it was a directory. `is_dir` is computed by the
+/// manager (which owns filesystem access) so the adapter stays FS-free.
+pub struct TrashEntry {
+    pub item: trash::TrashItem,
+    pub is_dir: bool,
+}
+
 pub struct TrashView {
-    items: Vec<trash::TrashItem>,
+    entries: Vec<TrashEntry>,
     cursor: usize,
 }
 
 impl TrashView {
-    /// Sorts the items newest-first (most recent deletion on top).
-    pub fn new(mut items: Vec<trash::TrashItem>) -> Self {
-        items.sort_by(|a, b| b.time_deleted.cmp(&a.time_deleted));
-        Self { items, cursor: 0 }
+    /// Sorts the entries newest-first (most recent deletion on top).
+    pub fn new(mut entries: Vec<TrashEntry>) -> Self {
+        entries.sort_by(|a, b| b.item.time_deleted.cmp(&a.item.time_deleted));
+        Self { entries, cursor: 0 }
     }
 }
 
@@ -80,12 +91,12 @@ impl Draw for TrashView {
         let path_w = after_date.saturating_sub(name_w + 2);
 
         // Vertically centered band: hint + top bar + list + bottom bar.
-        let empty = self.items.is_empty();
+        let empty = self.entries.is_empty();
         let cap = avail_h.saturating_sub(6).max(1);
         let visible = if empty {
             1
         } else {
-            self.items.len().min(cap).max(1)
+            self.entries.len().min(cap).max(1)
         };
         let band = visible + 3;
         let band_top = y_range.start + (avail_h.saturating_sub(band) as u16) / 2;
@@ -148,28 +159,35 @@ impl Draw for TrashView {
         let offset = self
             .cursor
             .saturating_sub(visible - 1)
-            .min(self.items.len().saturating_sub(visible));
+            .min(self.entries.len().saturating_sub(visible));
+        // `path_x` stays fixed (paths align); the name starts one column after
+        // the symbol, whose display width is measured so wide (emoji) and
+        // narrow (nerd-font) glyphs both get a clean single-space gap.
         let date_x = content_x;
         let sym_x = content_x + (DATE_W + 2) as u16;
-        let name_x = sym_x + 2;
-        let path_x = sym_x + name_w as u16 + 2;
+        let path_x = sym_x + 2 + name_w as u16 + 2;
 
-        for (row, (idx, item)) in self
-            .items
+        for (row, (idx, entry)) in self
+            .entries
             .iter()
             .enumerate()
             .skip(offset)
             .take(visible)
             .enumerate()
         {
+            let item = &entry.item;
             let y = list_y0 + row as u16;
             let date = format_date(item.time_deleted);
             let original = item.original_parent.join(&item.name);
-            let style = StyleEngine::get_style(&original);
-            let name = item
-                .name
-                .to_string_lossy()
-                .exact_width(name_w.saturating_sub(2));
+            let (symbol, sym_color): (&str, Color) = if entry.is_dir {
+                (DIR_ICON, color_main())
+            } else {
+                let style = StyleEngine::get_style(&original);
+                (style.symbol, style.color.unwrap_or(Color::Grey))
+            };
+            let name_x = sym_x + unicode_width(symbol) as u16 + 1;
+            let name_w = path_x.saturating_sub(name_x).saturating_sub(1) as usize;
+            let name = item.name.to_string_lossy().exact_width(name_w);
             let path = fit_left(&item.original_parent.display().to_string(), path_w);
 
             if idx == self.cursor {
@@ -183,14 +201,13 @@ impl Draw for TrashView {
                     cursor::MoveTo(date_x, y),
                     PrintStyledContent(date.with(color_main()).reverse()),
                     cursor::MoveTo(sym_x, y),
-                    PrintStyledContent(style.symbol.with(color_main()).reverse()),
+                    PrintStyledContent(symbol.with(color_main()).reverse()),
                     cursor::MoveTo(name_x, y),
                     PrintStyledContent(name.with(color_main()).reverse()),
                     cursor::MoveTo(path_x, y),
                     PrintStyledContent(path.with(color_main()).reverse()),
                 )?;
             } else {
-                let sym_color = style.color.unwrap_or(Color::Grey);
                 queue!(
                     stdout,
                     cursor::MoveTo(x0, y),
@@ -198,7 +215,7 @@ impl Draw for TrashView {
                     cursor::MoveTo(date_x, y),
                     PrintStyledContent(date.dark_grey()),
                     cursor::MoveTo(sym_x, y),
-                    PrintStyledContent(style.symbol.with(sym_color)),
+                    PrintStyledContent(symbol.with(sym_color)),
                     cursor::MoveTo(name_x, y),
                     PrintStyledContent(name.grey()),
                     cursor::MoveTo(path_x, y),
@@ -214,7 +231,7 @@ impl ModalInput for TrashView {
     fn handle_key(&mut self, key_event: KeyEvent) -> ModeOp {
         match key_event.code {
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.cursor + 1 < self.items.len() {
+                if self.cursor + 1 < self.entries.len() {
                     self.cursor += 1;
                 }
                 ModeOp::None
@@ -223,9 +240,9 @@ impl ModalInput for TrashView {
                 self.cursor = self.cursor.saturating_sub(1);
                 ModeOp::None
             }
-            KeyCode::Char('r') => match self.items.get(self.cursor) {
-                Some(item) => ModeOp::RestoreFromTrash {
-                    items: vec![item.clone()],
+            KeyCode::Char('r') => match self.entries.get(self.cursor) {
+                Some(entry) => ModeOp::RestoreFromTrash {
+                    items: vec![entry.item.clone()],
                 },
                 None => ModeOp::None,
             },
@@ -258,7 +275,7 @@ mod tests {
     /// Trash `n` temp files under an isolated home trash and return their items.
     /// Holds the shared trash-test lock across the env-mutating critical section
     /// (set `XDG_DATA_HOME` → trash → list) so parallel trash tests don't race.
-    fn trashed_items(n: usize) -> Vec<trash::TrashItem> {
+    fn trashed_entries(n: usize) -> Vec<TrashEntry> {
         let _guard = crate::undo::TRASH_TEST_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -274,18 +291,20 @@ mod tests {
         // Leak the tempdirs so the trashed items keep resolving during the test.
         std::mem::forget(home);
         std::mem::forget(work);
-        let mut items: Vec<_> = trash::os_limited::list()
+        trash::os_limited::list()
             .unwrap()
             .into_iter()
             .filter(|i| i.original_parent == Path::new(&work_path))
-            .collect();
-        items.sort_by_key(|i| i.time_deleted);
-        items
+            .map(|item| TrashEntry {
+                item,
+                is_dir: false,
+            })
+            .collect()
     }
 
     #[test]
     fn j_and_k_move_and_clamp_the_cursor() {
-        let mut view = TrashView::new(trashed_items(3));
+        let mut view = TrashView::new(trashed_entries(3));
         assert_eq!(view.cursor, 0);
         view.handle_key(key(KeyCode::Char('k'))); // clamp at top
         assert_eq!(view.cursor, 0);
@@ -301,9 +320,9 @@ mod tests {
     #[test]
     fn r_emits_restore_for_the_current_item() {
         // Single item avoids depending on the (1-second-resolution) sort order.
-        let items = trashed_items(1);
-        let expected = items[0].clone();
-        let mut view = TrashView::new(items);
+        let entries = trashed_entries(1);
+        let expected = entries[0].item.clone();
+        let mut view = TrashView::new(entries);
         assert_eq!(
             view.handle_key(key(KeyCode::Char('r'))),
             ModeOp::RestoreFromTrash {
@@ -316,9 +335,9 @@ mod tests {
     fn new_sorts_items_newest_first() {
         // time_deleted may collide at 1-second resolution, so assert the
         // ordering is non-increasing rather than a specific permutation.
-        let view = TrashView::new(trashed_items(3));
-        for pair in view.items.windows(2) {
-            assert!(pair[0].time_deleted >= pair[1].time_deleted);
+        let view = TrashView::new(trashed_entries(3));
+        for pair in view.entries.windows(2) {
+            assert!(pair[0].item.time_deleted >= pair[1].item.time_deleted);
         }
     }
 
