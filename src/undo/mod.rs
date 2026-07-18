@@ -35,9 +35,22 @@ impl FsChange {
             FsChange::Create { path, .. } => remove_path(path),
             FsChange::Move { from, to } => restore(to, from),
             FsChange::Copy { to, .. } => remove_path(to),
-            FsChange::Trash { item, .. } => {
-                // restore_all also removes the .trashinfo, so the entry is gone.
-                trash::os_limited::restore_all([item.clone()])?;
+            FsChange::Trash { item, original } => {
+                // The entry may already be gone — e.g. the user restored it via
+                // the trash view (which is not recorded on the undo stack). The
+                // trash crate PANICS (`assert!`) on a missing entry rather than
+                // erroring, so guard on the `.trashinfo` path (`item.id`) and
+                // treat a vanished entry as a no-op: the file is already back
+                // where undo would have put it. (restore_all also removes the
+                // .trashinfo, so its existence tracks the live entry.)
+                if std::path::Path::new(&item.id).exists() {
+                    trash::os_limited::restore_all([item.clone()])?;
+                } else {
+                    log::info!(
+                        "'{}' is no longer in the trash (already restored); nothing to undo",
+                        original.display()
+                    );
+                }
                 Ok(())
             }
         }
@@ -362,6 +375,30 @@ mod tests {
         };
         change.undo().unwrap();
         assert_eq!(fs::read_to_string(&file).unwrap(), "data");
+    }
+
+    #[test]
+    fn undo_of_an_already_restored_trash_entry_is_a_noop() {
+        // Reproduces the crash: delete → restore via the trash view (out of
+        // band) → undo. The trash crate would assert! on the missing entry.
+        let _guard = TRASH_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempdir().unwrap();
+        std::env::set_var("XDG_DATA_HOME", home.path());
+        let work = tempdir().unwrap();
+        let file = work.path().join("g.txt");
+        fs::write(&file, "d").unwrap();
+        trash::delete(&file).unwrap();
+        let item = capture_trashed(&file).expect("captured");
+        let mut change = FsChange::Trash {
+            item: item.clone(),
+            original: file.clone(),
+        };
+        // Simulate the trash-view restore removing the entry out of band.
+        trash::os_limited::restore_all([item]).unwrap();
+        assert!(file.exists());
+        // Undo must not panic and must leave the (already restored) file intact.
+        change.undo().unwrap();
+        assert!(file.exists());
     }
 
     #[test]
