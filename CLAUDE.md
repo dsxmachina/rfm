@@ -114,8 +114,8 @@ the 1 s task wakes the UI only when a line actually expires.
 ## Architecture: undo/redo
 
 In-session, in-memory only (`src/undo/`, terminal-free + unit-tested).
-Everything reduces to three atomic reversible changes — `FsChange::{Create,
-Move, Copy}`; one user action = one `Transaction` of N changes. The FS
+Everything reduces to atomic reversible changes — `FsChange::{Create, Move,
+Copy, Trash}`; one user action = one `Transaction` of N changes. The FS
 primitives (`move_item`/`copy_item` in util.rs, `delete_file`, zip/tar)
 return the `FsChange` they made, carrying the *actually-reached* path so
 the `_`-suffix collision fallback stays correct. The command handlers in
@@ -126,8 +126,24 @@ the opposite stack). The async paste task hands its transaction back over
 
 Non-reversible actions push a `Barrier` (permanent delete — trash off);
 undo hitting it stops and reports, never reverting past it. External
-commands/opener/extract are untracked (ignored). zip/tar are undoable
-(delete the archive) but `no_redo` (content can't be replayed). Keys:
-`u` / `ctrl-r` (opt-in `undo`/`redo` in keys.toml — pre-existing user
-configs won't have them until added). Debug socket `state` exposes
+commands/opener/extract are untracked (ignored). zip/tar and trash-delete
+are `no_redo` (archive content / a re-minted TrashItem can't be replayed).
+Keys: `u` / `ctrl-r` (opt-in `undo`/`redo` in keys.toml — pre-existing user
+configs won't have them until added).
+
+## Architecture: trash
+
+The freedesktop.org trash (via the `trash` crate, pinned `<5.2` for MSRV
+1.83; native FS backend, no DBus). `use_trash` (config, default true) gates
+it: on → `delete_file` calls `trash::delete` then re-finds the created
+`TrashItem` via `os_limited::list()` (match original_parent+name, newest
+`time_deleted`) and records `FsChange::Trash`; off → permanent delete +
+`Barrier`. Undo restores via `os_limited::restore_all`. `gT` opens the
+`TrashView` overlay mode (`src/panel/mode/trash_view.rs`) — a pure adapter
+the manager fills from `os_limited::list()`; `r` emits
+`ModeOp::RestoreFromTrash` (restore to original; not undo-recorded in v1),
+`Esc` closes. Deferred: empty-trash/`purge_all`, restore-to-arbitrary
+(the old `gT`+`dd` pull-out), multi-select.
+
+Debug socket `state` exposes
 `undo_depth` / `redo_depth`.
