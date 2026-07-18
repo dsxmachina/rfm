@@ -1288,9 +1288,13 @@ impl PanelManager {
             }
         };
         let target = current_path.join(name.trim());
+        // Only a genuinely new path is undoable. `touch`/`mkdir` on an existing
+        // entry succeeds (create-if-missing) but must NOT record a Create — its
+        // undo would `remove` the user's pre-existing file/dir (data loss).
+        let existed = target.exists();
         if let Err(e) = create_fn(target.clone()) {
             error!("{e}");
-        } else {
+        } else if !existed {
             let mut tx = Transaction::new(format!("create {}", name.trim()));
             tx.push(FsChange::Create {
                 path: target,
