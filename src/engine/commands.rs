@@ -60,6 +60,8 @@ struct Manipulation {
     zip: Vec<String>,
     tar: Vec<String>,
     extract: Vec<String>,
+    undo: Option<Vec<String>>,
+    redo: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -147,6 +149,8 @@ pub enum Command {
         overwrite: bool,
     },
     Mark,
+    Undo,
+    Redo,
     Quit,
     QuitWithoutPath,
     /// User-defined shell command
@@ -204,6 +208,8 @@ impl Display for Command {
                 }
             }
             Command::Mark => write!(f, "mark selected item"),
+            Command::Undo => write!(f, "undo"),
+            Command::Redo => write!(f, "redo"),
             Command::Quit => write!(f, "quit"),
             Command::QuitWithoutPath => write!(f, "quit without changing path"),
             Command::UserCommand { name, .. } => write!(f, "{}", name),
@@ -299,6 +305,8 @@ impl CommandParser {
         parser.insert(config.manipulation.zip, Command::Zip);
         parser.insert(config.manipulation.tar, Command::Tar);
         parser.insert(config.manipulation.extract, Command::Extract);
+        parser.insert(config.manipulation.undo.unwrap_or_default(), Command::Undo);
+        parser.insert(config.manipulation.redo.unwrap_or_default(), Command::Redo);
         parser.insert(
             config.manipulation.paste,
             Command::Paste { overwrite: false },
@@ -470,6 +478,9 @@ impl CommandParser {
         key_commands.insert("po", Command::Paste { overwrite: true });
         key_commands.insert("delete", Command::Delete);
 
+        // Undo / Redo
+        key_commands.insert("u", Command::Undo);
+
         // Search
         key_commands.insert("/", Command::Search);
         key_commands.insert("n", Command::Next);
@@ -497,6 +508,12 @@ impl CommandParser {
         mod_commands.insert(CTRL_X, Command::Cut);
         mod_commands.insert(CTRL_V, Command::Paste { overwrite: false });
         mod_commands.insert(CTRL_SHIFT_V, Command::Paste { overwrite: true });
+
+        // Redo
+        mod_commands.insert(
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+            Command::Redo,
+        );
 
         // Escape from what you are doing
         // mod_commands.insert(CTRL_C, Command::Esc);

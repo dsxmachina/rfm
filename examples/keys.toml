@@ -76,3 +76,5 @@ paste_overwrite  = [ "po", "ctrl-V" ]          # paste items and overwrite exist
 zip              = [ "zip" ]                   # create a zip archive from selected items (requires 'zip')
 tar              = [ "tar" ]                   # create a tar archive from selected items (requires 'tar')
 extract          = [ "extract", "unzip" ]      # extract archive in place (requires archive program)
+undo             = [ "u" ]                     # undo the last reversible operation (in-session)
+redo             = [ "ctrl-r" ]                # redo the last undone operation

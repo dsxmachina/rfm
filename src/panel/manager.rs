@@ -1299,6 +1299,36 @@ impl PanelManager {
         }
     }
 
+    /// Undoes the most recent recorded transaction.
+    fn apply_undo(&mut self) {
+        match self.undo.undo() {
+            UndoOutcome::Done(label) => info!("rückgängig: {label}"),
+            UndoOutcome::Empty => info!("nichts rückgängig zu machen"),
+            UndoOutcome::Blocked(reason) => {
+                warn!("kann nicht rückgängig gemacht werden: {reason}")
+            }
+            UndoOutcome::Failed(e) => error!("undo fehlgeschlagen: {e}"),
+        }
+        self.left.reload();
+        self.center.reload();
+        self.right.reload();
+        self.mark_dirty();
+    }
+
+    /// Re-applies the most recently undone transaction.
+    fn apply_redo(&mut self) {
+        match self.undo.redo() {
+            UndoOutcome::Done(label) => info!("wiederhergestellt: {label}"),
+            UndoOutcome::Empty => info!("nichts wiederherzustellen"),
+            UndoOutcome::Blocked(reason) => warn!("redo blockiert: {reason}"),
+            UndoOutcome::Failed(e) => error!("redo fehlgeschlagen: {e}"),
+        }
+        self.left.reload();
+        self.center.reload();
+        self.right.reload();
+        self.mark_dirty();
+    }
+
     /// Handles the terminal events.
     ///
     /// Returns Ok(true) if the application needs to shut down.
@@ -1392,6 +1422,8 @@ impl PanelManager {
                             self.center.panel_mut().mark_selected_item();
                             self.move_cursor(Move::Down);
                         }
+                        Command::Undo => self.apply_undo(),
+                        Command::Redo => self.apply_redo(),
                         Command::Cut => {
                             let files = self.marked_or_selected();
                             info!("cut {} items", files.len());
