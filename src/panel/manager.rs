@@ -18,6 +18,7 @@ use crate::{
     engine::commands::{CloseCmd, Command, CommandParser},
     engine::OpenEngine,
     logger::LogBuffer,
+    undo::{FsChange, Transaction, UndoOutcome, UndoStack},
     util::{copy_item, get_destination, move_item, print_metadata, rename_safe},
 };
 
@@ -86,8 +87,15 @@ pub struct PanelManager {
     /// Clipboard
     clipboard: Option<Clipboard>,
 
-    // /// Undo/Redo stack
-    // stack: Vec<Operation>,
+    /// Undo/redo stack
+    undo: UndoStack,
+
+    /// Sender used by the async paste task to hand back its transaction
+    undo_tx: mpsc::UnboundedSender<Transaction>,
+
+    /// Receiver for transactions produced off-thread (paste)
+    undo_rx: mpsc::UnboundedReceiver<Transaction>,
+
     /// Miller-Columns layout
     layout: MillerColumns,
 
@@ -176,6 +184,8 @@ impl PanelManager {
             None
         };
 
+        let (undo_tx, undo_rx) = mpsc::unbounded_channel();
+
         Ok(PanelManager {
             left,
             center,
@@ -185,7 +195,9 @@ impl PanelManager {
             clipboard: None,
             layout,
             opener,
-            // stack: Vec::new(),
+            undo: UndoStack::new(),
+            undo_tx,
+            undo_rx,
             show_hidden: false,
             show_log: false,
             dirty: true,
@@ -454,6 +466,10 @@ impl PanelManager {
             self.center.panel().path(),
             Some(self.center.panel().selected_idx()),
         );
+        // Toggling hidden files off can re-clamp the center selection onto a
+        // different entry, so refresh the preview to match (as move_up/down do).
+        self.right
+            .new_panel_delayed(self.center.panel().selected_path());
         self.mark_dirty();
     }
 
@@ -1091,6 +1107,16 @@ impl PanelManager {
                         self.mark_dirty();
                     }
                 }
+                // Transactions handed back by the async paste task
+                result = self.undo_rx.recv() => {
+                    if let Some(tx) = result {
+                        self.undo.record(tx);
+                        self.left.reload();
+                        self.center.reload();
+                        self.right.reload();
+                        self.mark_dirty();
+                    }
+                }
                 // Check incoming new events
                 result = event_reader => {
                     // Shutdown if reader has been dropped
@@ -1178,6 +1204,7 @@ impl PanelManager {
     /// a no-op, existing targets are never overwritten.
     fn apply_rename(&mut self, to: String) {
         if let Some(from) = self.center.panel().selected_path() {
+            let from = from.to_path_buf();
             let to_path = from.parent().map(|p| p.join(&to)).unwrap_or_default();
             // Don't rename if it's the same path
             if from == to_path {
@@ -1185,8 +1212,18 @@ impl PanelManager {
             } else if to_path.exists() {
                 // Prevent overwriting existing files
                 warn!("Cannot rename: '{}' already exists", to_path.display());
-            } else if let Err(e) = std::fs::rename(from, &to_path) {
+            } else if let Err(e) = std::fs::rename(&from, &to_path) {
                 error!("{e}");
+            } else {
+                let mut tx = Transaction::new(format!(
+                    "rename {} → {to}",
+                    from.file_name().unwrap_or_default().to_string_lossy(),
+                ));
+                tx.push(FsChange::Move {
+                    from,
+                    to: to_path,
+                });
+                self.undo.record(tx);
             }
         }
         self.mode = Mode::Normal;
@@ -1216,8 +1253,16 @@ impl PanelManager {
                 Ok(())
             }
         };
-        if let Err(e) = create_fn(current_path.join(name.trim())) {
+        let target = current_path.join(name.trim());
+        if let Err(e) = create_fn(target.clone()) {
             error!("{e}");
+        } else {
+            let mut tx = Transaction::new(format!("create {}", name.trim()));
+            tx.push(FsChange::Create {
+                path: target,
+                is_dir,
+            });
+            self.undo.record(tx);
         }
         self.mode = Mode::Normal;
         self.center.panel_mut().clear_new_element();
@@ -1354,6 +1399,7 @@ impl PanelManager {
                             self.unmark_all_items();
                             let current_path = self.center.panel().path().to_path_buf();
                             let clipboard = self.clipboard.take();
+                            let undo_tx = self.undo_tx.clone();
                             tokio::task::spawn_blocking(move || {
                                 if let Some(clipboard) = clipboard {
                                     info!(
@@ -1361,15 +1407,30 @@ impl PanelManager {
                                         clipboard.files.len(),
                                         overwrite
                                     );
+                                    let mut tx = Transaction::new(format!(
+                                        "paste ({} items)",
+                                        clipboard.files.len()
+                                    ));
                                     for file in clipboard.files.iter() {
                                         if clipboard.cut {
-                                            if let Err(e) = move_item(file, &current_path) {
-                                                error!("Failed to move {}: {e}", file.display());
+                                            match move_item(file, &current_path) {
+                                                Ok(Some(change)) => tx.push(change),
+                                                Ok(None) => {}
+                                                Err(e) => {
+                                                    error!("Failed to move {}: {e}", file.display())
+                                                }
                                             }
-                                        } else if let Err(e) = copy_item(file, &current_path) {
-                                            error!("Failed to copy {}: {e}", file.display());
+                                        } else {
+                                            match copy_item(file, &current_path) {
+                                                Ok(change) => tx.push(change),
+                                                Err(e) => {
+                                                    error!("Failed to copy {}: {e}", file.display())
+                                                }
+                                            }
                                         }
                                     }
+                                    // Recorded (and panels reloaded) on the main loop.
+                                    let _ = undo_tx.send(tx);
                                 }
                             });
                             self.left.reload();

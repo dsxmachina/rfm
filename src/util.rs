@@ -11,6 +11,7 @@ use unicode_display_width::width as unicode_width;
 use users::{get_group_by_gid, get_user_by_uid};
 
 use crate::engine::opener::get_mime_type;
+use crate::undo::FsChange;
 
 pub fn file_size_str(file_size: u64) -> String {
     match file_size {
@@ -209,7 +210,7 @@ where
     Ok(result)
 }
 
-pub fn move_item<P, Q>(source: P, destination: Q) -> anyhow::Result<()>
+pub fn move_item<P, Q>(source: P, destination: Q) -> anyhow::Result<Option<FsChange>>
 where
     P: AsRef<Path>,
     Q: AsRef<Path>,
@@ -223,14 +224,17 @@ where
     // If destination is the directory of from, don't do anything
     if from == destination.as_ref().join(dest_name) {
         warn!("from and to are identical");
-        return Ok(());
+        return Ok(None);
     }
     let to = get_destination(&source, destination)?;
-    std::fs::rename(from, to)?;
-    Ok(())
+    std::fs::rename(from, &to)?;
+    Ok(Some(FsChange::Move {
+        from: from.to_path_buf(),
+        to,
+    }))
 }
 
-pub fn copy_item<P, Q>(source: P, destination: Q) -> anyhow::Result<()>
+pub fn copy_item<P, Q>(source: P, destination: Q) -> anyhow::Result<FsChange>
 where
     P: AsRef<Path>,
     Q: AsRef<Path>,
@@ -238,11 +242,14 @@ where
     let from = source.as_ref();
     let to = get_destination(&source, destination)?;
     if from.is_dir() {
-        fs_extra::dir::copy(from, to, &CopyOptions::default().copy_inside(true))?;
+        fs_extra::dir::copy(from, &to, &CopyOptions::default().copy_inside(true))?;
     } else {
-        std::fs::copy(from, to)?;
+        std::fs::copy(from, &to)?;
     }
-    Ok(())
+    Ok(FsChange::Copy {
+        from: from.to_path_buf(),
+        to,
+    })
 }
 
 /// Renames a file to a new path, appending underscores if the target already exists.
