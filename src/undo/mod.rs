@@ -211,6 +211,13 @@ impl UndoStack {
     }
 }
 
+/// Serializes tests that trash real files: they mutate the process-global
+/// `XDG_DATA_HOME`, so they must not run concurrently (here or in
+/// `mode::trash_view`). Poison is ignored — a panicking test shouldn't wedge
+/// the rest.
+#[cfg(test)]
+pub(crate) static TRASH_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,6 +306,7 @@ mod tests {
 
     #[test]
     fn trash_change_undo_restores_original() {
+        let _guard = TRASH_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Isolate the home trash so we never touch the developer's real trash.
         let home = tempdir().unwrap();
         std::env::set_var("XDG_DATA_HOME", home.path());

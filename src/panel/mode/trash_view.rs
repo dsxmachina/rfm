@@ -154,7 +154,12 @@ mod tests {
     }
 
     /// Trash `n` temp files under an isolated home trash and return their items.
+    /// Holds the shared trash-test lock across the env-mutating critical section
+    /// (set `XDG_DATA_HOME` → trash → list) so parallel trash tests don't race.
     fn trashed_items(n: usize) -> Vec<trash::TrashItem> {
+        let _guard = crate::undo::TRASH_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_DATA_HOME", home.path());
         let work = tempfile::tempdir().unwrap();
