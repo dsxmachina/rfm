@@ -36,6 +36,7 @@ mod debug;
 mod engine;
 mod logger;
 mod panel;
+mod undo;
 mod util;
 
 /// Default rate limit interval for preview updates (in milliseconds)
