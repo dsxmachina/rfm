@@ -718,13 +718,22 @@ impl PanelManager {
     }
 
     /// Deletes a file or directory, based on the trash strategy.
-    fn delete_file(&self, file: &Path) {
+    ///
+    /// Returns the `Move` into the trash when the trash is active (undoable),
+    /// or `None` for a permanent deletion (not reversible).
+    fn delete_file(&self, file: &Path) -> Option<FsChange> {
         // Check if we use the trash or not
         if let Some(trash_path) = &self.trash_dir {
             let destination = get_destination(file, trash_path.path()).unwrap();
-            let result = std::fs::rename(file, &destination);
-            if let Err(e) = result {
-                error!("Cannot delete {}: {e}", file.display());
+            match std::fs::rename(file, &destination) {
+                Ok(()) => Some(FsChange::Move {
+                    from: file.to_path_buf(),
+                    to: destination,
+                }),
+                Err(e) => {
+                    error!("Cannot delete {}: {e}", file.display());
+                    None
+                }
             }
         } else {
             if file.is_file() {
@@ -738,6 +747,7 @@ impl PanelManager {
                     error!("Cannot delete {}: {e}", file.display());
                 }
             }
+            None
         }
     }
 
@@ -1387,9 +1397,21 @@ impl PanelManager {
                             let files = self.marked_or_selected();
                             info!("Deleted {} items", files.len());
                             self.unmark_all_items();
-                            // self.stack.push(Operation::MoveItems { from: files.clone(), to: trash_dir.path().to_path_buf() });
-                            for file in files {
-                                self.delete_file(&file);
+                            if self.trash_dir.is_some() {
+                                let mut tx =
+                                    Transaction::new(format!("delete ({} items)", files.len()));
+                                for file in files {
+                                    if let Some(change) = self.delete_file(&file) {
+                                        tx.push(change);
+                                    }
+                                }
+                                self.undo.record(tx);
+                            } else {
+                                for file in files {
+                                    self.delete_file(&file);
+                                }
+                                // Permanent deletion cannot be undone.
+                                self.undo.barrier("permanentes Löschen");
                             }
                             self.left.reload();
                             self.center.reload();
