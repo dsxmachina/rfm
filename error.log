@@ -1,0 +1,18 @@
+INFO (75s ago): Using general config: /home/someone/.config/rfm/config.toml
+INFO (75s ago): Using rate-limit of 16ms
+INFO (75s ago): Using Nerd Font icons
+INFO (75s ago): Using keyboard config: /home/someone/.config/rfm/keys.toml
+INFO (75s ago): Using open-engine config: /home/someone/.config/rfm/open.toml
+INFO (75s ago): CommandExecutor started
+INFO (73s ago): Executing command 'zoxide add current-dir': zoxide add /home/someone/Projekte/rust/rfm/test-directory
+INFO (73s ago): Command 'zoxide add current-dir' completed successfully
+INFO (70s ago): Deleted 1 items
+ERROR (70s ago): Cannot trash /home/someone/Projekte/rust/rfm/test-directory/sudo-dir: Error during a `trash` operation: FileSystem { path: "/home/someone/Projekte/rust/rfm/test-directory/sudo-dir", source: Os { code: 13, kind: PermissionDenied, message: "Permission denied" } }
+INFO (60s ago): Deleted 1 items
+INFO (32s ago): cut 1 items
+INFO (30s ago): Deleted 1 items
+INFO (2s ago): Updating: /home/someone/Projekte/rust/rfm/test-directory
+INFO (2s ago): wiederhergestellt: 1 Element(e) aus dem Papierkorb
+INFO (0s ago): push to rev-history: /home/someone/Projekte/rust/rfm/test-directory/anforderungsprofil-entwickler.md, len=0
+INFO (0s ago): set-left-panel selection
+INFO (0s ago): CommandExecutor shutting down

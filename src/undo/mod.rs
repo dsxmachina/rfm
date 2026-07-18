@@ -28,13 +28,15 @@ pub enum FsChange {
 }
 
 impl FsChange {
-    /// Apply the inverse of this change.
-    pub fn undo(&self) -> Result<()> {
+    /// Apply the inverse of this change. Takes `&mut self` so `Trash::redo`
+    /// can refresh its `TrashItem`; only `Trash::redo` actually mutates.
+    pub fn undo(&mut self) -> Result<()> {
         match self {
             FsChange::Create { path, .. } => remove_path(path),
             FsChange::Move { from, to } => restore(to, from),
             FsChange::Copy { to, .. } => remove_path(to),
             FsChange::Trash { item, .. } => {
+                // restore_all also removes the .trashinfo, so the entry is gone.
                 trash::os_limited::restore_all([item.clone()])?;
                 Ok(())
             }
@@ -42,16 +44,44 @@ impl FsChange {
     }
 
     /// Re-apply this change forward.
-    pub fn redo(&self) -> Result<()> {
+    pub fn redo(&mut self) -> Result<()> {
         match self {
+            FsChange::Trash { item, original } => {
+                // Re-trash the (restored) file. This mints a NEW trash entry,
+                // so re-capture it and overwrite the stored item, keeping the
+                // delete↔undo↔redo cycle consistent for the next undo.
+                trash::delete(&*original)?;
+                match capture_trashed(original) {
+                    Some(fresh) => {
+                        *item = fresh;
+                        Ok(())
+                    }
+                    None => Err(anyhow::anyhow!(
+                        "re-trashed {} but could not locate the new entry",
+                        original.display()
+                    )),
+                }
+            }
             FsChange::Create { path, is_dir } => create_empty(path, *is_dir),
             FsChange::Move { from, to } => restore(from, to),
             FsChange::Copy { from, to } => copy_exact(from, to),
-            // Unreachable: `Transaction::push` marks any transaction holding a
-            // Trash change non-redoable, so it never enters the redo stack.
-            FsChange::Trash { .. } => Ok(()),
         }
     }
+}
+
+/// Finds the trash item that `trash::delete(original)` just created: match by
+/// original parent + name, newest deletion first. Shared by the initial delete
+/// (in the manager) and `Trash::redo` (re-trashing).
+pub(crate) fn capture_trashed(original: &Path) -> Option<trash::TrashItem> {
+    let parent = original.parent()?;
+    let name = original.file_name()?;
+    let mut hits: Vec<trash::TrashItem> = trash::os_limited::list()
+        .ok()?
+        .into_iter()
+        .filter(|i| i.original_parent == parent && i.name == name)
+        .collect();
+    hits.sort_by_key(|i| i.time_deleted);
+    hits.pop() // greatest time_deleted
 }
 
 /// Remove a file or directory tree. Missing target is treated as success.
@@ -111,12 +141,6 @@ impl Transaction {
         }
     }
     pub fn push(&mut self, change: FsChange) {
-        // A trashed file can't be re-trashed onto the same TrashItem, so any
-        // transaction containing one is inherently non-redoable — enforce it
-        // here rather than relying on every call site to remember `no_redo`.
-        if matches!(change, FsChange::Trash { .. }) {
-            self.redoable = false;
-        }
         self.changes.push(change);
     }
     pub fn is_empty(&self) -> bool {
@@ -181,7 +205,7 @@ impl UndoStack {
             Some(UndoEntry::Barrier { reason }) => return UndoOutcome::Blocked(reason.clone()),
             Some(UndoEntry::Tx(_)) => {}
         }
-        let UndoEntry::Tx(tx) = self.undo.pop().unwrap() else {
+        let UndoEntry::Tx(mut tx) = self.undo.pop().unwrap() else {
             unreachable!()
         };
         // Apply inverses in reverse order; abort at the first failure.
@@ -202,7 +226,7 @@ impl UndoStack {
     }
 
     pub fn redo(&mut self) -> UndoOutcome {
-        let Some(tx) = self.redo.pop() else {
+        let Some(mut tx) = self.redo.pop() else {
             return UndoOutcome::Empty;
         };
         for i in 0..tx.changes.len() {
@@ -238,7 +262,7 @@ mod tests {
         let to = d.path().join("b.txt");
         fs::write(&from, "x").unwrap();
         fs::rename(&from, &to).unwrap();
-        let c = FsChange::Move {
+        let mut c = FsChange::Move {
             from: from.clone(),
             to: to.clone(),
         };
@@ -279,7 +303,7 @@ mod tests {
         let to = d.path().join("dst.txt");
         fs::write(&from, "data").unwrap();
         fs::copy(&from, &to).unwrap();
-        let c = FsChange::Copy {
+        let mut c = FsChange::Copy {
             from: from.clone(),
             to: to.clone(),
         };
@@ -332,7 +356,7 @@ mod tests {
             .find(|i| i.original_parent == work.path() && i.name == "victim.txt")
             .expect("item is in the trash");
 
-        let change = FsChange::Trash {
+        let mut change = FsChange::Trash {
             item,
             original: file.clone(),
         };
@@ -341,27 +365,38 @@ mod tests {
     }
 
     #[test]
-    fn pushing_a_trash_change_marks_the_transaction_non_redoable() {
+    fn trash_delete_redo_cycle_stays_consistent() {
+        // delete → undo (restore) → redo (re-trash, new item) → undo again.
         let _guard = TRASH_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempdir().unwrap();
         std::env::set_var("XDG_DATA_HOME", home.path());
         let work = tempdir().unwrap();
-        let file = work.path().join("f.txt");
-        fs::write(&file, "x").unwrap();
-        trash::delete(&file).unwrap();
-        let item = trash::os_limited::list()
-            .unwrap()
-            .into_iter()
-            .find(|i| i.original_parent == work.path() && i.name == "f.txt")
-            .unwrap();
+        let file = work.path().join("cycle.txt");
+        fs::write(&file, "payload").unwrap();
 
-        let mut tx = Transaction::new("delete");
-        assert!(tx.redoable);
-        tx.push(FsChange::Trash {
+        trash::delete(&file).unwrap();
+        let item = capture_trashed(&file).expect("captured after delete");
+        let mut change = FsChange::Trash {
             item,
-            original: file,
-        });
-        assert!(!tx.redoable, "a Trash change must make the tx non-redoable");
+            original: file.clone(),
+        };
+
+        change.undo().unwrap(); // restore
+        assert!(file.exists());
+
+        change.redo().unwrap(); // re-trash → fresh entry, stored item refreshed
+        assert!(!file.exists());
+
+        // The refreshed item must still restore correctly — the point of the
+        // re-capture (a stale item would fail here in the collision case).
+        change.undo().unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "payload");
+
+        // And one more full cycle to prove it's repeatable.
+        change.redo().unwrap();
+        assert!(!file.exists());
+        change.undo().unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "payload");
     }
 
     #[test]

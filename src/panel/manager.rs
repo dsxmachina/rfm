@@ -17,7 +17,7 @@ use crate::{
     engine::commands::{CloseCmd, Command, CommandParser},
     engine::OpenEngine,
     logger::LogBuffer,
-    undo::{FsChange, Transaction, UndoOutcome, UndoStack},
+    undo::{capture_trashed, FsChange, Transaction, UndoOutcome, UndoStack},
     util::{copy_item, move_item, print_metadata, rename_safe},
 };
 
@@ -30,20 +30,6 @@ fn expand_command(cmd: &str, paths: &[PathBuf], separator: &str) -> String {
         .join(separator);
 
     cmd.replace("$@", &paths_str)
-}
-
-/// Finds the trash item that `trash::delete(original)` just created: match by
-/// original parent + name, newest deletion first.
-fn capture_trashed(original: &Path) -> Option<trash::TrashItem> {
-    let parent = original.parent()?;
-    let name = original.file_name()?;
-    let mut hits: Vec<trash::TrashItem> = trash::os_limited::list()
-        .ok()?
-        .into_iter()
-        .filter(|i| i.original_parent == parent && i.name == name)
-        .collect();
-    hits.sort_by_key(|i| i.time_deleted);
-    hits.pop() // greatest time_deleted
 }
 
 /// Receive a debug request, or stay pending forever when debug mode is off.
@@ -1481,9 +1467,9 @@ impl PanelManager {
                                         tx.push(change);
                                     }
                                 }
-                                // Re-trashing would mint a new TrashItem and stale
-                                // the stored one, so trash-deletes are not redoable.
-                                self.undo.record(tx.no_redo());
+                                // Redoable: redo re-trashes and re-captures the
+                                // fresh TrashItem (see FsChange::Trash::redo).
+                                self.undo.record(tx);
                             } else {
                                 for file in files {
                                     self.delete_file(&file);

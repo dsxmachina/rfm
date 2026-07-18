@@ -126,8 +126,11 @@ the opposite stack). The async paste task hands its transaction back over
 
 Non-reversible actions push a `Barrier` (permanent delete — trash off);
 undo hitting it stops and reports, never reverting past it. External
-commands/opener/extract are untracked (ignored). zip/tar and trash-delete
-are `no_redo` (archive content / a re-minted TrashItem can't be replayed).
+commands/opener/extract are untracked (ignored). zip/tar are `no_redo`
+(a re-run would only produce an empty archive). Trash-delete IS redoable:
+`FsChange::undo/redo` take `&mut self` so `Trash::redo` can re-trash and
+re-capture the fresh `TrashItem` (shared `capture_trashed` in `src/undo/`),
+keeping the delete↔undo↔redo cycle consistent.
 Keys: `u` / `ctrl-r` (opt-in `undo`/`redo` in keys.toml — pre-existing user
 configs won't have them until added).
 

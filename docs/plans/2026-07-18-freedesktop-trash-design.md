@@ -72,10 +72,15 @@ API used:
   and undoable, so trashing is the safe default. (Existing configs that set
   `use_trash` explicitly are unaffected; only omission/no-config gets true.)
 - **Undo integration:** trash-delete becomes a new atomic change
-  `FsChange::Trash { item, original }`; undo = `restore_all([item])`. It is
-  `no_redo` (re-trashing would mint a new TrashItem and stale the stored
-  one — consistent with the zip/tar precedent). Permanent delete
-  (`use_trash = false`) stays a `Barrier`, as before.
+  `FsChange::Trash { item, original }`; undo = `restore_all([item])`, which
+  per the freedesktop spec also removes the `.trashinfo` (the trash entry is
+  gone, no dangling/duplicate entries). It **is redoable** (revised
+  2026-07-18): redo re-trashes `original` and re-captures the *new*
+  `TrashItem`, updating the stored change, so an arbitrarily long
+  delete↔undo↔redo cycle stays consistent. This requires `FsChange::undo/redo`
+  to take `&mut self`. (zip/tar remain `no_redo` — a re-run would produce an
+  empty archive; delete has no such problem because the source file is back
+  after undo.) Permanent delete (`use_trash = false`) stays a `Barrier`.
 - **Trash browsing/restore = a dedicated overlay mode.** `gT` no longer
   jumps into a directory; it opens a Trash-View overlay (like the modals)
   listing `os_limited::list()` items with original path + deletion date.
@@ -100,7 +105,9 @@ API used:
   `None`; the handler pushes a `Barrier` (unchanged).
 
 `Command::Delete` assembles the `Trash` changes into a transaction (as it
-does today), marked `no_redo`.
+does today). The transaction is redoable (see the revised undo integration
+above); `capture_trashed` lives in `src/undo/` so both the initial delete
+and `Trash::redo` share it.
 
 ### 2. Undo model change
 
@@ -110,11 +117,14 @@ does today), marked `no_redo`.
 Trash { item: trash::TrashItem, original: PathBuf },
 ```
 
-- `undo()` → `trash::os_limited::restore_all([item.clone()])`. On
+`FsChange::undo/redo` take `&mut self` (only `Trash::redo` mutates):
+- `undo(&mut self)` → `trash::os_limited::restore_all([item.clone()])`. On
   `RestoreCollision` (original path re-occupied) the call errors; our
   existing undo semantics log it and keep the transaction on the stack.
-- `redo()` → unreachable (transaction is `no_redo`); implement as a no-op
-  or `Ok(())` for totality.
+- `redo(&mut self)` for `Trash` → `trash::delete(original)` (re-trash), then
+  `capture_trashed(original)` to grab the *new* `TrashItem` and overwrite
+  `self.item`. On failure, error out (undo/redo aborts + keeps the stack).
+  `UndoStack::undo/redo` therefore pop into a `mut tx`.
 
 The old `trash_dir: Option<TempDir>` field, its `new()` setup, and the
 `FsChange::Move`-based trash-delete recording are removed.
