@@ -47,7 +47,8 @@ impl FsChange {
             FsChange::Create { path, is_dir } => create_empty(path, *is_dir),
             FsChange::Move { from, to } => restore(from, to),
             FsChange::Copy { from, to } => copy_exact(from, to),
-            // Trash transactions are `no_redo`; this arm exists only for totality.
+            // Unreachable: `Transaction::push` marks any transaction holding a
+            // Trash change non-redoable, so it never enters the redo stack.
             FsChange::Trash { .. } => Ok(()),
         }
     }
@@ -110,6 +111,12 @@ impl Transaction {
         }
     }
     pub fn push(&mut self, change: FsChange) {
+        // A trashed file can't be re-trashed onto the same TrashItem, so any
+        // transaction containing one is inherently non-redoable — enforce it
+        // here rather than relying on every call site to remember `no_redo`.
+        if matches!(change, FsChange::Trash { .. }) {
+            self.redoable = false;
+        }
         self.changes.push(change);
     }
     pub fn is_empty(&self) -> bool {
@@ -331,6 +338,30 @@ mod tests {
         };
         change.undo().unwrap();
         assert_eq!(fs::read_to_string(&file).unwrap(), "data");
+    }
+
+    #[test]
+    fn pushing_a_trash_change_marks_the_transaction_non_redoable() {
+        let _guard = TRASH_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempdir().unwrap();
+        std::env::set_var("XDG_DATA_HOME", home.path());
+        let work = tempdir().unwrap();
+        let file = work.path().join("f.txt");
+        fs::write(&file, "x").unwrap();
+        trash::delete(&file).unwrap();
+        let item = trash::os_limited::list()
+            .unwrap()
+            .into_iter()
+            .find(|i| i.original_parent == work.path() && i.name == "f.txt")
+            .unwrap();
+
+        let mut tx = Transaction::new("delete");
+        assert!(tx.redoable);
+        tx.push(FsChange::Trash {
+            item,
+            original: file,
+        });
+        assert!(!tx.redoable, "a Trash change must make the tx non-redoable");
     }
 
     #[test]
