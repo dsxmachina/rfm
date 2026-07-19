@@ -36,13 +36,25 @@ pub type MillerPanels = (
     ManagedPanel<PreviewPanel>,
 );
 
-pub fn init_miller_panels(
-    starting_path: PathBuf,
-    directory_cache: PanelCache<DirPanel>,
-    preview_cache: PanelCache<PreviewPanel>,
-    directory_tx: mpsc::UnboundedSender<PanelUpdate>,
-    preview_tx: mpsc::UnboundedSender<PanelUpdate>,
-) -> MillerPanels {
+/// The handles needed to build a Miller-columns stack: the panel caches and
+/// the per-panel content-request senders. These four values always travel and
+/// clone together (retained on `PanelManager` to spawn tabs dynamically), so
+/// they are bundled here rather than passed individually.
+#[derive(Clone)]
+pub struct ContentHandles {
+    pub directory_cache: PanelCache<DirPanel>,
+    pub preview_cache: PanelCache<PreviewPanel>,
+    pub directory_tx: mpsc::UnboundedSender<PanelUpdate>,
+    pub preview_tx: mpsc::UnboundedSender<PanelUpdate>,
+}
+
+pub fn init_miller_panels(starting_path: PathBuf, handles: ContentHandles) -> MillerPanels {
+    let ContentHandles {
+        directory_cache,
+        preview_cache,
+        directory_tx,
+        preview_tx,
+    } = handles;
     // Create three panels
     let mut left = ManagedPanel::new(directory_cache.clone(), directory_tx.clone(), false);
     let mut center = ManagedPanel::new(directory_cache, directory_tx, false);

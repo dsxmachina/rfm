@@ -303,27 +303,18 @@ impl Tab {
     /// content senders are cloned per panel, so the new tab gets its own live
     /// file-watcher and real async content updates, exactly like the initial
     /// stack.
-    fn new_at(
-        cwd: &Path,
-        directory_cache: PanelCache<DirPanel>,
-        preview_cache: PanelCache<PreviewPanel>,
-        directory_tx: mpsc::UnboundedSender<PanelUpdate>,
-        preview_tx: mpsc::UnboundedSender<PanelUpdate>,
-    ) -> Tab {
-        let (left, center, right) = init_miller_panels(
-            cwd.to_path_buf(),
-            directory_cache,
-            preview_cache,
-            directory_tx,
-            preview_tx,
-        );
+    fn new_at(cwd: &Path, handles: ContentHandles) -> Tab {
+        let (left, center, right) = init_miller_panels(cwd.to_path_buf(), handles);
         Tab {
             left,
             center,
             right,
             fwd_history: Vec::new(),
             rev_history: Vec::new(),
-            previous: ".".into(),
+            // A fresh tab's jump-previous points at its own cwd, so an
+            // immediate jump-back is a harmless no-op instead of jumping to the
+            // process CWD (".").
+            previous: cwd.to_path_buf(),
         }
     }
 }
@@ -337,14 +328,11 @@ pub struct PanelManager {
     /// Single vs. split view. Only `Single` is rendered for now.
     view: ViewMode,
 
-    /// Handles retained to spawn new tabs dynamically. These mirror what
-    /// `init_miller_panels` consumes: the panel caches and the per-panel
-    /// content-request senders. Cloned into each new tab's `ManagedPanel`s so a
-    /// dynamically-created tab gets a live watcher and real async updates.
-    directory_cache: PanelCache<DirPanel>,
-    preview_cache: PanelCache<PreviewPanel>,
-    directory_tx: mpsc::UnboundedSender<PanelUpdate>,
-    preview_tx: mpsc::UnboundedSender<PanelUpdate>,
+    /// Handles retained to spawn new tabs dynamically: the panel caches and the
+    /// per-panel content-request senders. Cloned into each new tab's
+    /// `ManagedPanel`s so a dynamically-created tab gets a live watcher and real
+    /// async updates.
+    handles: ContentHandles,
 
     /// Mode of operation
     mode: Mode,
@@ -414,11 +402,8 @@ pub struct PanelManager {
 impl PanelManager {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        miller_panels: MillerPanels,
-        directory_cache: PanelCache<DirPanel>,
-        preview_cache: PanelCache<PreviewPanel>,
-        directory_tx: mpsc::UnboundedSender<PanelUpdate>,
-        preview_tx: mpsc::UnboundedSender<PanelUpdate>,
+        starting_path: PathBuf,
+        handles: ContentHandles,
         use_trash: bool,
         parser: CommandParser,
         dir_rx: mpsc::Receiver<(DirPanel, PanelState)>,
@@ -435,28 +420,17 @@ impl PanelManager {
         let terminal_size = terminal::size()?;
         let layout = MillerColumns::from_size(terminal_size);
 
-        // Split panels
-        let (left, center, right) = miller_panels;
-
         let (undo_tx, undo_rx) = mpsc::unbounded_channel();
 
-        let tab = Tab {
-            left,
-            center,
-            right,
-            fwd_history: Vec::new(),
-            rev_history: Vec::new(),
-            previous: ".".into(),
-        };
+        // Single construction path: the initial tab is built exactly like any
+        // dynamically-created one, cloning the retained handles.
+        let tab = Tab::new_at(&starting_path, handles.clone());
 
         Ok(PanelManager {
             tabs: vec![tab],
             focused: 0,
             view: ViewMode::Single,
-            directory_cache,
-            preview_cache,
-            directory_tx,
-            preview_tx,
+            handles,
             mode: Mode::Normal,
             logger,
             clipboard: None,
@@ -501,13 +475,7 @@ impl PanelManager {
             return;
         }
         let cwd = self.active().center.panel().path().to_path_buf();
-        let tab = Tab::new_at(
-            &cwd,
-            self.directory_cache.clone(),
-            self.preview_cache.clone(),
-            self.directory_tx.clone(),
-            self.preview_tx.clone(),
-        );
+        let tab = Tab::new_at(&cwd, self.handles.clone());
         self.tabs.push(tab);
         self.focused = self.tabs.len() - 1;
         self.mark_dirty();
@@ -2055,20 +2023,14 @@ mod tests {
 
         let (dir_tx, dir_rx) = mpsc::unbounded_channel::<PanelUpdate>();
         let (prev_tx, prev_rx) = mpsc::unbounded_channel::<PanelUpdate>();
-        let dir_cache = PanelCache::<DirPanel>::with_size(64);
-        let prev_cache = PanelCache::<PreviewPanel>::with_size(64);
-
-        let (left, center, right) =
-            super::super::init_miller_panels(root.clone(), dir_cache, prev_cache, dir_tx, prev_tx);
-
-        let tab = Tab {
-            left,
-            center,
-            right,
-            fwd_history: Vec::new(),
-            rev_history: Vec::new(),
-            previous: ".".into(),
+        let handles = ContentHandles {
+            directory_cache: PanelCache::<DirPanel>::with_size(64),
+            preview_cache: PanelCache::<PreviewPanel>::with_size(64),
+            directory_tx: dir_tx,
+            preview_tx: prev_tx,
         };
+
+        let tab = Tab::new_at(&root, handles);
 
         TabFixture {
             tab,
