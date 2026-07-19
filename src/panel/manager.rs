@@ -76,13 +76,27 @@ struct JumpMark {
     entry: Option<PathBuf>,
 }
 
-pub struct PanelManager {
-    /// Left panel
+/// Upper bound on the number of tabs. Enforced once tab creation lands in a
+/// later task; defined here so the cap has a single home from the start.
+#[allow(dead_code)]
+const MAX_TABS: usize = 4;
+
+/// One independent Miller-columns stack: its own cwd, selection and
+/// navigation history. Tabs are the unit the split view shows two of.
+struct Tab {
     left: ManagedPanel<DirPanel>,
-    /// Center panel
     center: ManagedPanel<DirPanel>,
-    /// Right panel
     right: ManagedPanel<PreviewPanel>,
+    fwd_history: Vec<(PathBuf, PathBuf)>,
+    rev_history: Vec<PathBuf>,
+    previous: PathBuf,
+}
+
+pub struct PanelManager {
+    /// Independent Miller-columns stacks. Exactly one for now; multi-tab
+    /// support arrives in a later task. `focused` indexes the active tab.
+    tabs: Vec<Tab>,
+    focused: usize,
 
     /// Mode of operation
     mode: Mode,
@@ -117,15 +131,6 @@ pub struct PanelManager {
 
     /// Event-stream from the terminal
     event_reader: EventStream,
-
-    /// History when going "forward"
-    fwd_history: Vec<(PathBuf, PathBuf)>,
-
-    /// History when going "backwards"
-    rev_history: Vec<PathBuf>,
-
-    /// Previous path
-    previous: PathBuf,
 
     /// Session-only vim-style jump-marks, keyed by letter.
     jump_marks: std::collections::HashMap<char, JumpMark>,
@@ -183,10 +188,18 @@ impl PanelManager {
 
         let (undo_tx, undo_rx) = mpsc::unbounded_channel();
 
-        Ok(PanelManager {
+        let tab = Tab {
             left,
             center,
             right,
+            fwd_history: Vec::new(),
+            rev_history: Vec::new(),
+            previous: ".".into(),
+        };
+
+        Ok(PanelManager {
+            tabs: vec![tab],
+            focused: 0,
             mode: Mode::Normal,
             logger,
             clipboard: None,
@@ -199,9 +212,6 @@ impl PanelManager {
             show_log: false,
             dirty: true,
             event_reader,
-            fwd_history: Vec::new(),
-            rev_history: Vec::new(),
-            previous: ".".into(),
             jump_marks: std::collections::HashMap::new(),
             use_trash,
             parser,
@@ -215,15 +225,24 @@ impl PanelManager {
         })
     }
 
+    fn active(&self) -> &Tab {
+        &self.tabs[self.focused]
+    }
+
+    fn active_mut(&mut self) -> &mut Tab {
+        &mut self.tabs[self.focused]
+    }
+
     fn mark_dirty(&mut self) {
         self.dirty = true;
     }
 
     /// Reloads all three panels from disk (after a filesystem mutation).
     fn reload_all(&mut self) {
-        self.left.reload();
-        self.center.reload();
-        self.right.reload();
+        let tab = self.active_mut();
+        tab.left.reload();
+        tab.center.reload();
+        tab.right.reload();
     }
 
     /// Records a freshly created archive (`archive` is the opener's result, a
@@ -313,11 +332,12 @@ impl PanelManager {
             whoami::fallible::hostname().unwrap_or_else(|e| e.to_string())
         );
         let absolute = self
+            .active()
             .center
             .panel()
             .selected_path()
             .and_then(|f| f.canonicalize().ok())
-            .unwrap_or_else(|| self.center.panel().path().to_path_buf());
+            .unwrap_or_else(|| self.active().center.panel().path().to_path_buf());
         let file_name = absolute
             .file_name()
             .unwrap_or_default()
@@ -361,7 +381,7 @@ impl PanelManager {
                 ModalRegion::ConsoleOverlay => {}
             }
         }
-        let (permissions, metadata) = print_metadata(self.center.panel().selected_path());
+        let (permissions, metadata) = print_metadata(self.active().center.panel().selected_path());
         queue!(
             self.stdout,
             style::PrintStyledContent(permissions.dark_cyan()),
@@ -371,7 +391,7 @@ impl PanelManager {
 
         // TODO: We could place this into its own line, and also print some recommendations
         let key_buffer = self.parser.buffer();
-        let (n, m) = self.center.panel().index_vs_total();
+        let (n, m) = self.active().center.panel().index_vs_total();
         let n_files_string = format!("{n}/{m} ");
 
         // Okay, we CAN print the matching commands, but currently I am not very happy with this.
@@ -447,19 +467,20 @@ impl PanelManager {
         } else {
             start..end
         };
-        self.left.panel_mut().draw(
-            &mut self.stdout,
-            self.layout.left_x_range.clone(),
-            height.clone(),
-        )?;
-        self.center.panel_mut().draw(
-            &mut self.stdout,
-            self.layout.center_x_range.clone(),
-            height.clone(),
-        )?;
-        self.right
+        let left_x = self.layout.left_x_range.clone();
+        let center_x = self.layout.center_x_range.clone();
+        let right_x = self.layout.right_x_range.clone();
+        // Direct field access (not `active_mut()`): the panels live in
+        // `self.tabs`, which is disjoint from `self.stdout` — the method
+        // call would borrow all of `self` and conflict with `&mut self.stdout`.
+        let tab = &mut self.tabs[self.focused];
+        tab.left
             .panel_mut()
-            .draw(&mut self.stdout, self.layout.right_x_range.clone(), height)?;
+            .draw(&mut self.stdout, left_x, height.clone())?;
+        tab.center
+            .panel_mut()
+            .draw(&mut self.stdout, center_x, height.clone())?;
+        tab.right.panel_mut().draw(&mut self.stdout, right_x, height)?;
         Ok(())
     }
 
@@ -478,21 +499,24 @@ impl PanelManager {
 
     fn toggle_hidden(&mut self) {
         self.show_hidden = !self.show_hidden;
-        self.left.panel_mut().set_hidden(self.show_hidden);
-        self.center.panel_mut().set_hidden(self.show_hidden);
-        if let PreviewPanel::Dir(panel) = self.right.panel_mut() {
-            panel.set_hidden(self.show_hidden);
+        let show_hidden = self.show_hidden;
+        let tab = self.active_mut();
+        tab.left.panel_mut().set_hidden(show_hidden);
+        tab.center.panel_mut().set_hidden(show_hidden);
+        if let PreviewPanel::Dir(panel) = tab.right.panel_mut() {
+            panel.set_hidden(show_hidden);
         };
         // FIX: Re-selecting path. If we are in a hidden directory, we want to re-select the
         // correct path in the left panel.
-        self.left.panel_mut().select_path(
-            self.center.panel().path(),
-            Some(self.center.panel().selected_idx()),
-        );
+        let center_path = tab.center.panel().path().to_path_buf();
+        let center_idx = tab.center.panel().selected_idx();
+        tab.left
+            .panel_mut()
+            .select_path(&center_path, Some(center_idx));
         // Toggling hidden files off can re-clamp the center selection onto a
         // different entry, so refresh the preview to match (as move_up/down do).
-        self.right
-            .new_panel_delayed(self.center.panel().selected_path());
+        let center_selected = tab.center.panel().selected_path().map(|p| p.to_path_buf());
+        tab.right.new_panel_delayed(center_selected.as_deref());
         self.mark_dirty();
     }
 
@@ -503,29 +527,37 @@ impl PanelManager {
 
     fn move_up(&mut self, step: usize) {
         trace!("move-up");
-        if self.center.panel_mut().up(step) {
-            self.right
-                .new_panel_delayed(self.center.panel().selected_path());
+        let tab = self.active_mut();
+        if tab.center.panel_mut().up(step) {
+            let selected = tab.center.panel().selected_path().map(|p| p.to_path_buf());
+            tab.right.new_panel_delayed(selected.as_deref());
+            tab.rev_history.clear();
             self.mark_dirty();
-            self.rev_history.clear();
             // self.stack.push(Operation::Move(Movement::Up));
         }
     }
 
     fn move_down(&mut self, step: usize) {
         trace!("move-down");
-        if self.center.panel_mut().down(step) {
-            self.right
-                .new_panel_delayed(self.center.panel().selected_path());
+        let tab = self.active_mut();
+        if tab.center.panel_mut().down(step) {
+            let selected = tab.center.panel().selected_path().map(|p| p.to_path_buf());
+            tab.right.new_panel_delayed(selected.as_deref());
+            tab.rev_history.clear();
             self.mark_dirty();
-            self.rev_history.clear();
             // self.stack.push(Operation::Move(Movement::Down));
         }
     }
 
     fn move_right(&mut self) {
         trace!("move-right");
-        if let Some(selected) = self.center.panel().selected_path().map(|p| p.to_path_buf()) {
+        let selected = self
+            .active()
+            .center
+            .panel()
+            .selected_path()
+            .map(|p| p.to_path_buf());
+        if let Some(selected) = selected {
             // If the selected item is a directory, all panels will shift to the left
             if selected.is_dir() {
                 if let Some(cmd) = zoxide_add_dir(&selected) {
@@ -533,42 +565,46 @@ impl PanelManager {
                         error!("Failed to queue command: {}", e);
                     }
                 }
-                self.previous = self.center.panel().path().to_path_buf();
+                let tab = self.active_mut();
+                tab.previous = tab.center.panel().path().to_path_buf();
                 debug!(
                     "push to history: {}, len={}",
-                    self.previous.display(),
-                    self.fwd_history.len()
+                    tab.previous.display(),
+                    tab.fwd_history.len()
                 );
 
                 // Remember forward history
-                self.fwd_history.push((
-                    self.left.panel().path().to_owned(),
-                    self.left
+                tab.fwd_history.push((
+                    tab.left.panel().path().to_owned(),
+                    tab.left
                         .panel()
                         .selected_path()
                         .map(|p| p.to_owned())
                         .unwrap_or_default(),
                 ));
-                self.left.update_panel(self.center.panel().clone());
-                self.center
-                    .new_panel_instant(self.right.panel().maybe_path());
+                let center_clone = tab.center.panel().clone();
+                tab.left.update_panel(center_clone);
+                let right_path = tab.right.panel().maybe_path();
+                tab.center.new_panel_instant(right_path);
 
-                if let Some(path) = self.rev_history.pop() {
+                if let Some(path) = tab.rev_history.pop() {
                     info!(
                         "pop rev-history: {}, len={}",
                         path.display(),
-                        self.rev_history.len()
+                        tab.rev_history.len()
                     );
                     info!("set-center-panel selection");
-                    self.center.panel_mut().select_path(&path, None);
+                    tab.center.panel_mut().select_path(&path, None);
                 }
 
-                self.right
-                    .new_panel_delayed(self.center.panel().selected_path());
+                let center_selected =
+                    tab.center.panel().selected_path().map(|p| p.to_path_buf());
+                tab.right.new_panel_delayed(center_selected.as_deref());
 
-                if let Some(path) = self.rev_history.last() {
+                if let Some(path) = tab.rev_history.last() {
                     info!("set-right-panel selection");
-                    self.right.panel_mut().select_path(path);
+                    let path = path.clone();
+                    tab.right.panel_mut().select_path(&path);
                 }
 
                 self.mark_dirty();
@@ -576,7 +612,8 @@ impl PanelManager {
                 info!("Opening '{}'", selected.display());
 
                 // Change working directory so that child processes gets spawned from the currently active directory.
-                if let Err(e) = std::env::set_current_dir(self.center.panel().path()) {
+                let center_path = self.active().center.panel().path().to_path_buf();
+                if let Err(e) = std::env::set_current_dir(&center_path) {
                     error!("Failed to set working-directory for process: {e}");
                 }
                 if let Err(e) = self.opener.open(selected) {
@@ -593,44 +630,45 @@ impl PanelManager {
 
     fn move_left(&mut self) {
         trace!("move-left");
+        let tab = self.active_mut();
         // If the left panel is empty, we cannot move left:
-        if self.left.panel().selected_path().is_none() {
+        if tab.left.panel().selected_path().is_none() {
             return;
         }
-        if let Some(path) = self.right.panel().maybe_path() {
+        if let Some(path) = tab.right.panel().maybe_path() {
             info!(
                 "push to rev-history: {}, len={}",
                 path.display(),
-                self.rev_history.len()
+                tab.rev_history.len()
             );
-            self.rev_history.push(path);
+            tab.rev_history.push(path);
         }
-        self.previous = self.center.panel().path().to_path_buf();
-        self.right
-            .update_panel(PreviewPanel::Dir(self.center.panel().clone()));
-        self.center.update_panel(self.left.panel().clone());
+        tab.previous = tab.center.panel().path().to_path_buf();
+        let center_clone = tab.center.panel().clone();
+        tab.right.update_panel(PreviewPanel::Dir(center_clone));
+        let left_clone = tab.left.panel().clone();
+        tab.center.update_panel(left_clone);
         // | m | l | m |
         // TODO: When we followed some symlink we don't want to take the parent here.
-        match self.fwd_history.pop() {
+        match tab.fwd_history.pop() {
             Some((previous, selected)) => {
                 debug!(
                     "using history: {}, selected={}, len={}",
                     previous.display(),
                     selected.display(),
-                    self.fwd_history.len()
+                    tab.fwd_history.len()
                 );
-                self.left.new_panel_instant(Some(previous));
+                tab.left.new_panel_instant(Some(previous));
                 info!("set-left-panel selection");
-                self.left.panel_mut().select_path(&selected, None);
+                tab.left.panel_mut().select_path(&selected, None);
             }
             None => {
-                let parent = self.center.panel().path().parent();
+                let center_path = tab.center.panel().path().to_path_buf();
+                let parent = center_path.parent();
                 info!("using parent: {:?}", parent);
-                self.left.new_panel_instant(parent);
+                tab.left.new_panel_instant(parent);
                 info!("set-left-panel selection");
-                self.left
-                    .panel_mut()
-                    .select_path(self.center.panel().path(), None);
+                tab.left.panel_mut().select_path(&center_path, None);
             }
         }
 
@@ -644,7 +682,7 @@ impl PanelManager {
     fn jump(&mut self, path: PathBuf) {
         trace!("jump-to {}", path.display());
         // Don't do anything, if the path hasn't changed
-        if path.as_path() == self.center.panel().path() {
+        if path.as_path() == self.active().center.panel().path() {
             return;
         }
         if path.exists() {
@@ -653,14 +691,15 @@ impl PanelManager {
                     error!("Failed to queue command: {}", e);
                 }
             }
-            self.fwd_history.clear(); // Delete history when jumping
-            self.rev_history.clear();
-            self.previous = self.center.panel().path().to_path_buf();
-            self.left.new_panel_instant(path.parent());
-            self.left.panel_mut().select_path(&path, None);
-            self.center.new_panel_instant(Some(&path));
-            self.right
-                .new_panel_delayed(self.center.panel().selected_path());
+            let tab = self.active_mut();
+            tab.fwd_history.clear(); // Delete history when jumping
+            tab.rev_history.clear();
+            tab.previous = tab.center.panel().path().to_path_buf();
+            tab.left.new_panel_instant(path.parent());
+            tab.left.panel_mut().select_path(&path, None);
+            tab.center.new_panel_instant(Some(&path));
+            let center_selected = tab.center.panel().selected_path().map(|p| p.to_path_buf());
+            tab.right.new_panel_delayed(center_selected.as_deref());
             self.mark_dirty();
         }
     }
@@ -678,16 +717,17 @@ impl PanelManager {
             Move::PageForward => self.move_down(self.layout.height() as usize),
             Move::PageBackward => self.move_up(self.layout.height() as usize),
             Move::JumpTo(path) => self.jump(path.into()),
-            Move::JumpPrevious => self.jump(self.previous.clone()),
+            Move::JumpPrevious => self.jump(self.active().previous.clone()),
         };
     }
 
     /// Returns a reference to all marked items.
     fn marked_items(&self) -> Vec<&DirElem> {
+        let tab = self.active();
         let mut out = Vec::new();
-        out.extend(self.left.panel().elements().filter(|e| e.is_marked()));
-        out.extend(self.center.panel().elements().filter(|e| e.is_marked()));
-        if let PreviewPanel::Dir(panel) = self.right.panel() {
+        out.extend(tab.left.panel().elements().filter(|e| e.is_marked()));
+        out.extend(tab.center.panel().elements().filter(|e| e.is_marked()));
+        if let PreviewPanel::Dir(panel) = tab.right.panel() {
             out.extend(panel.elements().filter(|e| e.is_marked()))
         }
         out
@@ -695,7 +735,8 @@ impl PanelManager {
 
     /// Unmarks all items in all panels
     fn unmark_all_items(&mut self) {
-        self.center
+        self.active_mut()
+            .center
             .panel_mut()
             .elements_mut()
             .for_each(|item| item.unmark());
@@ -704,12 +745,13 @@ impl PanelManager {
 
     /// Unmarks all items in the left and right panels.
     fn unmark_left_right(&mut self) {
-        self.left
+        let tab = self.active_mut();
+        tab.left
             .panel_mut()
             .elements_mut()
             .for_each(|item| item.unmark());
 
-        if let PreviewPanel::Dir(panel) = self.right.panel_mut() {
+        if let PreviewPanel::Dir(panel) = tab.right.panel_mut() {
             panel.elements_mut().for_each(|item| item.unmark());
         }
         self.mark_dirty();
@@ -729,8 +771,9 @@ impl PanelManager {
             .collect();
         // If we have nothing marked, take the current selection
         if files.is_empty() {
-            self.center.panel_mut().mark_selected_item();
-            if let Some(path) = self.center.panel().selected_path() {
+            let tab = self.active_mut();
+            tab.center.panel_mut().mark_selected_item();
+            if let Some(path) = tab.center.panel().selected_path() {
                 vec![path.to_path_buf()]
             } else {
                 Vec::new()
@@ -1026,8 +1069,8 @@ impl PanelManager {
             }
             DebugRequest::Entries { pane, reply } => {
                 let panel = match pane {
-                    PaneId::Left => self.left.panel(),
-                    PaneId::Center => self.center.panel(),
+                    PaneId::Left => self.active().left.panel(),
+                    PaneId::Center => self.active().center.panel(),
                 };
                 let selected_idx = panel.selected_idx();
                 let entries = panel
@@ -1067,7 +1110,8 @@ impl PanelManager {
     }
 
     fn state_snapshot(&self) -> StateSnapshot {
-        let center = self.center.panel();
+        let tab = self.active();
+        let center = tab.center.panel();
         // `index_vs_total()` returns a 1-based position; the snapshot
         // exposes a 0-based index into the visible entries.
         let (position, total) = center.index_vs_total();
@@ -1092,8 +1136,8 @@ impl PanelManager {
                 op: if c.cut { "cut" } else { "copy" }.to_string(),
             }),
             show_hidden: self.show_hidden,
-            left_path: self.left.panel().path().to_path_buf(),
-            preview_path: self.right.panel().path().to_path_buf(),
+            left_path: tab.left.panel().path().to_path_buf(),
+            preview_path: tab.right.panel().path().to_path_buf(),
             queue_active: queue.active,
             queue_len: queue.queued_count,
             undo_depth: self.undo.undo_depth(),
@@ -1127,18 +1171,24 @@ impl PanelManager {
                     }
                     let (panel, state) = result.unwrap();
 
-                    // Find panel and update it
-                    if self.center.check_update(&state) {
+                    // Find panel and update it. Direct field indexing (not
+                    // `active_mut()`) keeps the borrow on `self.tabs` only, so
+                    // the disjoint `self.dirty` write below is allowed.
+                    let tab = &mut self.tabs[self.focused];
+                    if tab.center.check_update(&state) {
                         trace!("panel-update: center <- {}", state.path().display());
-                        self.center.update_panel(panel);
+                        tab.center.update_panel(panel);
                         // update preview (if necessary)
-                        self.right.new_panel_delayed(self.center.panel().selected_path());
-                        self.mark_dirty();
-                    } else if self.left.check_update(&state) {
+                        let selected = tab.center.panel().selected_path().map(|p| p.to_path_buf());
+                        tab.right.new_panel_delayed(selected.as_deref());
+                        self.dirty = true;
+                    } else if tab.left.check_update(&state) {
                         trace!("panel-update: left <- {}", state.path().display());
-                        self.left.update_panel(panel);
-                        self.left.panel_mut().select_path(self.center.panel().path(), Some(self.center.panel().selected_idx()));
-                        self.mark_dirty();
+                        tab.left.update_panel(panel);
+                        let center_path = tab.center.panel().path().to_path_buf();
+                        let center_idx = tab.center.panel().selected_idx();
+                        tab.left.panel_mut().select_path(&center_path, Some(center_idx));
+                        self.dirty = true;
                     } else {
                         // Reduce log level here, this is not that important
                         debug!("unknown panel update: {:?}", state);
@@ -1152,9 +1202,9 @@ impl PanelManager {
                     }
                     let (panel, state) = result.unwrap();
 
-                    if self.right.check_update(&state) {
+                    if self.active_mut().right.check_update(&state) {
                         trace!("panel-update: preview <- {}", state.path().display());
-                        self.right.update_panel(panel);
+                        self.active_mut().right.update_panel(panel);
                         self.mark_dirty();
                     }
                 }
@@ -1215,26 +1265,31 @@ impl PanelManager {
                 self.jump(path);
             }
             ModeOp::UpdateSearch(pattern) => {
-                self.center.panel_mut().update_search(pattern);
+                self.active_mut().center.panel_mut().update_search(pattern);
             }
             ModeOp::FinishSearch(pattern) => {
-                self.center.panel_mut().finish_search(&pattern);
-                self.center.panel_mut().select_next_marked();
-                self.right
-                    .new_panel_delayed(self.center.panel().selected_path());
+                let tab = self.active_mut();
+                tab.center.panel_mut().finish_search(&pattern);
+                tab.center.panel_mut().select_next_marked();
+                let selected = tab.center.panel().selected_path().map(|p| p.to_path_buf());
+                tab.right.new_panel_delayed(selected.as_deref());
                 self.mode = Mode::Normal;
             }
             ModeOp::RenamePreview(name) => {
                 // The manager supplies the apply-time context: the preview
                 // is anchored at the currently selected entry.
-                let selected_idx = self.center.panel().selected_idx();
-                self.center
+                let tab = self.active_mut();
+                let selected_idx = tab.center.panel().selected_idx();
+                tab.center
                     .panel_mut()
                     .inject_rename_preview(name, selected_idx);
             }
             ModeOp::Rename { to } => self.apply_rename(to),
             ModeOp::CreatePreview { name, is_dir } => {
-                self.center.panel_mut().inject_new_element(name, is_dir);
+                self.active_mut()
+                    .center
+                    .panel_mut()
+                    .inject_new_element(name, is_dir);
             }
             ModeOp::Create { name, is_dir } => self.apply_create(name, is_dir),
             ModeOp::RestoreFromTrash { items } => {
@@ -1274,7 +1329,7 @@ impl PanelManager {
     /// Ported verbatim from the old inline rename Enter arm: same-path is
     /// a no-op, existing targets are never overwritten.
     fn apply_rename(&mut self, to: String) {
-        if let Some(from) = self.center.panel().selected_path() {
+        if let Some(from) = self.active().center.panel().selected_path() {
             let from = from.to_path_buf();
             let to_path = from.parent().map(|p| p.join(&to)).unwrap_or_default();
             // Don't rename if it's the same path
@@ -1298,9 +1353,10 @@ impl PanelManager {
             }
         }
         self.mode = Mode::Normal;
-        self.center.panel_mut().clear_rename_preview();
-        self.center.reload();
-        self.right.reload();
+        let tab = self.active_mut();
+        tab.center.panel_mut().clear_rename_preview();
+        tab.center.reload();
+        tab.right.reload();
         self.mark_dirty();
     }
 
@@ -1311,7 +1367,7 @@ impl PanelManager {
     /// typed name is trimmed here (at apply time), creation errors are
     /// only logged.
     fn apply_create(&mut self, name: String, is_dir: bool) {
-        let current_path = self.center.panel().path();
+        let current_path = self.active().center.panel().path().to_path_buf();
         let create_fn = if is_dir {
             |item| fs_extra::dir::create(item, false)
         } else {
@@ -1340,7 +1396,7 @@ impl PanelManager {
             self.undo.record(tx);
         }
         self.mode = Mode::Normal;
-        self.center.panel_mut().clear_new_element();
+        self.active_mut().center.panel_mut().clear_new_element();
         self.mark_dirty();
     }
 
@@ -1348,9 +1404,11 @@ impl PanelManager {
     fn apply_cleanup(&mut self, cleanup: Cleanup) {
         match cleanup {
             Cleanup::None => {}
-            Cleanup::Search => self.center.panel_mut().clear_search(),
-            Cleanup::RenamePreview => self.center.panel_mut().clear_rename_preview(),
-            Cleanup::CreatePreview => self.center.panel_mut().clear_new_element(),
+            Cleanup::Search => self.active_mut().center.panel_mut().clear_search(),
+            Cleanup::RenamePreview => {
+                self.active_mut().center.panel_mut().clear_rename_preview()
+            }
+            Cleanup::CreatePreview => self.active_mut().center.panel_mut().clear_new_element(),
             Cleanup::CdTo(path) => self.jump(path),
         }
     }
@@ -1399,9 +1457,10 @@ impl PanelManager {
                         // clean up after themselves — candidates for removal;
                         // the redraws stay regardless, because unmark is
                         // user-visible.
-                        self.center.panel_mut().clear_search();
-                        self.center.panel_mut().clear_new_element();
-                        self.center.panel_mut().clear_rename_preview();
+                        let tab = self.active_mut();
+                        tab.center.panel_mut().clear_search();
+                        tab.center.panel_mut().clear_new_element();
+                        tab.center.panel_mut().clear_rename_preview();
                         self.unmark_all_items();
                     }
                     match self.parser.add_event(key_event) {
@@ -1430,9 +1489,13 @@ impl PanelManager {
                             // construction (the same panel path the old
                             // manager-side field recorded before the seam).
                             self.mode = if zoxide {
-                                Mode::Modal(Box::new(Zoxide::from_panel(self.center.panel())))
+                                Mode::Modal(Box::new(Zoxide::from_panel(
+                                    self.active().center.panel(),
+                                )))
                             } else {
-                                Mode::Modal(Box::new(DirConsole::from_panel(self.center.panel())))
+                                Mode::Modal(Box::new(DirConsole::from_panel(
+                                    self.active().center.panel(),
+                                )))
                             };
                         }
                         Command::Search => {
@@ -1451,6 +1514,7 @@ impl PanelManager {
                                 // Single file rename - modal mode seeded
                                 // with the current file name
                                 let selected = self
+                                    .active()
                                     .center
                                     .panel()
                                     .selected_path()
@@ -1461,14 +1525,18 @@ impl PanelManager {
                             }
                         }
                         Command::Next => {
-                            self.center.panel_mut().select_next_marked();
-                            self.right
-                                .new_panel_delayed(self.center.panel().selected_path());
+                            let tab = self.active_mut();
+                            tab.center.panel_mut().select_next_marked();
+                            let selected =
+                                tab.center.panel().selected_path().map(|p| p.to_path_buf());
+                            tab.right.new_panel_delayed(selected.as_deref());
                         }
                         Command::Previous => {
-                            self.center.panel_mut().select_prev_marked();
-                            self.right
-                                .new_panel_delayed(self.center.panel().selected_path());
+                            let tab = self.active_mut();
+                            tab.center.panel_mut().select_prev_marked();
+                            let selected =
+                                tab.center.panel().selected_path().map(|p| p.to_path_buf());
+                            tab.right.new_panel_delayed(selected.as_deref());
                         }
                         Command::Mkdir => {
                             self.mode = Mode::Modal(Box::new(CreateItemMode::new(true)));
@@ -1477,7 +1545,7 @@ impl PanelManager {
                             self.mode = Mode::Modal(Box::new(CreateItemMode::new(false)));
                         }
                         Command::Mark => {
-                            self.center.panel_mut().mark_selected_item();
+                            self.active_mut().center.panel_mut().mark_selected_item();
                             self.move_cursor(Move::Down);
                         }
                         Command::Undo => self.apply_undo(),
@@ -1518,7 +1586,7 @@ impl PanelManager {
                         }
                         Command::Paste { overwrite } => {
                             self.unmark_all_items();
-                            let current_path = self.center.panel().path().to_path_buf();
+                            let current_path = self.active().center.panel().path().to_path_buf();
                             let clipboard = self.clipboard.take();
                             let undo_tx = self.undo_tx.clone();
                             tokio::task::spawn_blocking(move || {
@@ -1558,7 +1626,7 @@ impl PanelManager {
                         }
                         Command::Zip => {
                             let items = self.marked_or_selected();
-                            let dir = self.center.panel().path().to_path_buf();
+                            let dir = self.active().center.panel().path().to_path_buf();
                             if let Err(e) = std::env::set_current_dir(&dir) {
                                 error!("Failed to set working-directory for process: {e}");
                             }
@@ -1567,7 +1635,7 @@ impl PanelManager {
                         }
                         Command::Tar => {
                             let items = self.marked_or_selected();
-                            let dir = self.center.panel().path().to_path_buf();
+                            let dir = self.active().center.panel().path().to_path_buf();
                             if let Err(e) = std::env::set_current_dir(&dir) {
                                 error!("Failed to set working-directory for process: {e}");
                             }
@@ -1575,13 +1643,18 @@ impl PanelManager {
                             self.record_archive("tar", &dir, archive);
                         }
                         Command::Extract => {
-                            if let Some(archive) = self.center.panel().selected_path() {
-                                if let Err(e) =
-                                    std::env::set_current_dir(self.center.panel().path())
-                                {
+                            let archive = self
+                                .active()
+                                .center
+                                .panel()
+                                .selected_path()
+                                .map(|p| p.to_path_buf());
+                            if let Some(archive) = archive {
+                                let dir = self.active().center.panel().path().to_path_buf();
+                                if let Err(e) = std::env::set_current_dir(&dir) {
                                     error!("Failed to set working-directory for process: {e}");
                                 }
-                                if let Err(e) = self.opener.extract(archive.to_owned()) {
+                                if let Err(e) = self.opener.extract(archive) {
                                     warn!("Failed to extract archive: {e}");
                                 }
                             } else {
@@ -1590,7 +1663,7 @@ impl PanelManager {
                         }
                         Command::Quit => {
                             return Ok(Some(CloseCmd::QuitWithPath {
-                                path: self.center.panel().path().to_path_buf(),
+                                path: self.active().center.panel().path().to_path_buf(),
                             }));
                         }
                         Command::QuitWithoutPath => {
@@ -1604,7 +1677,7 @@ impl PanelManager {
                         } => {
                             let paths = self.marked_or_selected();
                             let expanded_cmd = expand_command(&cmd, &paths, &separator);
-                            let working_dir = self.center.panel().path().to_path_buf();
+                            let working_dir = self.active().center.panel().path().to_path_buf();
 
                             if interactive {
                                 // Run interactively in foreground
@@ -1650,8 +1723,9 @@ impl PanelManager {
                             self.unmark_all_items();
                         }
                         Command::SetJumpMark(c) => {
-                            let dir = self.center.panel().path().to_path_buf();
+                            let dir = self.active().center.panel().path().to_path_buf();
                             let entry = self
+                                .active()
                                 .center
                                 .panel()
                                 .selected_path()
@@ -1673,10 +1747,14 @@ impl PanelManager {
                                         // jump() previewed the panel's default
                                         // selection; re-select the marked entry
                                         // and refresh the preview for it.
-                                        self.center.panel_mut().select_path(&entry, None);
-                                        self.right.new_panel_delayed(
-                                            self.center.panel().selected_path(),
-                                        );
+                                        let tab = self.active_mut();
+                                        tab.center.panel_mut().select_path(&entry, None);
+                                        let selected = tab
+                                            .center
+                                            .panel()
+                                            .selected_path()
+                                            .map(|p| p.to_path_buf());
+                                        tab.right.new_panel_delayed(selected.as_deref());
                                     }
                                     self.mark_dirty();
                                 }
