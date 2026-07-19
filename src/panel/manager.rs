@@ -7,7 +7,7 @@ use crossterm::{
     ExecutableCommand,
 };
 use futures::{FutureExt, StreamExt};
-use log::{debug, error, info, trace, Level};
+use log::{debug, error, info, trace, warn, Level};
 use tokio::sync::watch;
 
 use crate::{
@@ -1644,9 +1644,36 @@ impl PanelManager {
                             }
                             self.unmark_all_items();
                         }
-                        // Jump-marks: parser produces these, but the manager
-                        // wiring is a separate later unit. No-op for now.
-                        Command::SetJumpMark(_) | Command::JumpToMark(_) => {}
+                        Command::SetJumpMark(c) => {
+                            let dir = self.center.panel().path().to_path_buf();
+                            let entry = self
+                                .center
+                                .panel()
+                                .selected_path()
+                                .map(|p| p.to_path_buf());
+                            info!("jump-mark '{c}' set -> {}", dir.display());
+                            self.jump_marks.insert(c, JumpMark { dir, entry });
+                        }
+                        Command::JumpToMark(c) => match self.jump_marks.get(&c).cloned() {
+                            None => warn!("jump-mark '{c}' not set"),
+                            Some(mark) => {
+                                if !mark.dir.exists() {
+                                    warn!(
+                                        "jump-mark '{c}' -> {} no longer exists",
+                                        mark.dir.display()
+                                    );
+                                } else {
+                                    self.jump(mark.dir);
+                                    if let Some(entry) = mark.entry {
+                                        self.center.panel_mut().select_path(&entry, None);
+                                        self.right.new_panel_delayed(
+                                            self.center.panel().selected_path(),
+                                        );
+                                    }
+                                    self.mark_dirty();
+                                }
+                            }
+                        },
                         Command::None => {}
                     }
                     // Every handled key event repaints.
