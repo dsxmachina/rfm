@@ -7,7 +7,7 @@ use crossterm::{
     ExecutableCommand,
 };
 use futures::{FutureExt, StreamExt};
-use log::{debug, error, info, trace, Level};
+use log::{debug, error, info, trace, warn, Level};
 use tokio::sync::watch;
 
 use crate::{
@@ -68,6 +68,14 @@ struct Clipboard {
 //     Move(Movement),
 // }
 
+/// A session-only vim-style jump-mark: a directory plus the entry that was
+/// highlighted there when the mark was set.
+#[derive(Debug, Clone)]
+struct JumpMark {
+    dir: PathBuf,
+    entry: Option<PathBuf>,
+}
+
 pub struct PanelManager {
     /// Left panel
     left: ManagedPanel<DirPanel>,
@@ -118,6 +126,9 @@ pub struct PanelManager {
 
     /// Previous path
     previous: PathBuf,
+
+    /// Session-only vim-style jump-marks, keyed by letter.
+    jump_marks: std::collections::HashMap<char, JumpMark>,
 
     /// Whether deletes go to the freedesktop trash (undoable) or are permanent.
     use_trash: bool,
@@ -191,6 +202,7 @@ impl PanelManager {
             fwd_history: Vec::new(),
             rev_history: Vec::new(),
             previous: ".".into(),
+            jump_marks: std::collections::HashMap::new(),
             use_trash,
             parser,
             stdout,
@@ -1086,6 +1098,11 @@ impl PanelManager {
             queue_len: queue.queued_count,
             undo_depth: self.undo.undo_depth(),
             redo_depth: self.undo.redo_depth(),
+            jump_marks: self
+                .jump_marks
+                .iter()
+                .map(|(c, m)| (c.to_string(), m.dir.clone()))
+                .collect(),
         }
     }
 
@@ -1632,6 +1649,39 @@ impl PanelManager {
                             }
                             self.unmark_all_items();
                         }
+                        Command::SetJumpMark(c) => {
+                            let dir = self.center.panel().path().to_path_buf();
+                            let entry = self
+                                .center
+                                .panel()
+                                .selected_path()
+                                .map(|p| p.to_path_buf());
+                            info!("jump-mark '{c}' set -> {}", dir.display());
+                            self.jump_marks.insert(c, JumpMark { dir, entry });
+                        }
+                        Command::JumpToMark(c) => match self.jump_marks.get(&c).cloned() {
+                            None => warn!("jump-mark '{c}' not set"),
+                            Some(mark) => {
+                                if !mark.dir.exists() {
+                                    warn!(
+                                        "jump-mark '{c}' -> {} no longer exists",
+                                        mark.dir.display()
+                                    );
+                                } else {
+                                    self.jump(mark.dir);
+                                    if let Some(entry) = mark.entry {
+                                        // jump() previewed the panel's default
+                                        // selection; re-select the marked entry
+                                        // and refresh the preview for it.
+                                        self.center.panel_mut().select_path(&entry, None);
+                                        self.right.new_panel_delayed(
+                                            self.center.panel().selected_path(),
+                                        );
+                                    }
+                                    self.mark_dirty();
+                                }
+                            }
+                        },
                         Command::None => {}
                     }
                     // Every handled key event repaints.

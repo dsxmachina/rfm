@@ -9,6 +9,9 @@ use log::trace;
 use patricia_tree::StringPatriciaMap;
 use serde::Deserialize;
 
+const DEFAULT_SET_MARK_PREFIX: &str = "m";
+const DEFAULT_JUMP_MARK_PREFIX: &str = "'";
+
 const CTRL_C: KeyEvent = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
 const CTRL_X: KeyEvent = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
 const CTRL_V: KeyEvent = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
@@ -80,6 +83,14 @@ struct Movement {
     jump_to: Vec<(String, String)>,
 }
 
+#[derive(Deserialize, Debug, Default)]
+struct JumpMarks {
+    /// Prefix key(s) for setting a mark (default: `m`).
+    set: Option<Vec<String>>,
+    /// Prefix key(s) for jumping to a mark (default: `'`).
+    jump: Option<Vec<String>>,
+}
+
 #[derive(Deserialize, Debug)]
 struct General {
     search: Vec<String>,
@@ -98,6 +109,8 @@ pub struct KeyConfig {
     general: General,
     movement: Movement,
     manipulation: Manipulation,
+    #[serde(default)]
+    jump_marks: JumpMarks,
 }
 
 #[test]
@@ -149,6 +162,10 @@ pub enum Command {
         overwrite: bool,
     },
     Mark,
+    /// Set a jump-mark (session-only) at the current location.
+    SetJumpMark(char),
+    /// Jump to a previously-set jump-mark.
+    JumpToMark(char),
     Undo,
     Redo,
     Quit,
@@ -208,6 +225,8 @@ impl Display for Command {
                 }
             }
             Command::Mark => write!(f, "mark selected item"),
+            Command::SetJumpMark(c) => write!(f, "set jump-mark '{c}'"),
+            Command::JumpToMark(c) => write!(f, "jump to mark '{c}'"),
             Command::Undo => write!(f, "undo"),
             Command::Redo => write!(f, "redo"),
             Command::Quit => write!(f, "quit"),
@@ -316,6 +335,17 @@ impl CommandParser {
             Command::Paste { overwrite: true },
         );
 
+        parser.insert_jump_marks(
+            config
+                .jump_marks
+                .set
+                .unwrap_or_else(|| vec![DEFAULT_SET_MARK_PREFIX.to_string()]),
+            config
+                .jump_marks
+                .jump
+                .unwrap_or_else(|| vec![DEFAULT_JUMP_MARK_PREFIX.to_string()]),
+        );
+
         parser
     }
 
@@ -329,6 +359,23 @@ impl CommandParser {
                 separator: entry.separator.clone(),
             };
             self.insert(entry.keys.clone(), cmd);
+        }
+    }
+
+    /// Generate the `<set-prefix><a-z>` and `<jump-prefix><a-z>` chords for
+    /// jump-marks. Prefixes are usually a single key (`m` / `'`) but any
+    /// string works, mirroring `jump_to`.
+    fn insert_jump_marks(&mut self, set: Vec<String>, jump: Vec<String>) {
+        self.insert_chords(set, Command::SetJumpMark);
+        self.insert_chords(jump, Command::JumpToMark);
+    }
+
+    /// Insert `<prefix><a-z>` chords, each producing `make(letter)`.
+    fn insert_chords(&mut self, prefixes: Vec<String>, make: fn(char) -> Command) {
+        for prefix in prefixes {
+            for c in 'a'..='z' {
+                self.key_commands.insert(format!("{prefix}{c}"), make(c));
+            }
         }
     }
 
@@ -542,11 +589,16 @@ impl CommandParser {
         //     Command::ToggleHidden,
         // );
 
-        CommandParser {
+        let mut parser = CommandParser {
             key_commands,
             mod_commands,
             buffer: "".to_string(),
-        }
+        };
+        parser.insert_jump_marks(
+            vec![DEFAULT_SET_MARK_PREFIX.to_string()],
+            vec![DEFAULT_JUMP_MARK_PREFIX.to_string()],
+        );
+        parser
     }
 
     pub fn buffer(&self) -> String {
@@ -612,5 +664,94 @@ impl CommandParser {
             return command.clone();
         }
         Command::None
+    }
+}
+
+#[cfg(test)]
+mod jump_mark_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn m_then_letter_sets_mark() {
+        let mut p = CommandParser::default_bindings();
+        assert!(matches!(p.add_event(key('m')), Command::None)); // waits
+        assert!(matches!(p.add_event(key('a')), Command::SetJumpMark('a')));
+    }
+
+    #[test]
+    fn apostrophe_then_letter_jumps_to_mark() {
+        let mut p = CommandParser::default_bindings();
+        assert!(matches!(p.add_event(key('\'')), Command::None)); // waits
+        assert!(matches!(p.add_event(key('a')), Command::JumpToMark('a')));
+    }
+
+    #[test]
+    fn double_apostrophe_still_jumps_previous() {
+        let mut p = CommandParser::default_bindings();
+        assert!(matches!(p.add_event(key('\'')), Command::None));
+        assert!(matches!(
+            p.add_event(key('\'')),
+            Command::Move(Move::JumpPrevious)
+        ));
+    }
+
+    #[test]
+    fn m_then_unbound_key_is_noop() {
+        let mut p = CommandParser::default_bindings();
+        assert!(matches!(p.add_event(key('m')), Command::None));
+        assert!(matches!(p.add_event(key('1')), Command::None)); // buffer cleared
+        assert!(matches!(p.add_event(key('j')), Command::Move(Move::Down)));
+    }
+
+    #[test]
+    fn from_config_without_jump_marks_section_defaults_to_m_and_apostrophe() {
+        let toml = r#"
+[general]
+search = ["/"]
+mark = [" "]
+next = ["n"]
+previous = ["N"]
+view_trash = ["gT"]
+toggle_hidden = ["zh"]
+quit = ["q"]
+
+[movement]
+up = ["k"]
+down = ["j"]
+left = ["h"]
+right = ["l"]
+top = ["gg"]
+bottom = ["G"]
+page_forward = ["ctrl-f"]
+page_backward = ["ctrl-b"]
+half_page_forward = ["ctrl-d"]
+half_page_backward = ["ctrl-u"]
+jump_previous = ["''"]
+jump_to = []
+
+[manipulation]
+rename = ["rename"]
+mkdir = ["mkdir"]
+touch = ["touch"]
+cut = ["dd"]
+copy = ["yy"]
+delete = ["delete"]
+paste = ["pp"]
+paste_overwrite = ["po"]
+zip = ["zip"]
+tar = ["tar"]
+extract = ["extract"]
+"#;
+        let cfg: KeyConfig = toml::from_str(toml).expect("parse keys.toml");
+        let mut p = CommandParser::from_config(cfg);
+        assert!(matches!(p.add_event(key('m')), Command::None));
+        assert!(matches!(p.add_event(key('a')), Command::SetJumpMark('a')));
+        assert!(matches!(p.add_event(key('\'')), Command::None));
+        assert!(matches!(p.add_event(key('b')), Command::JumpToMark('b')));
     }
 }

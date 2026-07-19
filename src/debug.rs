@@ -49,6 +49,8 @@ pub struct StateSnapshot {
     pub undo_depth: usize,
     /// Number of transactions available to redo
     pub redo_depth: usize,
+    /// Session-only jump-marks: letter -> directory. Sorted for determinism.
+    pub jump_marks: std::collections::BTreeMap<String, PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -255,6 +257,7 @@ mod tests {
             queue_len: 0,
             undo_depth: 0,
             redo_depth: 0,
+            jump_marks: std::collections::BTreeMap::new(),
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         assert!(json.contains("\"seq\":42"));
@@ -323,6 +326,7 @@ mod tests {
                         queue_len: 0,
                         undo_depth: 0,
                         redo_depth: 0,
+                        jump_marks: std::collections::BTreeMap::new(),
                     });
                 }
                 DebugRequest::AwaitIdle { reply } => {
