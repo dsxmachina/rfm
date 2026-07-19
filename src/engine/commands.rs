@@ -338,6 +338,24 @@ impl CommandParser {
         }
     }
 
+    /// Generate the `<set-prefix><a-z>` and `<jump-prefix><a-z>` chords for
+    /// jump-marks. Prefixes are usually a single key (`m` / `'`) but any
+    /// string works, mirroring `jump_to`.
+    fn insert_jump_marks(&mut self, set: Vec<String>, jump: Vec<String>) {
+        for prefix in set {
+            for c in 'a'..='z' {
+                self.key_commands
+                    .insert(format!("{prefix}{c}"), Command::SetJumpMark(c));
+            }
+        }
+        for prefix in jump {
+            for c in 'a'..='z' {
+                self.key_commands
+                    .insert(format!("{prefix}{c}"), Command::JumpToMark(c));
+            }
+        }
+    }
+
     pub fn new() -> Self {
         let mut mod_commands = HashMap::new();
         // Insert basic arrow key movement
@@ -548,11 +566,13 @@ impl CommandParser {
         //     Command::ToggleHidden,
         // );
 
-        CommandParser {
+        let mut parser = CommandParser {
             key_commands,
             mod_commands,
             buffer: "".to_string(),
-        }
+        };
+        parser.insert_jump_marks(vec!["m".to_string()], vec!["'".to_string()]);
+        parser
     }
 
     pub fn buffer(&self) -> String {
@@ -618,5 +638,47 @@ impl CommandParser {
             return command.clone();
         }
         Command::None
+    }
+}
+
+#[cfg(test)]
+mod jump_mark_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn m_then_letter_sets_mark() {
+        let mut p = CommandParser::default_bindings();
+        assert!(matches!(p.add_event(key('m')), Command::None)); // waits
+        assert!(matches!(p.add_event(key('a')), Command::SetJumpMark('a')));
+    }
+
+    #[test]
+    fn apostrophe_then_letter_jumps_to_mark() {
+        let mut p = CommandParser::default_bindings();
+        assert!(matches!(p.add_event(key('\'')), Command::None)); // waits
+        assert!(matches!(p.add_event(key('a')), Command::JumpToMark('a')));
+    }
+
+    #[test]
+    fn double_apostrophe_still_jumps_previous() {
+        let mut p = CommandParser::default_bindings();
+        assert!(matches!(p.add_event(key('\'')), Command::None));
+        assert!(matches!(
+            p.add_event(key('\'')),
+            Command::Move(Move::JumpPrevious)
+        ));
+    }
+
+    #[test]
+    fn m_then_unbound_key_is_noop() {
+        let mut p = CommandParser::default_bindings();
+        assert!(matches!(p.add_event(key('m')), Command::None));
+        assert!(matches!(p.add_event(key('1')), Command::None)); // buffer cleared
+        assert!(matches!(p.add_event(key('j')), Command::Move(Move::Down)));
     }
 }
