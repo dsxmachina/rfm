@@ -9,6 +9,9 @@ use log::trace;
 use patricia_tree::StringPatriciaMap;
 use serde::Deserialize;
 
+const DEFAULT_SET_MARK_PREFIX: &str = "m";
+const DEFAULT_JUMP_MARK_PREFIX: &str = "'";
+
 const CTRL_C: KeyEvent = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
 const CTRL_X: KeyEvent = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
 const CTRL_V: KeyEvent = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
@@ -333,11 +336,14 @@ impl CommandParser {
         );
 
         parser.insert_jump_marks(
-            config.jump_marks.set.unwrap_or_else(|| vec!["m".to_string()]),
+            config
+                .jump_marks
+                .set
+                .unwrap_or_else(|| vec![DEFAULT_SET_MARK_PREFIX.to_string()]),
             config
                 .jump_marks
                 .jump
-                .unwrap_or_else(|| vec!["'".to_string()]),
+                .unwrap_or_else(|| vec![DEFAULT_JUMP_MARK_PREFIX.to_string()]),
         );
 
         parser
@@ -360,16 +366,15 @@ impl CommandParser {
     /// jump-marks. Prefixes are usually a single key (`m` / `'`) but any
     /// string works, mirroring `jump_to`.
     fn insert_jump_marks(&mut self, set: Vec<String>, jump: Vec<String>) {
-        for prefix in set {
+        self.insert_chords(set, Command::SetJumpMark);
+        self.insert_chords(jump, Command::JumpToMark);
+    }
+
+    /// Insert `<prefix><a-z>` chords, each producing `make(letter)`.
+    fn insert_chords(&mut self, prefixes: Vec<String>, make: fn(char) -> Command) {
+        for prefix in prefixes {
             for c in 'a'..='z' {
-                self.key_commands
-                    .insert(format!("{prefix}{c}"), Command::SetJumpMark(c));
-            }
-        }
-        for prefix in jump {
-            for c in 'a'..='z' {
-                self.key_commands
-                    .insert(format!("{prefix}{c}"), Command::JumpToMark(c));
+                self.key_commands.insert(format!("{prefix}{c}"), make(c));
             }
         }
     }
@@ -589,7 +594,10 @@ impl CommandParser {
             mod_commands,
             buffer: "".to_string(),
         };
-        parser.insert_jump_marks(vec!["m".to_string()], vec!["'".to_string()]);
+        parser.insert_jump_marks(
+            vec![DEFAULT_SET_MARK_PREFIX.to_string()],
+            vec![DEFAULT_JUMP_MARK_PREFIX.to_string()],
+        );
         parser
     }
 
