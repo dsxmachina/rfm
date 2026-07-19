@@ -1171,27 +1171,34 @@ impl PanelManager {
                     }
                     let (panel, state) = result.unwrap();
 
-                    // Find panel and update it. Direct field indexing (not
-                    // `active_mut()`) keeps the borrow on `self.tabs` only, so
-                    // the disjoint `self.dirty` write below is allowed.
-                    let tab = &mut self.tabs[self.focused];
-                    if tab.center.check_update(&state) {
-                        trace!("panel-update: center <- {}", state.path().display());
-                        tab.center.update_panel(panel);
-                        // update preview (if necessary)
-                        let selected = tab.center.panel().selected_path().map(|p| p.to_path_buf());
-                        tab.right.new_panel_delayed(selected.as_deref());
-                        self.dirty = true;
-                    } else if tab.left.check_update(&state) {
-                        trace!("panel-update: left <- {}", state.path().display());
-                        tab.left.update_panel(panel);
-                        let center_path = tab.center.panel().path().to_path_buf();
-                        let center_idx = tab.center.panel().selected_idx();
-                        tab.left.panel_mut().select_path(&center_path, Some(center_idx));
-                        self.dirty = true;
-                    } else {
-                        // Reduce log level here, this is not that important
-                        debug!("unknown panel update: {:?}", state);
+                    // Find panel and update it. Scope the `tab` borrow so it
+                    // ends before `self.mark_dirty()` (a `&mut self` method) is
+                    // called, keeping the documented mark_dirty() invariant.
+                    let updated = {
+                        let tab = &mut self.tabs[self.focused];
+                        if tab.center.check_update(&state) {
+                            trace!("panel-update: center <- {}", state.path().display());
+                            tab.center.update_panel(panel);
+                            // update preview (if necessary)
+                            let selected =
+                                tab.center.panel().selected_path().map(|p| p.to_path_buf());
+                            tab.right.new_panel_delayed(selected.as_deref());
+                            true
+                        } else if tab.left.check_update(&state) {
+                            trace!("panel-update: left <- {}", state.path().display());
+                            tab.left.update_panel(panel);
+                            let center_path = tab.center.panel().path().to_path_buf();
+                            let center_idx = tab.center.panel().selected_idx();
+                            tab.left.panel_mut().select_path(&center_path, Some(center_idx));
+                            true
+                        } else {
+                            // Reduce log level here, this is not that important
+                            debug!("unknown panel update: {:?}", state);
+                            false
+                        }
+                    };
+                    if updated {
+                        self.mark_dirty();
                     }
                 }
                 // Check incoming new preview-panels
@@ -1202,9 +1209,17 @@ impl PanelManager {
                     }
                     let (panel, state) = result.unwrap();
 
-                    if self.active_mut().right.check_update(&state) {
-                        trace!("panel-update: preview <- {}", state.path().display());
-                        self.active_mut().right.update_panel(panel);
+                    let updated = {
+                        let tab = &mut self.tabs[self.focused];
+                        if tab.right.check_update(&state) {
+                            trace!("panel-update: preview <- {}", state.path().display());
+                            tab.right.update_panel(panel);
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if updated {
                         self.mark_dirty();
                     }
                 }
