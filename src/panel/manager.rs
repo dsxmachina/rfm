@@ -1883,12 +1883,19 @@ mod tests {
     ///
     /// ```text
     /// root/
-    ///   sub/            <- a subdirectory (sorts first)
-    ///     inner.txt
+    ///   sub/            <- a subdirectory (sorts first, initial selection)
+    ///     inner1.txt
+    ///     inner2.txt
+    ///   zempty/         <- an empty subdirectory (sorts after `sub`, before files)
     ///   a.txt
     ///   b.txt
     ///   c.txt
     /// ```
+    ///
+    /// Note `sub` holds *two* files so a rev_history round-trip can restore a
+    /// specific deeper selection (not merely the default first child), and
+    /// `zempty` is deliberately named so it still sorts after `sub` — keeping
+    /// `sub` the initial selection that the other tests rely on.
     ///
     /// The panels are populated synchronously via `new_panel_instant`
     /// (mirroring `init_miller_panels`), so navigation is observable without
@@ -1897,7 +1904,9 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = canonicalize(tmp.path()).expect("canonicalize root");
         fs::create_dir(root.join("sub")).unwrap();
-        fs::write(root.join("sub").join("inner.txt"), b"x").unwrap();
+        fs::write(root.join("sub").join("inner1.txt"), b"x").unwrap();
+        fs::write(root.join("sub").join("inner2.txt"), b"x").unwrap();
+        fs::create_dir(root.join("zempty")).unwrap();
         for name in ["a.txt", "b.txt", "c.txt"] {
             fs::write(root.join(name), b"x").unwrap();
         }
@@ -1946,8 +1955,12 @@ mod tests {
 
     #[test]
     fn move_down_and_up_change_selection_within_bounds() {
+        // Sort order is: sub, zempty (dirs first), then a.txt, b.txt, c.txt.
         let mut f = fixture();
-        // sub -> a.txt
+        // sub -> zempty
+        assert!(f.tab.move_down(1));
+        assert_eq!(center_selected(&f.tab), Some(f.root.join("zempty")));
+        // zempty -> a.txt
         assert!(f.tab.move_down(1));
         assert_eq!(center_selected(&f.tab), Some(f.root.join("a.txt")));
         // a.txt -> b.txt
@@ -2003,8 +2016,10 @@ mod tests {
     #[test]
     fn move_right_on_a_file_reports_openfile_without_shifting() {
         let mut f = fixture();
-        // Move onto a regular file.
-        assert!(f.tab.move_down(1)); // sub -> a.txt
+        // Move onto a regular file (sub -> zempty -> a.txt).
+        assert!(f.tab.move_down(1));
+        assert!(f.tab.move_down(1));
+        assert_eq!(center_selected(&f.tab), Some(f.root.join("a.txt")));
         let center_before = center_path(&f.tab);
 
         let outcome = f.tab.move_right();
@@ -2096,5 +2111,74 @@ mod tests {
         let mut f = fixture();
         let missing = f.root.join("does-not-exist");
         assert_eq!(f.tab.jump(missing), None);
+    }
+
+    #[test]
+    fn move_right_after_move_left_restores_deeper_selection_via_rev_history() {
+        // End-to-end exercise of the rev_history path: descend into `sub`,
+        // pick a *specific* child (not the default first one), climb back out
+        // (which pushes that child onto rev_history), then descend again. The
+        // pop-rev-history / set-center-selection logic must restore the exact
+        // deeper selection.
+        let mut f = fixture();
+        let root = f.root.clone();
+        let sub = root.join("sub");
+        let inner1 = sub.join("inner1.txt");
+        let inner2 = sub.join("inner2.txt");
+
+        // Descend into `sub`; default selection is the first child.
+        assert!(matches!(f.tab.move_right(), MoveRight::Descended(_)));
+        assert_eq!(center_path(&f.tab), sub);
+        assert_eq!(center_selected(&f.tab), Some(inner1.clone()));
+
+        // Move down to `inner2.txt` — the deeper selection we want restored.
+        assert!(f.tab.move_down(1));
+        assert_eq!(center_selected(&f.tab), Some(inner2.clone()));
+        // rev_history is empty until we climb back out.
+        assert!(f.tab.rev_history.is_empty());
+
+        // Climb back to root; this pushes the highlighted child to rev_history.
+        assert!(f.tab.move_left());
+        assert_eq!(center_path(&f.tab), root);
+        assert_eq!(center_selected(&f.tab), Some(sub.clone()));
+        assert_eq!(f.tab.rev_history, vec![inner2.clone()]);
+
+        // Descend again: rev_history is popped and the deeper `inner2.txt`
+        // selection is restored (NOT the default `inner1.txt`).
+        assert!(matches!(f.tab.move_right(), MoveRight::Descended(_)));
+        assert_eq!(center_path(&f.tab), sub);
+        assert_eq!(
+            center_selected(&f.tab),
+            Some(inner2),
+            "rev_history should restore the deeper selection, not default to {}",
+            inner1.display()
+        );
+        // rev_history was consumed by the pop.
+        assert!(f.tab.rev_history.is_empty());
+    }
+
+    #[test]
+    fn move_right_in_empty_dir_reports_none() {
+        // Descend into the empty subdirectory, then attempt to descend further.
+        // With nothing selected there is nothing to descend into, so move_right
+        // must report `None` and leave the panels untouched.
+        let mut f = fixture();
+        let zempty = f.root.join("zempty");
+
+        // sub -> zempty, then descend into it.
+        assert!(f.tab.move_down(1));
+        assert_eq!(center_selected(&f.tab), Some(zempty.clone()));
+        assert!(matches!(f.tab.move_right(), MoveRight::Descended(_)));
+        assert_eq!(center_path(&f.tab), zempty);
+        // The empty dir has no selection.
+        assert_eq!(center_selected(&f.tab), None);
+
+        let center_before = center_path(&f.tab);
+        let fwd_len_before = f.tab.fwd_history.len();
+
+        // move_right on an empty directory: nothing selected -> None, no shift.
+        assert!(matches!(f.tab.move_right(), MoveRight::None));
+        assert_eq!(center_path(&f.tab), center_before);
+        assert_eq!(f.tab.fwd_history.len(), fwd_len_before);
     }
 }
