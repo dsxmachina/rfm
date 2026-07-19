@@ -1632,6 +1632,9 @@ impl PanelManager {
                             }
                             self.unmark_all_items();
                         }
+                        // Jump-marks: parser produces these, but the manager
+                        // wiring is a separate later unit. No-op for now.
+                        Command::SetJumpMark(_) | Command::JumpToMark(_) => {}
                         Command::None => {}
                     }
                     // Every handled key event repaints.

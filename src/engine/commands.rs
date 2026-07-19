@@ -149,6 +149,10 @@ pub enum Command {
         overwrite: bool,
     },
     Mark,
+    /// Set a jump-mark (session-only) at the current location.
+    SetJumpMark(char),
+    /// Jump to a previously-set jump-mark.
+    JumpToMark(char),
     Undo,
     Redo,
     Quit,
@@ -208,6 +212,8 @@ impl Display for Command {
                 }
             }
             Command::Mark => write!(f, "mark selected item"),
+            Command::SetJumpMark(c) => write!(f, "set jump-mark '{c}'"),
+            Command::JumpToMark(c) => write!(f, "jump to mark '{c}'"),
             Command::Undo => write!(f, "undo"),
             Command::Redo => write!(f, "redo"),
             Command::Quit => write!(f, "quit"),
