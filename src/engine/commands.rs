@@ -18,6 +18,18 @@ const CTRL_V: KeyEvent = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL
 const CTRL_F: KeyEvent = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL);
 const CTRL_SHIFT_V: KeyEvent = KeyEvent::new(KeyCode::Char('V'), KeyModifiers::CONTROL);
 
+/// Map a named special-key binding string to its [`KeyCode`]. These keys don't
+/// emit a `Char`, so they can't be matched via the keystroke buffer; the parser
+/// binds them as oneshot events instead. Returns `None` for ordinary strings.
+fn named_key(s: &str) -> Option<KeyCode> {
+    match s {
+        "Tab" => Some(KeyCode::Tab),
+        "BackTab" => Some(KeyCode::BackTab),
+        "Enter" => Some(KeyCode::Enter),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ExpandedPath(PathBuf);
 
@@ -84,6 +96,18 @@ struct Movement {
 }
 
 #[derive(Deserialize, Debug, Default)]
+struct Tabs {
+    toggle_split: Option<Vec<String>>,
+    focus_next: Option<Vec<String>>,
+    new_tab: Option<Vec<String>>,
+    close_tab: Option<Vec<String>>,
+    focus_tab_1: Option<Vec<String>>,
+    focus_tab_2: Option<Vec<String>>,
+    focus_tab_3: Option<Vec<String>>,
+    focus_tab_4: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, Debug, Default)]
 struct JumpMarks {
     /// Prefix key(s) for setting a mark (default: `m`).
     set: Option<Vec<String>>,
@@ -111,6 +135,8 @@ pub struct KeyConfig {
     manipulation: Manipulation,
     #[serde(default)]
     jump_marks: JumpMarks,
+    #[serde(default)]
+    tabs: Tabs,
 }
 
 #[test]
@@ -168,6 +194,16 @@ pub enum Command {
     JumpToMark(char),
     Undo,
     Redo,
+    /// Toggle split-view (stub until Task 7).
+    ToggleSplit,
+    /// Cycle focus forward through the open tabs.
+    FocusNext,
+    /// Open a new tab rooted at the focused tab's cwd.
+    NewTab,
+    /// Close the focused tab.
+    CloseTab,
+    /// Focus the `n`-th tab (1-based as configured; 0-based at dispatch).
+    FocusTab(usize),
     Quit,
     QuitWithoutPath,
     /// User-defined shell command
@@ -229,6 +265,11 @@ impl Display for Command {
             Command::JumpToMark(c) => write!(f, "jump to mark '{c}'"),
             Command::Undo => write!(f, "undo"),
             Command::Redo => write!(f, "redo"),
+            Command::ToggleSplit => write!(f, "toggle split view"),
+            Command::FocusNext => write!(f, "focus next tab"),
+            Command::NewTab => write!(f, "new tab"),
+            Command::CloseTab => write!(f, "close tab"),
+            Command::FocusTab(n) => write!(f, "focus tab {n}"),
             Command::Quit => write!(f, "quit"),
             Command::QuitWithoutPath => write!(f, "quit without changing path"),
             Command::UserCommand { name, .. } => write!(f, "{}", name),
@@ -326,6 +367,31 @@ impl CommandParser {
         parser.insert(config.manipulation.extract, Command::Extract);
         parser.insert(config.manipulation.undo.unwrap_or_default(), Command::Undo);
         parser.insert(config.manipulation.redo.unwrap_or_default(), Command::Redo);
+
+        // Multi-tab / split-view commands
+        parser.insert(
+            config.tabs.toggle_split.unwrap_or_default(),
+            Command::ToggleSplit,
+        );
+        parser.insert(config.tabs.focus_next.unwrap_or_default(), Command::FocusNext);
+        parser.insert(config.tabs.new_tab.unwrap_or_default(), Command::NewTab);
+        parser.insert(config.tabs.close_tab.unwrap_or_default(), Command::CloseTab);
+        parser.insert(
+            config.tabs.focus_tab_1.unwrap_or_default(),
+            Command::FocusTab(1),
+        );
+        parser.insert(
+            config.tabs.focus_tab_2.unwrap_or_default(),
+            Command::FocusTab(2),
+        );
+        parser.insert(
+            config.tabs.focus_tab_3.unwrap_or_default(),
+            Command::FocusTab(3),
+        );
+        parser.insert(
+            config.tabs.focus_tab_4.unwrap_or_default(),
+            Command::FocusTab(4),
+        );
         parser.insert(
             config.manipulation.paste,
             Command::Paste { overwrite: false },
@@ -452,6 +518,11 @@ impl CommandParser {
                     ),
                     cmd.clone(),
                 );
+            } else if let Some(code) = named_key(&b) {
+                // Special keys that don't produce a `Char` (e.g. Tab) can't go
+                // through the buffer-string path; bind them as oneshot events.
+                self.mod_commands
+                    .insert(KeyEvent::new(code, KeyModifiers::NONE), cmd.clone());
             } else {
                 self.key_commands.insert(b, cmd.clone());
             }
@@ -755,3 +826,4 @@ extract = ["extract"]
         assert!(matches!(p.add_event(key('b')), Command::JumpToMark('b')));
     }
 }
+

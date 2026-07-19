@@ -69,6 +69,22 @@ jump_to = [ ["gh", "~"],
 set  = [ "m" ]      # m<letter> sets a jump-mark (e.g. `ma`)
 jump = [ "'" ]      # '<letter> jumps to a jump-mark (e.g. `'a`)
 
+# multi-tab / split view
+#
+# Each tab keeps its own independent directory location. `focus_next` cycles
+# through the open tabs; `focus_tab_N` jumps straight to the N-th tab.
+# `toggle_split` is a stub for now (split rendering lands in a later task).
+# NOTE: `close_tab = gc` overrides the `gc` jump-to-~/.config binding above.
+[tabs]
+toggle_split = [ "!" ]     # toggle split-view (not yet implemented)
+focus_next   = [ "Tab" ]   # cycle focus to the next tab
+new_tab      = [ "gn" ]    # open a new tab at the current directory
+close_tab    = [ "gc" ]    # close the focused tab
+focus_tab_1  = [ "1" ]     # focus the first tab
+focus_tab_2  = [ "2" ]     # focus the second tab
+focus_tab_3  = [ "3" ]     # focus the third tab
+focus_tab_4  = [ "4" ]     # focus the fourth tab
+
 # Keybindings related to directory and file manipulation
 [manipulation]
 change_directory = [ "cd" ]                    # enter "cd" mode (similar to emacs)

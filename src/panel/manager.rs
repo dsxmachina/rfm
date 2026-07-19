@@ -466,9 +466,6 @@ impl PanelManager {
 
     /// Opens a new tab rooted at the focused tab's current directory and
     /// focuses it. No-op (with a warning) once [`MAX_TABS`] is reached.
-    ///
-    /// Not yet key-wired — dispatch arrives in a later task.
-    #[allow(dead_code)] // wired in Task 4
     fn new_tab(&mut self) {
         if !can_add_tab(self.tabs.len()) {
             warn!("max {MAX_TABS} tabs reached");
@@ -484,9 +481,6 @@ impl PanelManager {
     /// Closes the focused tab, keeping at least one tab alive (the never-0-tabs
     /// invariant). Focus clamps into the shrunk range; dropping back to a single
     /// tab reverts to [`ViewMode::Single`].
-    ///
-    /// Not yet key-wired — dispatch arrives in a later task.
-    #[allow(dead_code)] // wired in Task 4
     fn close_tab(&mut self) {
         if self.tabs.len() == 1 {
             return; // never 0 tabs
@@ -500,23 +494,24 @@ impl PanelManager {
     }
 
     /// Cycles focus forward through the open tabs, wrapping at the end.
-    ///
-    /// Not yet key-wired — dispatch arrives in a later task.
-    #[allow(dead_code)] // wired in Task 4
     fn focus_next(&mut self) {
         self.focused = next_focus(self.focused, self.tabs.len());
         self.mark_dirty();
     }
 
     /// Focuses tab `n` if it exists; otherwise a no-op.
-    ///
-    /// Not yet key-wired — dispatch arrives in a later task.
-    #[allow(dead_code)] // wired in Task 4
     fn focus_tab(&mut self, n: usize) {
         if n < self.tabs.len() {
             self.focused = n;
             self.mark_dirty();
         }
+    }
+
+    /// Toggle split-view. Stub until Task 7 (auto-create a 2nd tab and enter
+    /// [`ViewMode::Split`]); currently only warns so the command is
+    /// dispatchable without misleading behavior.
+    fn toggle_split(&mut self) {
+        warn!("split view not yet implemented");
     }
 
     fn mark_dirty(&mut self) {
@@ -1738,6 +1733,27 @@ impl PanelManager {
                         }
                         Command::Undo => self.apply_undo(),
                         Command::Redo => self.apply_redo(),
+                        Command::FocusNext => {
+                            trace!("command: focus next tab");
+                            self.focus_next();
+                        }
+                        Command::NewTab => {
+                            trace!("command: new tab");
+                            self.new_tab();
+                        }
+                        Command::CloseTab => {
+                            trace!("command: close tab");
+                            self.close_tab();
+                        }
+                        Command::FocusTab(n) => {
+                            trace!("command: focus tab {n}");
+                            // Config is 1-based; tabs are indexed from 0.
+                            self.focus_tab(n.saturating_sub(1));
+                        }
+                        Command::ToggleSplit => {
+                            trace!("command: toggle split");
+                            self.toggle_split();
+                        }
                         Command::Cut => {
                             let files = self.marked_or_selected();
                             info!("cut {} items", files.len());
