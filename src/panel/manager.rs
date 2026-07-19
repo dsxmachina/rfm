@@ -1098,6 +1098,11 @@ impl PanelManager {
             queue_len: queue.queued_count,
             undo_depth: self.undo.undo_depth(),
             redo_depth: self.undo.redo_depth(),
+            jump_marks: self
+                .jump_marks
+                .iter()
+                .map(|(c, m)| (c.to_string(), m.dir.clone()))
+                .collect(),
         }
     }
 
