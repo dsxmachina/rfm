@@ -61,6 +61,14 @@ jump_to = [ ["gh", "~"],
             ["ge", "/etc"],
             ["gu", "/usr"]]
 
+# Vim-style jump-marks (session-only): press <set><letter> to remember the
+# current directory + highlighted entry, and <jump><letter> to return to it.
+# Marks use letters a-z and are forgotten on quit. This whole section is
+# optional; if omitted, `m` and `'` are used.
+[jump_marks]
+set  = [ "m" ]      # m<letter> sets a jump-mark (e.g. `ma`)
+jump = [ "'" ]      # '<letter> jumps to a jump-mark (e.g. `'a`)
+
 # Keybindings related to directory and file manipulation
 [manipulation]
 change_directory = [ "cd" ]                    # enter "cd" mode (similar to emacs)
