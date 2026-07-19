@@ -92,6 +92,182 @@ struct Tab {
     previous: PathBuf,
 }
 
+/// Outcome of [`Tab::move_right`], describing the manager-level side-effects
+/// the caller must still apply. The pure panel/history mechanics have already
+/// happened inside the method; this only carries what `PanelManager` needs to
+/// touch its own (non-tab-local) state.
+enum MoveRight {
+    /// Nothing was selected; the manager should do nothing.
+    None,
+    /// Descended into the carried directory. The manager should record it with
+    /// zoxide and unmark the (now shifted) left/right panels.
+    Descended(PathBuf),
+    /// The selection was a file, not a directory. The manager should set the
+    /// process cwd to `cwd` and open `file` with its opener, then unmark.
+    OpenFile { file: PathBuf, cwd: PathBuf },
+}
+
+impl Tab {
+    /// Moves the selection cursor up by `step`, refreshing the preview and
+    /// clearing the reverse-history when it actually moves.
+    ///
+    /// Returns `true` if the cursor moved (so the manager can `mark_dirty`).
+    fn move_up(&mut self, step: usize) -> bool {
+        if self.center.panel_mut().up(step) {
+            let selected = self.center.panel().selected_path().map(|p| p.to_path_buf());
+            self.right.new_panel_delayed(selected.as_deref());
+            self.rev_history.clear();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Moves the selection cursor down by `step`. See [`Tab::move_up`].
+    fn move_down(&mut self, step: usize) -> bool {
+        if self.center.panel_mut().down(step) {
+            let selected = self.center.panel().selected_path().map(|p| p.to_path_buf());
+            self.right.new_panel_delayed(selected.as_deref());
+            self.rev_history.clear();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Descends into the selected entry (if it is a directory) or reports that
+    /// the selection is a file to open. Shifts the Miller columns left and
+    /// maintains the forward/reverse history.
+    fn move_right(&mut self) -> MoveRight {
+        let selected = self.center.panel().selected_path().map(|p| p.to_path_buf());
+        let Some(selected) = selected else {
+            return MoveRight::None;
+        };
+        // If the selected item is a directory, all panels will shift to the left
+        if selected.is_dir() {
+            self.previous = self.center.panel().path().to_path_buf();
+            debug!(
+                "push to history: {}, len={}",
+                self.previous.display(),
+                self.fwd_history.len()
+            );
+
+            // Remember forward history
+            self.fwd_history.push((
+                self.left.panel().path().to_owned(),
+                self.left
+                    .panel()
+                    .selected_path()
+                    .map(|p| p.to_owned())
+                    .unwrap_or_default(),
+            ));
+            let center_clone = self.center.panel().clone();
+            self.left.update_panel(center_clone);
+            let right_path = self.right.panel().maybe_path();
+            self.center.new_panel_instant(right_path);
+
+            if let Some(path) = self.rev_history.pop() {
+                info!(
+                    "pop rev-history: {}, len={}",
+                    path.display(),
+                    self.rev_history.len()
+                );
+                info!("set-center-panel selection");
+                self.center.panel_mut().select_path(&path, None);
+            }
+
+            let center_selected = self.center.panel().selected_path().map(|p| p.to_path_buf());
+            self.right.new_panel_delayed(center_selected.as_deref());
+
+            if let Some(path) = self.rev_history.last() {
+                info!("set-right-panel selection");
+                let path = path.clone();
+                self.right.panel_mut().select_path(&path);
+            }
+
+            MoveRight::Descended(selected)
+        } else {
+            let cwd = self.center.panel().path().to_path_buf();
+            MoveRight::OpenFile {
+                file: selected,
+                cwd,
+            }
+        }
+    }
+
+    /// Ascends into the parent directory, shifting the Miller columns right and
+    /// restoring the previous selection from the forward-history.
+    ///
+    /// Returns `true` if it moved (i.e. the left panel was non-empty), so the
+    /// manager can unmark and `mark_dirty`.
+    fn move_left(&mut self) -> bool {
+        // If the left panel is empty, we cannot move left:
+        if self.left.panel().selected_path().is_none() {
+            return false;
+        }
+        if let Some(path) = self.right.panel().maybe_path() {
+            info!(
+                "push to rev-history: {}, len={}",
+                path.display(),
+                self.rev_history.len()
+            );
+            self.rev_history.push(path);
+        }
+        self.previous = self.center.panel().path().to_path_buf();
+        let center_clone = self.center.panel().clone();
+        self.right.update_panel(PreviewPanel::Dir(center_clone));
+        let left_clone = self.left.panel().clone();
+        self.center.update_panel(left_clone);
+        // | m | l | m |
+        // TODO: When we followed some symlink we don't want to take the parent here.
+        match self.fwd_history.pop() {
+            Some((previous, selected)) => {
+                debug!(
+                    "using history: {}, selected={}, len={}",
+                    previous.display(),
+                    selected.display(),
+                    self.fwd_history.len()
+                );
+                self.left.new_panel_instant(Some(previous));
+                info!("set-left-panel selection");
+                self.left.panel_mut().select_path(&selected, None);
+            }
+            None => {
+                let center_path = self.center.panel().path().to_path_buf();
+                let parent = center_path.parent();
+                info!("using parent: {:?}", parent);
+                self.left.new_panel_instant(parent);
+                info!("set-left-panel selection");
+                self.left.panel_mut().select_path(&center_path, None);
+            }
+        }
+        true
+    }
+
+    /// Jumps directly to `path`, clearing all navigation history.
+    ///
+    /// Returns `Some(path)` when the jump happened (so the manager can record
+    /// it with zoxide), or `None` when it was a no-op (same path or missing).
+    fn jump(&mut self, path: PathBuf) -> Option<PathBuf> {
+        // Don't do anything, if the path hasn't changed
+        if path.as_path() == self.center.panel().path() {
+            return None;
+        }
+        if !path.exists() {
+            return None;
+        }
+        self.fwd_history.clear(); // Delete history when jumping
+        self.rev_history.clear();
+        self.previous = self.center.panel().path().to_path_buf();
+        self.left.new_panel_instant(path.parent());
+        self.left.panel_mut().select_path(&path, None);
+        self.center.new_panel_instant(Some(&path));
+        let center_selected = self.center.panel().selected_path().map(|p| p.to_path_buf());
+        self.right.new_panel_delayed(center_selected.as_deref());
+        Some(path)
+    }
+}
+
 pub struct PanelManager {
     /// Independent Miller-columns stacks. Exactly one for now; multi-tab
     /// support arrives in a later task. `focused` indexes the active tab.
@@ -527,179 +703,66 @@ impl PanelManager {
 
     fn move_up(&mut self, step: usize) {
         trace!("move-up");
-        let tab = self.active_mut();
-        if tab.center.panel_mut().up(step) {
-            let selected = tab.center.panel().selected_path().map(|p| p.to_path_buf());
-            tab.right.new_panel_delayed(selected.as_deref());
-            tab.rev_history.clear();
+        if self.active_mut().move_up(step) {
             self.mark_dirty();
-            // self.stack.push(Operation::Move(Movement::Up));
         }
     }
 
     fn move_down(&mut self, step: usize) {
         trace!("move-down");
-        let tab = self.active_mut();
-        if tab.center.panel_mut().down(step) {
-            let selected = tab.center.panel().selected_path().map(|p| p.to_path_buf());
-            tab.right.new_panel_delayed(selected.as_deref());
-            tab.rev_history.clear();
+        if self.active_mut().move_down(step) {
             self.mark_dirty();
-            // self.stack.push(Operation::Move(Movement::Down));
         }
     }
 
     fn move_right(&mut self) {
         trace!("move-right");
-        let selected = self
-            .active()
-            .center
-            .panel()
-            .selected_path()
-            .map(|p| p.to_path_buf());
-        if let Some(selected) = selected {
-            // If the selected item is a directory, all panels will shift to the left
-            if selected.is_dir() {
-                if let Some(cmd) = zoxide_add_dir(&selected) {
+        match self.active_mut().move_right() {
+            MoveRight::None => {}
+            MoveRight::Descended(dir) => {
+                // Record the visited directory with zoxide.
+                if let Some(cmd) = zoxide_add_dir(&dir) {
                     if let Err(e) = self.command_tx.send(cmd) {
                         error!("Failed to queue command: {}", e);
                     }
                 }
-                let tab = self.active_mut();
-                tab.previous = tab.center.panel().path().to_path_buf();
-                debug!(
-                    "push to history: {}, len={}",
-                    tab.previous.display(),
-                    tab.fwd_history.len()
-                );
-
-                // Remember forward history
-                tab.fwd_history.push((
-                    tab.left.panel().path().to_owned(),
-                    tab.left
-                        .panel()
-                        .selected_path()
-                        .map(|p| p.to_owned())
-                        .unwrap_or_default(),
-                ));
-                let center_clone = tab.center.panel().clone();
-                tab.left.update_panel(center_clone);
-                let right_path = tab.right.panel().maybe_path();
-                tab.center.new_panel_instant(right_path);
-
-                if let Some(path) = tab.rev_history.pop() {
-                    info!(
-                        "pop rev-history: {}, len={}",
-                        path.display(),
-                        tab.rev_history.len()
-                    );
-                    info!("set-center-panel selection");
-                    tab.center.panel_mut().select_path(&path, None);
-                }
-
-                let center_selected =
-                    tab.center.panel().selected_path().map(|p| p.to_path_buf());
-                tab.right.new_panel_delayed(center_selected.as_deref());
-
-                if let Some(path) = tab.rev_history.last() {
-                    info!("set-right-panel selection");
-                    let path = path.clone();
-                    tab.right.panel_mut().select_path(&path);
-                }
-
                 self.mark_dirty();
-            } else {
-                info!("Opening '{}'", selected.display());
-
-                // Change working directory so that child processes gets spawned from the currently active directory.
-                let center_path = self.active().center.panel().path().to_path_buf();
-                if let Err(e) = std::env::set_current_dir(&center_path) {
+                self.unmark_left_right();
+            }
+            MoveRight::OpenFile { file, cwd } => {
+                info!("Opening '{}'", file.display());
+                // Change working directory so that child processes gets spawned
+                // from the currently active directory.
+                if let Err(e) = std::env::set_current_dir(&cwd) {
                     error!("Failed to set working-directory for process: {e}");
                 }
-                if let Err(e) = self.opener.open(selected) {
+                if let Err(e) = self.opener.open(file) {
                     /* failed to open selected */
                     error!("Opening failed: {e}");
                 }
                 self.mark_dirty();
+                self.unmark_left_right();
             }
-            // self.stack.push(Operation::Move(Movement::Right));
-            //
-            self.unmark_left_right();
         }
     }
 
     fn move_left(&mut self) {
         trace!("move-left");
-        let tab = self.active_mut();
-        // If the left panel is empty, we cannot move left:
-        if tab.left.panel().selected_path().is_none() {
-            return;
+        if self.active_mut().move_left() {
+            self.unmark_left_right();
+            // All panels needs to be redrawn
+            self.mark_dirty();
         }
-        if let Some(path) = tab.right.panel().maybe_path() {
-            info!(
-                "push to rev-history: {}, len={}",
-                path.display(),
-                tab.rev_history.len()
-            );
-            tab.rev_history.push(path);
-        }
-        tab.previous = tab.center.panel().path().to_path_buf();
-        let center_clone = tab.center.panel().clone();
-        tab.right.update_panel(PreviewPanel::Dir(center_clone));
-        let left_clone = tab.left.panel().clone();
-        tab.center.update_panel(left_clone);
-        // | m | l | m |
-        // TODO: When we followed some symlink we don't want to take the parent here.
-        match tab.fwd_history.pop() {
-            Some((previous, selected)) => {
-                debug!(
-                    "using history: {}, selected={}, len={}",
-                    previous.display(),
-                    selected.display(),
-                    tab.fwd_history.len()
-                );
-                tab.left.new_panel_instant(Some(previous));
-                info!("set-left-panel selection");
-                tab.left.panel_mut().select_path(&selected, None);
-            }
-            None => {
-                let center_path = tab.center.panel().path().to_path_buf();
-                let parent = center_path.parent();
-                info!("using parent: {:?}", parent);
-                tab.left.new_panel_instant(parent);
-                info!("set-left-panel selection");
-                tab.left.panel_mut().select_path(&center_path, None);
-            }
-        }
-
-        self.unmark_left_right();
-
-        // All panels needs to be redrawn
-        self.mark_dirty();
-        // self.stack.push(Operation::Move(Movement::Left));
     }
 
     fn jump(&mut self, path: PathBuf) {
         trace!("jump-to {}", path.display());
-        // Don't do anything, if the path hasn't changed
-        if path.as_path() == self.active().center.panel().path() {
-            return;
-        }
-        if path.exists() {
+        if let Some(path) = self.active_mut().jump(path) {
             if let Some(cmd) = zoxide_add_dir(&path) {
                 if let Err(e) = self.command_tx.send(cmd) {
                     error!("Failed to queue command: {}", e);
                 }
             }
-            let tab = self.active_mut();
-            tab.fwd_history.clear(); // Delete history when jumping
-            tab.rev_history.clear();
-            tab.previous = tab.center.panel().path().to_path_buf();
-            tab.left.new_panel_instant(path.parent());
-            tab.left.panel_mut().select_path(&path, None);
-            tab.center.new_panel_instant(Some(&path));
-            let center_selected = tab.center.panel().selected_path().map(|p| p.to_path_buf());
-            tab.right.new_panel_delayed(center_selected.as_deref());
             self.mark_dirty();
         }
     }
@@ -1795,5 +1858,243 @@ impl PanelManager {
             self.mark_dirty();
         }
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content::PanelCache;
+    use std::fs::{self, canonicalize};
+    use tokio::sync::mpsc;
+
+    /// Everything a fixture-backed [`Tab`] needs to stay alive: the tab plus
+    /// the receiving ends of its content channels (dropping them would make the
+    /// `ManagedPanel` senders panic on `.expect("Receiver dropped")`).
+    struct TabFixture {
+        tab: Tab,
+        _dir_rx: mpsc::UnboundedReceiver<PanelUpdate>,
+        _prev_rx: mpsc::UnboundedReceiver<PanelUpdate>,
+        _tmp: tempfile::TempDir,
+        root: PathBuf,
+    }
+
+    /// Builds a real `Tab` rooted at a fresh tempdir laid out like:
+    ///
+    /// ```text
+    /// root/
+    ///   sub/            <- a subdirectory (sorts first)
+    ///     inner.txt
+    ///   a.txt
+    ///   b.txt
+    ///   c.txt
+    /// ```
+    ///
+    /// The panels are populated synchronously via `new_panel_instant`
+    /// (mirroring `init_miller_panels`), so navigation is observable without
+    /// any async content manager running.
+    fn fixture() -> TabFixture {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = canonicalize(tmp.path()).expect("canonicalize root");
+        fs::create_dir(root.join("sub")).unwrap();
+        fs::write(root.join("sub").join("inner.txt"), b"x").unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            fs::write(root.join(name), b"x").unwrap();
+        }
+
+        let (dir_tx, dir_rx) = mpsc::unbounded_channel::<PanelUpdate>();
+        let (prev_tx, prev_rx) = mpsc::unbounded_channel::<PanelUpdate>();
+        let dir_cache = PanelCache::<DirPanel>::with_size(64);
+        let prev_cache = PanelCache::<PreviewPanel>::with_size(64);
+
+        let (left, center, right) =
+            super::super::init_miller_panels(root.clone(), dir_cache, prev_cache, dir_tx, prev_tx);
+
+        let tab = Tab {
+            left,
+            center,
+            right,
+            fwd_history: Vec::new(),
+            rev_history: Vec::new(),
+            previous: ".".into(),
+        };
+
+        TabFixture {
+            tab,
+            _dir_rx: dir_rx,
+            _prev_rx: prev_rx,
+            _tmp: tmp,
+            root,
+        }
+    }
+
+    fn center_path(tab: &Tab) -> PathBuf {
+        tab.center.panel().path().to_path_buf()
+    }
+
+    fn center_selected(tab: &Tab) -> Option<PathBuf> {
+        tab.center.panel().selected_path().map(|p| p.to_path_buf())
+    }
+
+    #[test]
+    fn initial_selection_is_the_subdir() {
+        // Directories sort before files, so `sub` is the initial selection.
+        let f = fixture();
+        assert_eq!(center_path(&f.tab), f.root);
+        assert_eq!(center_selected(&f.tab), Some(f.root.join("sub")));
+    }
+
+    #[test]
+    fn move_down_and_up_change_selection_within_bounds() {
+        let mut f = fixture();
+        // sub -> a.txt
+        assert!(f.tab.move_down(1));
+        assert_eq!(center_selected(&f.tab), Some(f.root.join("a.txt")));
+        // a.txt -> b.txt
+        assert!(f.tab.move_down(1));
+        assert_eq!(center_selected(&f.tab), Some(f.root.join("b.txt")));
+        // back up to a.txt
+        assert!(f.tab.move_up(1));
+        assert_eq!(center_selected(&f.tab), Some(f.root.join("a.txt")));
+    }
+
+    #[test]
+    fn move_up_at_top_is_noop() {
+        let mut f = fixture();
+        // Already on the first entry (`sub`); moving up must not underflow and
+        // must report "did not move".
+        assert!(!f.tab.move_up(1));
+        assert_eq!(center_selected(&f.tab), Some(f.root.join("sub")));
+    }
+
+    #[test]
+    fn move_down_at_bottom_is_noop() {
+        let mut f = fixture();
+        // Jump to the very bottom.
+        assert!(f.tab.move_down(usize::MAX));
+        assert_eq!(center_selected(&f.tab), Some(f.root.join("c.txt")));
+        // A further move down must report "did not move".
+        assert!(!f.tab.move_down(1));
+        assert_eq!(center_selected(&f.tab), Some(f.root.join("c.txt")));
+    }
+
+    #[test]
+    fn move_right_into_subdir_shifts_panels_and_records_history() {
+        let mut f = fixture();
+        let old_center = center_path(&f.tab); // root
+        let sub = f.root.join("sub");
+
+        match f.tab.move_right() {
+            MoveRight::Descended(dir) => assert_eq!(dir, sub),
+            MoveRight::None => panic!("expected Descended, got None"),
+            MoveRight::OpenFile { .. } => panic!("expected Descended, got OpenFile"),
+        }
+
+        // center is now the subdir; left is the old center.
+        assert_eq!(center_path(&f.tab), sub);
+        assert_eq!(f.tab.left.panel().path(), old_center.as_path());
+        // one forward-history entry recording where we came from.
+        assert_eq!(f.tab.fwd_history.len(), 1);
+        assert_eq!(f.tab.fwd_history[0].0, f.root.parent().unwrap());
+        // previous cwd is remembered.
+        assert_eq!(f.tab.previous, old_center);
+    }
+
+    #[test]
+    fn move_right_on_a_file_reports_openfile_without_shifting() {
+        let mut f = fixture();
+        // Move onto a regular file.
+        assert!(f.tab.move_down(1)); // sub -> a.txt
+        let center_before = center_path(&f.tab);
+
+        let outcome = f.tab.move_right();
+        match outcome {
+            MoveRight::OpenFile { file, cwd } => {
+                assert_eq!(file, f.root.join("a.txt"));
+                assert_eq!(cwd, f.root);
+            }
+            _ => panic!("expected OpenFile"),
+        }
+        // Panels did not shift; no history recorded.
+        assert_eq!(center_path(&f.tab), center_before);
+        assert!(f.tab.fwd_history.is_empty());
+    }
+
+    #[test]
+    fn move_left_restores_selection_from_history() {
+        let mut f = fixture();
+        let root = f.root.clone();
+        let sub = root.join("sub");
+
+        // Descend into sub.
+        assert!(matches!(f.tab.move_right(), MoveRight::Descended(_)));
+        assert_eq!(center_path(&f.tab), sub);
+
+        // Go back left.
+        assert!(f.tab.move_left());
+        // We are back at root, and `sub` is re-selected from forward-history.
+        assert_eq!(center_path(&f.tab), root);
+        assert_eq!(center_selected(&f.tab), Some(sub));
+        // forward-history was consumed.
+        assert!(f.tab.fwd_history.is_empty());
+    }
+
+    #[test]
+    fn move_left_stops_at_filesystem_root() {
+        // Climbing left repeatedly must terminate: once the center reaches the
+        // filesystem root, the left panel is empty and move_left is a no-op
+        // (returns false) instead of looping or underflowing.
+        let mut f = fixture();
+        // Bound the loop generously; the tempdir depth is small.
+        let mut moved = 0;
+        while f.tab.move_left() {
+            moved += 1;
+            assert!(moved < 100, "move_left did not terminate");
+        }
+        // We reached a point where move_left reports "did not move".
+        assert!(!f.tab.move_left());
+        // Center is at the filesystem root (has no parent, or parent == self).
+        let here = center_path(&f.tab);
+        assert!(
+            here.parent().is_none() || here.parent() == Some(here.as_path()),
+            "expected filesystem root, got {}",
+            here.display()
+        );
+    }
+
+    #[test]
+    fn jump_sets_center_and_clears_history() {
+        let mut f = fixture();
+        let root = f.root.clone();
+        let sub = root.join("sub");
+
+        // Create some history first.
+        assert!(matches!(f.tab.move_right(), MoveRight::Descended(_)));
+        assert_eq!(f.tab.fwd_history.len(), 1);
+
+        // Jump back up to root.
+        let jumped = f.tab.jump(root.clone());
+        assert_eq!(jumped, Some(root.clone()));
+        assert_eq!(center_path(&f.tab), root);
+        assert_eq!(f.tab.left.panel().path(), root.parent().unwrap());
+        // history cleared on jump.
+        assert!(f.tab.fwd_history.is_empty());
+        assert!(f.tab.rev_history.is_empty());
+        // previous remembers where we jumped from.
+        assert_eq!(f.tab.previous, sub);
+    }
+
+    #[test]
+    fn jump_to_same_path_is_noop() {
+        let mut f = fixture();
+        let here = center_path(&f.tab);
+        assert_eq!(f.tab.jump(here), None);
+    }
+
+    #[test]
+    fn jump_to_missing_path_is_noop() {
+        let mut f = fixture();
+        let missing = f.root.join("does-not-exist");
+        assert_eq!(f.tab.jump(missing), None);
     }
 }
