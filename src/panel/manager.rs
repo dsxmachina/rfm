@@ -1670,6 +1670,9 @@ impl PanelManager {
                                 } else {
                                     self.jump(mark.dir);
                                     if let Some(entry) = mark.entry {
+                                        // jump() previewed the panel's default
+                                        // selection; re-select the marked entry
+                                        // and refresh the preview for it.
                                         self.center.panel_mut().select_path(&entry, None);
                                         self.right.new_panel_delayed(
                                             self.center.panel().selected_path(),
