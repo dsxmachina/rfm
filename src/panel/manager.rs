@@ -78,8 +78,38 @@ struct JumpMark {
 
 /// Upper bound on the number of tabs. Enforced once tab creation lands in a
 /// later task; defined here so the cap has a single home from the start.
-#[allow(dead_code)]
 const MAX_TABS: usize = 4;
+
+/// How the terminal splits its rows between tabs. Only the focused tab is
+/// ever rendered for now (`Single`); `Split` is reserved for a later task
+/// that shows two tabs side by side. Kept here so tab-management logic can
+/// already reset to `Single` when closing down to one tab.
+enum ViewMode {
+    Single,
+    #[allow(dead_code)] // rendered in a later task
+    Split,
+}
+
+/// Pure index math for tab focus, extracted so it can be unit-tested without
+/// standing up a whole [`PanelManager`]. The methods below call these so the
+/// tested logic *is* the shipped logic.
+///
+/// Next focus index after cycling forward through `len` tabs.
+fn next_focus(focused: usize, len: usize) -> usize {
+    (focused + 1) % len
+}
+
+/// Focus index to land on after removing the currently-focused tab, given the
+/// number of tabs remaining. Clamps into the shrunk range (removing the last
+/// tab steps focus back one; removing an earlier one keeps the same index).
+fn focus_after_close(focused: usize, len_after_removal: usize) -> usize {
+    focused.min(len_after_removal.saturating_sub(1))
+}
+
+/// Whether another tab may be opened without exceeding [`MAX_TABS`].
+fn can_add_tab(len: usize) -> bool {
+    len < MAX_TABS
+}
 
 /// One independent Miller-columns stack: its own cwd, selection and
 /// navigation history. Tabs are the unit the split view shows two of.
@@ -266,6 +296,36 @@ impl Tab {
         self.right.new_panel_delayed(center_selected.as_deref());
         Some(path)
     }
+
+    /// Builds a fresh, fully-wired [`Tab`] rooted at `cwd`, reusing the same
+    /// construction path as the initial panels ([`init_miller_panels`]): left =
+    /// parent, center = `cwd`, right = center's selection. The caches and
+    /// content senders are cloned per panel, so the new tab gets its own live
+    /// file-watcher and real async content updates, exactly like the initial
+    /// stack.
+    fn new_at(
+        cwd: &Path,
+        directory_cache: PanelCache<DirPanel>,
+        preview_cache: PanelCache<PreviewPanel>,
+        directory_tx: mpsc::UnboundedSender<PanelUpdate>,
+        preview_tx: mpsc::UnboundedSender<PanelUpdate>,
+    ) -> Tab {
+        let (left, center, right) = init_miller_panels(
+            cwd.to_path_buf(),
+            directory_cache,
+            preview_cache,
+            directory_tx,
+            preview_tx,
+        );
+        Tab {
+            left,
+            center,
+            right,
+            fwd_history: Vec::new(),
+            rev_history: Vec::new(),
+            previous: ".".into(),
+        }
+    }
 }
 
 pub struct PanelManager {
@@ -273,6 +333,18 @@ pub struct PanelManager {
     /// support arrives in a later task. `focused` indexes the active tab.
     tabs: Vec<Tab>,
     focused: usize,
+
+    /// Single vs. split view. Only `Single` is rendered for now.
+    view: ViewMode,
+
+    /// Handles retained to spawn new tabs dynamically. These mirror what
+    /// `init_miller_panels` consumes: the panel caches and the per-panel
+    /// content-request senders. Cloned into each new tab's `ManagedPanel`s so a
+    /// dynamically-created tab gets a live watcher and real async updates.
+    directory_cache: PanelCache<DirPanel>,
+    preview_cache: PanelCache<PreviewPanel>,
+    directory_tx: mpsc::UnboundedSender<PanelUpdate>,
+    preview_tx: mpsc::UnboundedSender<PanelUpdate>,
 
     /// Mode of operation
     mode: Mode,
@@ -343,6 +415,10 @@ impl PanelManager {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         miller_panels: MillerPanels,
+        directory_cache: PanelCache<DirPanel>,
+        preview_cache: PanelCache<PreviewPanel>,
+        directory_tx: mpsc::UnboundedSender<PanelUpdate>,
+        preview_tx: mpsc::UnboundedSender<PanelUpdate>,
         use_trash: bool,
         parser: CommandParser,
         dir_rx: mpsc::Receiver<(DirPanel, PanelState)>,
@@ -376,6 +452,11 @@ impl PanelManager {
         Ok(PanelManager {
             tabs: vec![tab],
             focused: 0,
+            view: ViewMode::Single,
+            directory_cache,
+            preview_cache,
+            directory_tx,
+            preview_tx,
             mode: Mode::Normal,
             logger,
             clipboard: None,
@@ -407,6 +488,67 @@ impl PanelManager {
 
     fn active_mut(&mut self) -> &mut Tab {
         &mut self.tabs[self.focused]
+    }
+
+    /// Opens a new tab rooted at the focused tab's current directory and
+    /// focuses it. No-op (with a warning) once [`MAX_TABS`] is reached.
+    ///
+    /// Not yet key-wired — dispatch arrives in a later task.
+    #[allow(dead_code)] // wired in Task 4
+    fn new_tab(&mut self) {
+        if !can_add_tab(self.tabs.len()) {
+            warn!("max {MAX_TABS} tabs reached");
+            return;
+        }
+        let cwd = self.active().center.panel().path().to_path_buf();
+        let tab = Tab::new_at(
+            &cwd,
+            self.directory_cache.clone(),
+            self.preview_cache.clone(),
+            self.directory_tx.clone(),
+            self.preview_tx.clone(),
+        );
+        self.tabs.push(tab);
+        self.focused = self.tabs.len() - 1;
+        self.mark_dirty();
+    }
+
+    /// Closes the focused tab, keeping at least one tab alive (the never-0-tabs
+    /// invariant). Focus clamps into the shrunk range; dropping back to a single
+    /// tab reverts to [`ViewMode::Single`].
+    ///
+    /// Not yet key-wired — dispatch arrives in a later task.
+    #[allow(dead_code)] // wired in Task 4
+    fn close_tab(&mut self) {
+        if self.tabs.len() == 1 {
+            return; // never 0 tabs
+        }
+        self.tabs.remove(self.focused);
+        self.focused = focus_after_close(self.focused, self.tabs.len());
+        if self.tabs.len() == 1 {
+            self.view = ViewMode::Single;
+        }
+        self.mark_dirty();
+    }
+
+    /// Cycles focus forward through the open tabs, wrapping at the end.
+    ///
+    /// Not yet key-wired — dispatch arrives in a later task.
+    #[allow(dead_code)] // wired in Task 4
+    fn focus_next(&mut self) {
+        self.focused = next_focus(self.focused, self.tabs.len());
+        self.mark_dirty();
+    }
+
+    /// Focuses tab `n` if it exists; otherwise a no-op.
+    ///
+    /// Not yet key-wired — dispatch arrives in a later task.
+    #[allow(dead_code)] // wired in Task 4
+    fn focus_tab(&mut self, n: usize) {
+        if n < self.tabs.len() {
+            self.focused = n;
+            self.mark_dirty();
+        }
     }
 
     fn mark_dirty(&mut self) {
@@ -2180,5 +2322,42 @@ mod tests {
         assert!(matches!(f.tab.move_right(), MoveRight::None));
         assert_eq!(center_path(&f.tab), center_before);
         assert_eq!(f.tab.fwd_history.len(), fwd_len_before);
+    }
+
+    // --- tab-index math (the exact functions the methods call) --------------
+
+    #[test]
+    fn next_focus_wraps_forward() {
+        // 3 tabs: 0 -> 1 -> 2 -> 0.
+        assert_eq!(next_focus(0, 3), 1);
+        assert_eq!(next_focus(1, 3), 2);
+        assert_eq!(next_focus(2, 3), 0); // wraps at the end
+    }
+
+    #[test]
+    fn next_focus_single_tab_stays_put() {
+        assert_eq!(next_focus(0, 1), 0);
+    }
+
+    #[test]
+    fn focus_after_close_clamps_into_shrunk_range() {
+        // Closing the last (focused=2) of 3 tabs (2 remain) steps focus back.
+        assert_eq!(focus_after_close(2, 2), 1);
+        // Closing an earlier tab (focused=0), 2 remain, keeps index 0.
+        assert_eq!(focus_after_close(0, 2), 0);
+        // Closing a middle tab (focused=1) of 3 (2 remain) keeps index 1.
+        assert_eq!(focus_after_close(1, 2), 1);
+        // Down to a single tab: focus must clamp to 0.
+        assert_eq!(focus_after_close(1, 1), 0);
+        assert_eq!(focus_after_close(0, 1), 0);
+    }
+
+    #[test]
+    fn can_add_tab_respects_cap() {
+        assert!(can_add_tab(1));
+        assert!(can_add_tab(MAX_TABS - 1));
+        // At the cap, no more tabs may be added.
+        assert!(!can_add_tab(MAX_TABS));
+        assert!(!can_add_tab(MAX_TABS + 1));
     }
 }
