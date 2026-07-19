@@ -3,3 +3,4 @@
 .env
 .cargo
 test-directory
+/.worktrees
