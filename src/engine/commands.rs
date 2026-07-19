@@ -80,6 +80,14 @@ struct Movement {
     jump_to: Vec<(String, String)>,
 }
 
+#[derive(Deserialize, Debug, Default)]
+struct JumpMarks {
+    /// Prefix key(s) for setting a mark (default: `m`).
+    set: Option<Vec<String>>,
+    /// Prefix key(s) for jumping to a mark (default: `'`).
+    jump: Option<Vec<String>>,
+}
+
 #[derive(Deserialize, Debug)]
 struct General {
     search: Vec<String>,
@@ -98,6 +106,8 @@ pub struct KeyConfig {
     general: General,
     movement: Movement,
     manipulation: Manipulation,
+    #[serde(default)]
+    jump_marks: JumpMarks,
 }
 
 #[test]
@@ -320,6 +330,14 @@ impl CommandParser {
         parser.insert(
             config.manipulation.paste_overwrite,
             Command::Paste { overwrite: true },
+        );
+
+        parser.insert_jump_marks(
+            config.jump_marks.set.unwrap_or_else(|| vec!["m".to_string()]),
+            config
+                .jump_marks
+                .jump
+                .unwrap_or_else(|| vec!["'".to_string()]),
         );
 
         parser
@@ -680,5 +698,52 @@ mod jump_mark_tests {
         assert!(matches!(p.add_event(key('m')), Command::None));
         assert!(matches!(p.add_event(key('1')), Command::None)); // buffer cleared
         assert!(matches!(p.add_event(key('j')), Command::Move(Move::Down)));
+    }
+
+    #[test]
+    fn from_config_without_jump_marks_section_defaults_to_m_and_apostrophe() {
+        let toml = r#"
+[general]
+search = ["/"]
+mark = [" "]
+next = ["n"]
+previous = ["N"]
+view_trash = ["gT"]
+toggle_hidden = ["zh"]
+quit = ["q"]
+
+[movement]
+up = ["k"]
+down = ["j"]
+left = ["h"]
+right = ["l"]
+top = ["gg"]
+bottom = ["G"]
+page_forward = ["ctrl-f"]
+page_backward = ["ctrl-b"]
+half_page_forward = ["ctrl-d"]
+half_page_backward = ["ctrl-u"]
+jump_previous = ["''"]
+jump_to = []
+
+[manipulation]
+rename = ["rename"]
+mkdir = ["mkdir"]
+touch = ["touch"]
+cut = ["dd"]
+copy = ["yy"]
+delete = ["delete"]
+paste = ["pp"]
+paste_overwrite = ["po"]
+zip = ["zip"]
+tar = ["tar"]
+extract = ["extract"]
+"#;
+        let cfg: KeyConfig = toml::from_str(toml).expect("parse keys.toml");
+        let mut p = CommandParser::from_config(cfg);
+        assert!(matches!(p.add_event(key('m')), Command::None));
+        assert!(matches!(p.add_event(key('a')), Command::SetJumpMark('a')));
+        assert!(matches!(p.add_event(key('\'')), Command::None));
+        assert!(matches!(p.add_event(key('b')), Command::JumpToMark('b')));
     }
 }
