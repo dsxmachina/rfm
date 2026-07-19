@@ -68,6 +68,14 @@ struct Clipboard {
 //     Move(Movement),
 // }
 
+/// A session-only vim-style jump-mark: a directory plus the entry that was
+/// highlighted there when the mark was set.
+#[derive(Debug, Clone)]
+struct JumpMark {
+    dir: PathBuf,
+    entry: Option<PathBuf>,
+}
+
 pub struct PanelManager {
     /// Left panel
     left: ManagedPanel<DirPanel>,
@@ -118,6 +126,9 @@ pub struct PanelManager {
 
     /// Previous path
     previous: PathBuf,
+
+    /// Session-only vim-style jump-marks, keyed by letter.
+    jump_marks: std::collections::HashMap<char, JumpMark>,
 
     /// Whether deletes go to the freedesktop trash (undoable) or are permanent.
     use_trash: bool,
@@ -191,6 +202,7 @@ impl PanelManager {
             fwd_history: Vec::new(),
             rev_history: Vec::new(),
             previous: ".".into(),
+            jump_marks: std::collections::HashMap::new(),
             use_trash,
             parser,
             stdout,
