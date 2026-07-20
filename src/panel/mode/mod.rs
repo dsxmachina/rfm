@@ -71,8 +71,13 @@ pub enum ModeOp {
     CreatePreview { name: String, is_dir: bool },
     /// Create the element and leave the mode
     Create { name: String, is_dir: bool },
-    /// Restore the given trash items to their original location, then exit
-    RestoreFromTrash { items: Vec<trash::TrashItem> },
+    /// Restore the given trash items to their original location. The view
+    /// stays open, refreshed, with the cursor held at `cursor` (clamped) so
+    /// several items can be restored in a row.
+    RestoreFromTrash {
+        items: Vec<trash::TrashItem>,
+        cursor: usize,
+    },
     /// Leave the mode without a concluding action; cleanup says what to undo
     Exit { cleanup: Cleanup },
 }

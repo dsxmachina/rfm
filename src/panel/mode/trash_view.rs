@@ -37,6 +37,13 @@ impl TrashView {
         entries.sort_by(|a, b| b.item.time_deleted.cmp(&a.item.time_deleted));
         Self { entries, cursor: 0 }
     }
+
+    /// Restore the cursor to `c`, clamped to the current entry count. The
+    /// manager calls this when it rebuilds the view after a restore so the
+    /// cursor lands on the item that slid up into the freed slot.
+    pub fn set_cursor(&mut self, c: usize) {
+        self.cursor = c.min(self.entries.len().saturating_sub(1));
+    }
 }
 
 /// `YYYY-MM-DD HH:MM` (16 columns) for a unix timestamp.
@@ -110,7 +117,7 @@ impl Draw for TrashView {
         let div_right = x0 + width / 2;
 
         // 1. Keybinding hint on its own row, above the frame.
-        let hint = "Trash — j/k: move · r: restore · Esc: close";
+        let hint = "Trash — j/k: move · r: restore · q/Esc: close";
         let hint_x = x0 + width.saturating_sub(hint.chars().count() as u16) / 2;
         queue!(
             stdout,
@@ -243,10 +250,11 @@ impl ModalInput for TrashView {
             KeyCode::Char('r') => match self.entries.get(self.cursor) {
                 Some(entry) => ModeOp::RestoreFromTrash {
                     items: vec![entry.item.clone()],
+                    cursor: self.cursor,
                 },
                 None => ModeOp::None,
             },
-            KeyCode::Esc | KeyCode::Enter => ModeOp::Exit {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => ModeOp::Exit {
                 cleanup: Cleanup::None,
             },
             _ => ModeOp::None,
@@ -326,9 +334,22 @@ mod tests {
         assert_eq!(
             view.handle_key(key(KeyCode::Char('r'))),
             ModeOp::RestoreFromTrash {
-                items: vec![expected]
+                items: vec![expected],
+                cursor: 0,
             }
         );
+    }
+
+    #[test]
+    fn set_cursor_clamps_to_the_entry_count() {
+        let mut view = TrashView::new(trashed_entries(3));
+        view.set_cursor(1);
+        assert_eq!(view.cursor, 1);
+        view.set_cursor(99); // past the end → clamp to last
+        assert_eq!(view.cursor, 2);
+        let mut empty = TrashView::new(Vec::new());
+        empty.set_cursor(5); // no panic / underflow on an empty list
+        assert_eq!(empty.cursor, 0);
     }
 
     #[test]
@@ -348,13 +369,15 @@ mod tests {
     }
 
     #[test]
-    fn esc_exits_without_cleanup() {
-        let mut view = TrashView::new(Vec::new());
-        assert_eq!(
-            view.handle_key(key(KeyCode::Esc)),
-            ModeOp::Exit {
-                cleanup: Cleanup::None
-            }
-        );
+    fn esc_and_q_exit_without_cleanup() {
+        for code in [KeyCode::Esc, KeyCode::Char('q')] {
+            let mut view = TrashView::new(Vec::new());
+            assert_eq!(
+                view.handle_key(key(code)),
+                ModeOp::Exit {
+                    cleanup: Cleanup::None
+                }
+            );
+        }
     }
 }

@@ -187,9 +187,14 @@ it: on → `delete_file` calls `trash::delete` then re-finds the created
 `Barrier`. Undo restores via `os_limited::restore_all`. `gT` opens the
 `TrashView` overlay mode (`src/panel/mode/trash_view.rs`) — a pure adapter
 the manager fills from `os_limited::list()`; `r` emits
-`ModeOp::RestoreFromTrash` (restore to original; not undo-recorded in v1),
-`Esc` closes. Deferred: empty-trash/`purge_all`, restore-to-arbitrary
-(the old `gT`+`dd` pull-out), multi-select.
+`ModeOp::RestoreFromTrash { items, cursor }` (restore to original; not
+undo-recorded in v1). The view **stays open** after a restore: the manager
+rebuilds a fresh `TrashView` from the now-smaller trash and holds the cursor
+at its old slot (`set_cursor`, clamped) so the next item slides up into it —
+several items can be restored in a row. It stays open even once empty
+(showing "(the trash is empty)"). `q` / `Esc` close. Deferred:
+empty-trash/`purge_all`, restore-to-arbitrary (the old `gT`+`dd` pull-out),
+multi-select.
 
 Debug socket `state` exposes
 `undo_depth` / `redo_depth`.

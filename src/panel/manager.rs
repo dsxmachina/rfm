@@ -1720,7 +1720,7 @@ impl PanelManager {
                     .inject_new_element(name, is_dir);
             }
             ModeOp::Create { name, is_dir } => self.apply_create(name, is_dir),
-            ModeOp::RestoreFromTrash { items } => {
+            ModeOp::RestoreFromTrash { items, cursor } => {
                 // Only restore entries that still exist: one may have been
                 // removed out of band (another trash tool), and restore_all
                 // panics on a missing entry. guard_trash contains any panic.
@@ -1739,7 +1739,19 @@ impl PanelManager {
                 }
                 // Restore from the trash view is intentionally not recorded on
                 // the undo stack in v1.
-                self.mode = Mode::Normal;
+                //
+                // Stay in the trash view and refresh it from the now-smaller
+                // trash so several items can be restored in a row; the cursor
+                // is held at its old slot (clamped) — the next item slides up
+                // into it. Rebuilds fresh from the FS so out-of-band changes
+                // show too.
+                let entries = crate::undo::list_trash_entries()
+                    .into_iter()
+                    .map(|(item, is_dir)| TrashEntry { item, is_dir })
+                    .collect();
+                let mut view = TrashView::new(entries);
+                view.set_cursor(cursor);
+                self.mode = Mode::Modal(Box::new(view));
                 self.reload_all();
             }
             ModeOp::Exit { cleanup } => {
