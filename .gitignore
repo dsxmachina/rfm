@@ -4,3 +4,7 @@
 .cargo
 test-directory
 /.worktrees
+
+# rfm writes ./error.log on exit-with-errors; debug sockets are transient
+error.log
+*.sock

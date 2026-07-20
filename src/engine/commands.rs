@@ -101,6 +101,10 @@ struct Tabs {
     focus_next: Option<Vec<String>>,
     new_tab: Option<Vec<String>>,
     close_tab: Option<Vec<String>>,
+    // Four explicit `focus_tab_N` fields because the config layer is a plain
+    // string -> Command table with no argument form; this mirrors the
+    // `MAX_TABS = 4` cap in the panel manager. To support a 5th tab, add
+    // `focus_tab_5` here (+ its parser line) AND bump `MAX_TABS`.
     focus_tab_1: Option<Vec<String>>,
     focus_tab_2: Option<Vec<String>>,
     focus_tab_3: Option<Vec<String>>,
@@ -373,7 +377,10 @@ impl CommandParser {
             config.tabs.toggle_split.unwrap_or_default(),
             Command::ToggleSplit,
         );
-        parser.insert(config.tabs.focus_next.unwrap_or_default(), Command::FocusNext);
+        parser.insert(
+            config.tabs.focus_next.unwrap_or_default(),
+            Command::FocusNext,
+        );
         parser.insert(config.tabs.new_tab.unwrap_or_default(), Command::NewTab);
         parser.insert(config.tabs.close_tab.unwrap_or_default(), Command::CloseTab);
         parser.insert(
@@ -825,5 +832,76 @@ extract = ["extract"]
         assert!(matches!(p.add_event(key('\'')), Command::None));
         assert!(matches!(p.add_event(key('b')), Command::JumpToMark('b')));
     }
-}
 
+    /// The `[tabs]` section wires its keys to the multi-tab commands: a
+    /// single-key focus jump, two aliases (a plain key and a `ctrl-` chord)
+    /// for `close_tab`, and `Tab` routed through the oneshot `mod_commands`
+    /// map via the `named_key()` path.
+    #[test]
+    fn from_config_tabs_section_wires_focus_close_and_named_tab_key() {
+        let toml = r#"
+[general]
+search = ["/"]
+mark = [" "]
+next = ["e"]
+previous = ["N"]
+view_trash = ["gT"]
+toggle_hidden = ["zh"]
+quit = ["Q"]
+
+[movement]
+up = ["k"]
+down = ["j"]
+left = ["h"]
+right = ["l"]
+top = ["gg"]
+bottom = ["G"]
+page_forward = ["ctrl-f"]
+page_backward = ["ctrl-b"]
+half_page_forward = ["ctrl-d"]
+half_page_backward = ["ctrl-u"]
+jump_previous = ["''"]
+jump_to = []
+
+[manipulation]
+rename = ["rename"]
+mkdir = ["mkdir"]
+touch = ["touch"]
+cut = ["dd"]
+copy = ["yy"]
+delete = ["delete"]
+paste = ["pp"]
+paste_overwrite = ["po"]
+zip = ["zip"]
+tar = ["tar"]
+extract = ["extract"]
+
+[tabs]
+focus_next = ["Tab"]
+new_tab = ["gn"]
+close_tab = ["q", "ctrl-w"]
+focus_tab_1 = ["1"]
+"#;
+        let cfg: KeyConfig = toml::from_str(toml).expect("parse keys.toml");
+        let mut p = CommandParser::from_config(cfg);
+
+        // focus_tab_1 = ["1"] -> FocusTab(1)
+        assert!(matches!(p.add_event(key('1')), Command::FocusTab(1)));
+
+        // close_tab = ["q", "ctrl-w"]: the plain 'q' key ...
+        assert!(matches!(p.add_event(key('q')), Command::CloseTab));
+        // ... and the ctrl-w chord both map to CloseTab.
+        let ctrl_w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        assert!(matches!(p.add_event(ctrl_w), Command::CloseTab));
+
+        // focus_next = ["Tab"] must route through the oneshot map as a bare
+        // KeyCode::Tab (the named_key() path), since Tab emits no Char and so
+        // never flows through the keystroke buffer.
+        let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        assert!(matches!(p.add_event(tab), Command::FocusNext));
+
+        // new_tab = ["gn"] still resolves as a two-key chord.
+        assert!(matches!(p.add_event(key('g')), Command::None));
+        assert!(matches!(p.add_event(key('n')), Command::NewTab));
+    }
+}
