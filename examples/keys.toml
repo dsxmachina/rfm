@@ -25,7 +25,7 @@ next          = [ "n" ]                # select the next marked item
 previous      = [ "N" ]                # select the previous marked item
 view_trash    = [ "gT" ]               # open the trash view (press 'r' there to restore an item)
 toggle_hidden = [ "zh" ]               # toggle visibility of hidden files
-quit          = [ "Q", "exit" ]        # quit rfm ('q' now closes the focused tab; use Q or 'exit' to quit)
+quit          = [ "Q", "exit" ]        # quit rfm outright ('q' closes the focused tab, and quits when it's the last one)
 # Use this, if you want to quit without changing directories if --choose-dir is specified:
 # quit_no_cd    = [ "alt+q" ]
 
@@ -77,7 +77,7 @@ jump = [ "'" ]      # '<letter> jumps to a jump-mark (e.g. `'a`)
 toggle_split = [ "!" ]              # toggle split view (two tabs' center columns side by side)
 focus_next   = [ "Tab" ]           # cycle focus to the next tab
 new_tab      = [ "gn" ]            # open a new tab at the current directory
-close_tab    = [ "q", "ctrl-w" ]   # close the focused tab (no-op on the last tab; quit with Q or 'exit')
+close_tab    = [ "q", "ctrl-w" ]   # close the focused tab; closing the last tab quits rfm
 focus_tab_1  = [ "1" ]             # focus the first tab
 focus_tab_2  = [ "2" ]             # focus the second tab
 focus_tab_3  = [ "3" ]             # focus the third tab

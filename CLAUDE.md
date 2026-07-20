@@ -133,10 +133,11 @@ mirror the focused tab for single-tab scripts. `entries [<tab>] left|center`
 takes an optional 0-based tab index (defaults to focused).
 
 Keys: `!`=toggle_split, `Tab`=focus_next, `gn`=new_tab, `q`/`ctrl-w`=close_tab
-(no-op on the last tab), `1`-`4`=focus_tab_N. These are OPT-IN in keys.toml
-(like undo/redo) — pre-existing user configs won't have them; the shipped
-`examples/keys.toml` includes them. Note `q` now closes the focused tab; quit
-is `Q` / `exit`.
+(closing the *last* tab quits rfm, returning `CloseCmd::QuitWithPath`),
+`1`-`4`=focus_tab_N. These are OPT-IN in keys.toml (like undo/redo) —
+pre-existing user configs won't have them; the shipped `examples/keys.toml`
+includes them. Note `q` closes the focused tab (and quits on the last one);
+`Q` / `exit` always quit outright.
 
 ## Architecture: rendering
 

@@ -504,12 +504,17 @@ impl PanelManager {
         self.mark_dirty();
     }
 
-    /// Closes the focused tab, keeping at least one tab alive (the never-0-tabs
-    /// invariant). Focus clamps into the shrunk range; dropping back to a single
-    /// tab reverts to [`ViewMode::Single`].
-    fn close_tab(&mut self) {
+    /// Closes the focused tab. Closing the *last* remaining tab quits rfm
+    /// (returning the same [`CloseCmd::QuitWithPath`] as [`Command::Quit`], so
+    /// `--choose-dir` still reports the focused tab's cwd). Otherwise the tab is
+    /// removed, focus clamps into the shrunk range, and dropping back to a
+    /// single tab reverts to [`ViewMode::Single`]; returns `None`.
+    fn close_tab(&mut self) -> Option<CloseCmd> {
         if self.tabs.len() == 1 {
-            return; // never 0 tabs
+            // Last tab: closing it exits the file manager.
+            return Some(CloseCmd::QuitWithPath {
+                path: self.active().center.panel().path().to_path_buf(),
+            });
         }
         self.tabs.remove(self.focused);
         self.focused = focus_after_close(self.focused, self.tabs.len());
@@ -522,6 +527,7 @@ impl PanelManager {
         // No-op in split and short-circuits on an unchanged path, so it's cheap.
         self.refresh_focused_preview();
         self.mark_dirty();
+        None
     }
 
     /// Cycles focus forward through the open tabs, wrapping at the end.
@@ -1982,7 +1988,9 @@ impl PanelManager {
                         }
                         Command::CloseTab => {
                             trace!("command: close tab");
-                            self.close_tab();
+                            if let Some(close) = self.close_tab() {
+                                return Ok(Some(close));
+                            }
                         }
                         Command::FocusTab(n) => {
                             trace!("command: focus tab {n}");
