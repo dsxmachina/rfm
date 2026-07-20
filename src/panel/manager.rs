@@ -889,16 +889,19 @@ impl PanelManager {
         // `self.tabs`, which is disjoint from `self.stdout` — the method
         // call would borrow all of `self` and conflict with `&mut self.stdout`.
         let tab = &mut self.tabs[self.focused];
-        // Parent panel is never the active cursor; the focused center panel is.
+        // Single view: all three columns render with the bright highlight
+        // (`active = true`), matching the pre-split appearance. The
+        // active/inactive dimming distinction only applies in split view,
+        // where it tells the two center columns apart (see `draw_split`).
         tab.left
             .panel_mut()
-            .draw_active(&mut self.stdout, left_x, height.clone(), false)?;
+            .draw_active(&mut self.stdout, left_x, height.clone(), true)?;
         tab.center
             .panel_mut()
             .draw_active(&mut self.stdout, center_x, height.clone(), true)?;
         tab.right
             .panel_mut()
-            .draw_active(&mut self.stdout, right_x, height, false)?;
+            .draw_active(&mut self.stdout, right_x, height, true)?;
         Ok(())
     }
 
