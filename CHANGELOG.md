@@ -5,6 +5,16 @@ All notable changes to rfm are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-07-20
+
+### Fixed
+
+- The row above the footer (the collapsed log widget's line) is now reserved in
+  the panel height. Previously the log blanked it every frame while the panels
+  still counted it as theirs, leaving a permanently empty line the cursor could
+  scroll into and disappear. Page-scroll distances (`ctrl-d`/`u`/`f`/`b`) now
+  also use the actual visible panel height.
+
 ## [0.4.0] - 2026-07-20
 
 A big feature release: multi-tab browsing with a split view, a full undo/redo
