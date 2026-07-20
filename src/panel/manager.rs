@@ -76,14 +76,13 @@ struct JumpMark {
     entry: Option<PathBuf>,
 }
 
-/// Upper bound on the number of tabs. Enforced once tab creation lands in a
-/// later task; defined here so the cap has a single home from the start.
+/// Upper bound on the number of tabs. NOTE: the `focus_tab_1..4` key bindings
+/// in `commands.rs` mirror this value — to change it, update both.
 const MAX_TABS: usize = 4;
 
-/// How the terminal splits its rows between tabs. Only the focused tab is
-/// ever rendered for now (`Single`); `Split` is reserved for a later task
-/// that shows two tabs side by side. Kept here so tab-management logic can
-/// already reset to `Single` when closing down to one tab.
+/// How the screen is laid out. `Single` renders the focused tab's full Miller
+/// stack (left|center|right); `Split` renders only the `center` column of two
+/// adjacent tabs side by side. Closing down to one tab resets to `Single`.
 enum ViewMode {
     Single,
     Split,
@@ -567,13 +566,15 @@ impl PanelManager {
                 self.refresh_focused_preview();
             }
             ViewMode::Single => {
-                if self.tabs.len() < 2 {
-                    self.new_tab(); // clones focused cwd, focuses the new tab
-                }
-                if self.layout.split_halves().is_some() {
-                    self.view = ViewMode::Split;
-                } else {
+                // Check the width BEFORE creating a tab, so a too-narrow
+                // terminal doesn't leave an orphan second tab behind.
+                if self.layout.split_halves().is_none() {
                     warn!("terminal too narrow for split view");
+                } else {
+                    if self.tabs.len() < 2 {
+                        self.new_tab(); // clones focused cwd, focuses the new tab
+                    }
+                    self.view = ViewMode::Split;
                 }
             }
         }

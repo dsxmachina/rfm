@@ -74,7 +74,7 @@ jump = [ "'" ]      # '<letter> jumps to a jump-mark (e.g. `'a`)
 # Each tab keeps its own independent directory location. `focus_next` cycles
 # through the open tabs; `focus_tab_N` jumps straight to the N-th tab.
 [tabs]
-toggle_split = [ "!" ]              # toggle split view (currently a no-op; lands in a later step)
+toggle_split = [ "!" ]              # toggle split view (two tabs' center columns side by side)
 focus_next   = [ "Tab" ]           # cycle focus to the next tab
 new_tab      = [ "gn" ]            # open a new tab at the current directory
 close_tab    = [ "q", "ctrl-w" ]   # close the focused tab (no-op on the last tab; quit with Q or 'exit')
