@@ -26,7 +26,7 @@ previous      = [ "N" ]                # select the previous marked item
 view_trash    = [ "gT" ]               # open the trash view (press 'r' there to restore an item)
 toggle_hidden = [ "zh" ]               # toggle visibility of hidden files
 quit          = [ "Q", "exit" ]        # quit rfm outright ('q' closes the focused tab, and quits when it's the last one)
-# Use this, if you want to quit without changing directories if --choose-dir is specified:
+# Use this, if you want to quit without changing directories if --choosedir is specified:
 # quit_no_cd    = [ "alt+q" ]
 
 # Movement related keybindings
