@@ -870,14 +870,30 @@ impl PanelManager {
         Ok(())
     }
 
-    fn draw_panels(&mut self) -> Result<()> {
+    /// The y-range panels may actually draw in: the layout's `y_range` minus
+    /// the rows the log widget owns at the bottom (`capacity` rows expanded,
+    /// one row collapsed). `draw_log` unconditionally blanks that region every
+    /// draw, so a panel drawing into it would lose its bottom row — including
+    /// the cursor when the selection lands there.
+    fn panel_y_range(&self) -> Range<u16> {
         let (start, end) = (self.layout.y_range.start, self.layout.y_range.end);
-        let height = if self.show_log {
-            let cap = self.logger.capacity();
-            start..end.saturating_sub(cap as u16)
+        let reserved = if self.show_log {
+            self.logger.capacity() as u16
         } else {
-            start..end
+            1
         };
+        start..end.saturating_sub(reserved)
+    }
+
+    /// Visible panel height in rows (the log-adjusted range, not the raw
+    /// layout height) — the basis for page-scroll distances.
+    fn panel_height(&self) -> u16 {
+        let range = self.panel_y_range();
+        range.end.saturating_sub(range.start)
+    }
+
+    fn draw_panels(&mut self) -> Result<()> {
+        let height = self.panel_y_range();
 
         // In split view, draw two adjacent tabs' center columns side by side.
         // Fall back to the single-view layout if the terminal is too narrow to
@@ -1070,10 +1086,10 @@ impl PanelManager {
             Move::Right => self.move_right(),
             Move::Top => self.move_up(usize::MAX),
             Move::Bottom => self.move_down(usize::MAX),
-            Move::HalfPageForward => self.move_down(self.layout.height() as usize / 2),
-            Move::HalfPageBackward => self.move_up(self.layout.height() as usize / 2),
-            Move::PageForward => self.move_down(self.layout.height() as usize),
-            Move::PageBackward => self.move_up(self.layout.height() as usize),
+            Move::HalfPageForward => self.move_down(self.panel_height() as usize / 2),
+            Move::HalfPageBackward => self.move_up(self.panel_height() as usize / 2),
+            Move::PageForward => self.move_down(self.panel_height() as usize),
+            Move::PageBackward => self.move_up(self.panel_height() as usize),
             Move::JumpTo(path) => self.jump(path.into()),
             Move::JumpPrevious => self.jump(self.active().previous.clone()),
         };

@@ -439,10 +439,6 @@ impl MillerColumns {
         self.y_range.end.saturating_add(1)
     }
 
-    pub fn height(&self) -> u16 {
-        self.y_range.end.saturating_sub(self.y_range.start)
-    }
-
     pub fn width(&self) -> u16 {
         self.width
     }
