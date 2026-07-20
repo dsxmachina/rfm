@@ -441,4 +441,18 @@ impl MillerColumns {
     pub fn width(&self) -> u16 {
         self.width
     }
+
+    /// Two equal halves for split view with a 1-column divider between them.
+    /// Returns `(left_half, right_half, divider_x)`, or `None` if the terminal
+    /// is too narrow to be usable as a split.
+    pub fn split_halves(&self) -> Option<(Range<u16>, Range<u16>, u16)> {
+        let w = self.width();
+        if w < 40 {
+            return None; // narrow-terminal guard
+        }
+        let mid = w / 2;
+        let left = 0..mid; // left half
+        let right = (mid + 1)..w; // right half (mid column = divider)
+        Some((left, right, mid)) // mid = divider column x
+    }
 }

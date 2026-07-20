@@ -86,7 +86,6 @@ const MAX_TABS: usize = 4;
 /// already reset to `Single` when closing down to one tab.
 enum ViewMode {
     Single,
-    #[allow(dead_code)] // rendered in a later task
     Split,
 }
 
@@ -507,11 +506,27 @@ impl PanelManager {
         }
     }
 
-    /// Toggle split-view. Stub until Task 7 (auto-create a 2nd tab and enter
-    /// [`ViewMode::Split`]); currently only warns so the command is
-    /// dispatchable without misleading behavior.
+    /// Toggle split-view. Entering split auto-creates a second tab (cloning the
+    /// focused cwd) when there is only one, then switches to
+    /// [`ViewMode::Split`] — unless the terminal is too narrow for a usable
+    /// split, in which case it stays single and warns.
     fn toggle_split(&mut self) {
-        warn!("split view not yet implemented");
+        match self.view {
+            ViewMode::Split => {
+                self.view = ViewMode::Single;
+            }
+            ViewMode::Single => {
+                if self.tabs.len() < 2 {
+                    self.new_tab(); // clones focused cwd, focuses the new tab
+                }
+                if self.layout.split_halves().is_some() {
+                    self.view = ViewMode::Split;
+                } else {
+                    warn!("terminal too narrow for split view");
+                }
+            }
+        }
+        self.mark_dirty();
     }
 
     fn mark_dirty(&mut self) {
@@ -637,6 +652,35 @@ impl PanelManager {
             style::PrintStyledContent(prefix.to_string().with(color_dir_path()).bold()),
             style::PrintStyledContent(suffix.to_string().bold()),
         )?;
+
+        // Ranger-style tab numbers, right-aligned, when more than one tab is
+        // open. The focused tab's (1-based) number is highlighted, the rest
+        // muted. Numbers only — no paths — and they take priority on the right
+        // edge (the cwd text on the left is drawn first, so if the header is
+        // full the numbers overwrite its tail).
+        if self.tabs.len() > 1 {
+            // Width: one digit per tab plus a separating space between each.
+            let width = (self.tabs.len() * 2).saturating_sub(1) as u16;
+            let x = self.layout.width().saturating_sub(width);
+            queue!(self.stdout, cursor::MoveTo(x, 0))?;
+            for i in 0..self.tabs.len() {
+                if i > 0 {
+                    queue!(self.stdout, style::Print(" "))?;
+                }
+                let label = (i + 1).to_string();
+                if i == self.focused {
+                    queue!(
+                        self.stdout,
+                        style::PrintStyledContent(label.with(color_main()).reverse().bold()),
+                    )?;
+                } else {
+                    queue!(
+                        self.stdout,
+                        style::PrintStyledContent(label.dark_grey()),
+                    )?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -748,6 +792,16 @@ impl PanelManager {
         } else {
             start..end
         };
+
+        // In split view, draw two adjacent tabs' center columns side by side.
+        // Fall back to the single-view layout if the terminal is too narrow to
+        // split (defensive: `toggle_split` already guards against this).
+        if matches!(self.view, ViewMode::Split) {
+            if let Some((left_half, right_half, divider_x)) = self.layout.split_halves() {
+                return self.draw_split(height, left_half, right_half, divider_x);
+            }
+        }
+
         let left_x = self.layout.left_x_range.clone();
         let center_x = self.layout.center_x_range.clone();
         let right_x = self.layout.right_x_range.clone();
@@ -755,13 +809,56 @@ impl PanelManager {
         // `self.tabs`, which is disjoint from `self.stdout` — the method
         // call would borrow all of `self` and conflict with `&mut self.stdout`.
         let tab = &mut self.tabs[self.focused];
+        // Parent panel is never the active cursor; the focused center panel is.
         tab.left
             .panel_mut()
-            .draw(&mut self.stdout, left_x, height.clone())?;
+            .draw_active(&mut self.stdout, left_x, height.clone(), false)?;
         tab.center
             .panel_mut()
-            .draw(&mut self.stdout, center_x, height.clone())?;
-        tab.right.panel_mut().draw(&mut self.stdout, right_x, height)?;
+            .draw_active(&mut self.stdout, center_x, height.clone(), true)?;
+        tab.right
+            .panel_mut()
+            .draw_active(&mut self.stdout, right_x, height, false)?;
+        Ok(())
+    }
+
+    /// Split view: render the `center` column of two adjacent tabs into the two
+    /// halves, the focused one active (bright cursor), the other dimmed, with a
+    /// vertical divider between them.
+    fn draw_split(
+        &mut self,
+        height: Range<u16>,
+        left_half: Range<u16>,
+        right_half: Range<u16>,
+        divider_x: u16,
+    ) -> Result<()> {
+        // The visible window is [base, base+1]. In split view tabs.len() >= 2
+        // always holds (see `toggle_split`), so this never underflows.
+        let base = if self.focused + 1 < self.tabs.len() {
+            self.focused
+        } else {
+            self.focused - 1
+        };
+
+        // Draw one tab at a time so each `&mut self.tabs[idx]` borrow is
+        // released before the next, keeping it disjoint from `&mut self.stdout`.
+        for (offset, x_range) in [(0usize, left_half), (1usize, right_half)] {
+            let idx = base + offset;
+            let active = idx == self.focused;
+            let tab = &mut self.tabs[idx];
+            tab.center
+                .panel_mut()
+                .draw_active(&mut self.stdout, x_range, height.clone(), active)?;
+        }
+
+        // Vertical divider between the two halves (muted).
+        for y in height.clone() {
+            queue!(
+                self.stdout,
+                cursor::MoveTo(divider_x, y),
+                style::PrintStyledContent("│".with(color_main())),
+            )?;
+        }
         Ok(())
     }
 

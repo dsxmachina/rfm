@@ -41,9 +41,13 @@ pub struct StyledEntry {
     bold: bool,
     /// Whether to apply negative (inverse) style
     negative: bool,
+    /// Whether the selection cursor should be muted (inactive split panel).
+    /// Only meaningful together with `negative`.
+    dimmed: bool,
 }
 
 impl StyledEntry {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         lead: char,
         symbol: String,
@@ -53,6 +57,7 @@ impl StyledEntry {
         text_color: Color,
         bold: bool,
         negative: bool,
+        dimmed: bool,
     ) -> Self {
         Self {
             lead,
@@ -63,6 +68,7 @@ impl StyledEntry {
             text_color,
             bold,
             negative,
+            dimmed,
         }
     }
 }
@@ -71,10 +77,18 @@ impl Command for StyledEntry {
     fn write_ansi(&self, f: &mut impl Write) -> std::fmt::Result {
         // If negative (selected), use inverse video for the whole line
         if self.negative {
-            // Set foreground color first, then reverse - this ensures proper inversion
-            SetForegroundColor(self.text_color).write_ansi(f)?;
+            // Set foreground color first, then reverse - this ensures proper
+            // inversion. On an inactive (dimmed) panel we mute the cursor by
+            // reversing a dark-grey background instead of the bright text color,
+            // so the focused panel's cursor stands out.
+            let cursor_color = if self.dimmed {
+                Color::DarkGrey
+            } else {
+                self.text_color
+            };
+            SetForegroundColor(cursor_color).write_ansi(f)?;
             SetAttribute(Attribute::Reverse).write_ansi(f)?;
-            if self.bold {
+            if self.bold && !self.dimmed {
                 SetAttribute(Attribute::Bold).write_ansi(f)?;
             }
             // Format: lead + symbol + space + name + space + suffix + space
@@ -178,7 +192,7 @@ impl DirElem {
     ///
     /// The symbol is colored based on mime-type, while the filename uses a neutral color.
     /// If the element has not been normalized yet, we do so before we create the styled content.
-    pub fn print_styled(&mut self, selected: bool, max_len: u16) -> StyledEntry {
+    pub fn print_styled(&mut self, selected: bool, active: bool, max_len: u16) -> StyledEntry {
         // Only print normalized items
         self.normalize();
 
@@ -236,6 +250,7 @@ impl DirElem {
             text_color,
             bold,
             selected,
+            selected && !active,
         )
     }
 
@@ -394,6 +409,23 @@ impl Draw for DirPanel {
         x_range: Range<u16>,
         y_range: Range<u16>,
     ) -> Result<()> {
+        // Trait draw always renders as the active/focused panel (bright cursor);
+        // split view calls the inherent `draw_active` to mute inactive panels.
+        self.draw_active(stdout, x_range, y_range, true)
+    }
+}
+
+impl DirPanel {
+    /// Like [`Draw::draw`], but `active` controls the selection-cursor
+    /// highlight: bright when this is the focused panel, dimmed otherwise
+    /// (split view uses this to mute the inactive side).
+    pub fn draw_active(
+        &mut self,
+        stdout: &mut Stdout,
+        x_range: Range<u16>,
+        y_range: Range<u16>,
+        active: bool,
+    ) -> Result<()> {
         let width = x_range.end.saturating_sub(x_range.start.saturating_add(1));
         let height = y_range.end.saturating_sub(y_range.start);
 
@@ -432,7 +464,7 @@ impl Draw for DirPanel {
                         stdout,
                         cursor::MoveTo(x_range.start, y),
                         print_vertical_bar(),
-                        entry.print_styled(false, width),
+                        entry.print_styled(false, active, width),
                     )?;
                     let pattern_x = x_range.start + 4 + offset as u16;
                     if pattern_x <= width {
@@ -511,7 +543,7 @@ impl Draw for DirPanel {
                     stdout,
                     cursor::MoveTo(x_range.start, y_range.start + y_offset),
                     print_vertical_bar(),
-                    entry.print_styled(self.selected_idx == idx, width),
+                    entry.print_styled(self.selected_idx == idx, active, width),
                 )?;
                 y_offset += 1;
             }
@@ -623,7 +655,7 @@ impl Draw for DirPanel {
                     stdout,
                     cursor::MoveTo(x_range.start, y_range.start + y_offset),
                     print_vertical_bar(),
-                    entry.print_styled(self.selected_idx == idx, width),
+                    entry.print_styled(self.selected_idx == idx, active, width),
                 )?;
                 y_offset += 1;
                 visible_idx += 1;
@@ -672,7 +704,7 @@ impl Draw for DirPanel {
                     stdout,
                     cursor::MoveTo(x_range.start, y),
                     print_vertical_bar(),
-                    entry.print_styled(self.selected_idx == idx, width),
+                    entry.print_styled(self.selected_idx == idx, active, width),
                 )?;
                 y_offset += 1;
             }
