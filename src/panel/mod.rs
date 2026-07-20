@@ -409,6 +409,11 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
     }
 }
 
+/// Minimum terminal width for a usable split view. Below this,
+/// [`MillerColumns::split_halves`] returns `None`, which both `toggle_split`
+/// (refuses to enter split) and `draw_panels` (falls back to single) depend on.
+const MIN_SPLIT_WIDTH: u16 = 40;
+
 #[derive(Clone)]
 struct MillerColumns {
     left_x_range: Range<u16>,
@@ -447,7 +452,7 @@ impl MillerColumns {
     /// is too narrow to be usable as a split.
     pub fn split_halves(&self) -> Option<(Range<u16>, Range<u16>, u16)> {
         let w = self.width();
-        if w < 40 {
+        if w < MIN_SPLIT_WIDTH {
             return None; // narrow-terminal guard
         }
         let mid = w / 2;

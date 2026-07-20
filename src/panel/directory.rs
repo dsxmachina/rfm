@@ -241,6 +241,8 @@ impl DirElem {
             ' '
         };
 
+        // Mute the cursor only on the selected row of an inactive (split) panel.
+        let dimmed = selected && !active;
         StyledEntry::new(
             lead,
             symbol,
@@ -250,7 +252,7 @@ impl DirElem {
             text_color,
             bold,
             selected,
-            selected && !active,
+            dimmed,
         )
     }
 
@@ -409,8 +411,12 @@ impl Draw for DirPanel {
         x_range: Range<u16>,
         y_range: Range<u16>,
     ) -> Result<()> {
-        // Trait draw always renders as the active/focused panel (bright cursor);
-        // split view calls the inherent `draw_active` to mute inactive panels.
+        // KNOWN DEBT: the `active` flag lives on the inherent `draw_active`
+        // rather than the `Draw` trait, because the trait is shared with the
+        // cursor-less modal adapters that have no use for it. This trait `draw`
+        // is the `active=true` default for directories; split/single rendering
+        // calls `draw_active` explicitly. If a third type ever needs `active`,
+        // promote it into `Draw::draw` as a defaulted method instead.
         self.draw_active(stdout, x_range, y_range, true)
     }
 }

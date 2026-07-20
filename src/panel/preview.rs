@@ -541,9 +541,11 @@ impl Draw for PreviewPanel {
         x_range: Range<u16>,
         y_range: Range<u16>,
     ) -> Result<()> {
-        // The preview column is never the active cursor panel in single view,
-        // but split view can render a Dir preview as an active center; the
-        // dedicated entry point for that is `draw_active`.
+        // KNOWN DEBT: mirror of `DirPanel::draw` — the `active` flag lives on
+        // the inherent `draw_active`, not the shared `Draw` trait. This trait
+        // `draw` is the `active=false` default (the preview column is never the
+        // focused cursor in single view); split/single rendering calls
+        // `draw_active` explicitly to pass the real flag.
         self.draw_active(stdout, x_range, y_range, false)
     }
 }
