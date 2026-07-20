@@ -137,14 +137,32 @@ enum MoveRight {
 }
 
 impl Tab {
-    /// Moves the selection cursor up by `step`, refreshing the preview and
-    /// clearing the reverse-history when it actually moves.
+    /// Drives the `right`/preview panel to match the current center selection.
+    ///
+    /// This is the single place that turns "center selection" into a preview
+    /// load; the navigation methods call it (gated on `drive_preview`) and the
+    /// manager also calls it directly to *refresh* a tab's preview when it
+    /// becomes visible again after preview-driving was skipped (split view, or
+    /// a background single-view tab). `new_panel_delayed` is a no-op when the
+    /// path is unchanged, so an extra refresh is cheap and safe.
+    fn refresh_preview(&mut self) {
+        let selected = self.center.panel().selected_path().map(|p| p.to_path_buf());
+        self.right.new_panel_delayed(selected.as_deref());
+    }
+
+    /// Moves the selection cursor up by `step`, refreshing the preview (when
+    /// `drive_preview`) and clearing the reverse-history when it actually moves.
+    ///
+    /// `drive_preview` is false in split view, where no preview is drawn — the
+    /// manager refreshes it on the way back to single view instead of decoding
+    /// previews that are never shown.
     ///
     /// Returns `true` if the cursor moved (so the manager can `mark_dirty`).
-    fn move_up(&mut self, step: usize) -> bool {
+    fn move_up(&mut self, step: usize, drive_preview: bool) -> bool {
         if self.center.panel_mut().up(step) {
-            let selected = self.center.panel().selected_path().map(|p| p.to_path_buf());
-            self.right.new_panel_delayed(selected.as_deref());
+            if drive_preview {
+                self.refresh_preview();
+            }
             self.rev_history.clear();
             true
         } else {
@@ -153,10 +171,11 @@ impl Tab {
     }
 
     /// Moves the selection cursor down by `step`. See [`Tab::move_up`].
-    fn move_down(&mut self, step: usize) -> bool {
+    fn move_down(&mut self, step: usize, drive_preview: bool) -> bool {
         if self.center.panel_mut().down(step) {
-            let selected = self.center.panel().selected_path().map(|p| p.to_path_buf());
-            self.right.new_panel_delayed(selected.as_deref());
+            if drive_preview {
+                self.refresh_preview();
+            }
             self.rev_history.clear();
             true
         } else {
@@ -167,7 +186,12 @@ impl Tab {
     /// Descends into the selected entry (if it is a directory) or reports that
     /// the selection is a file to open. Shifts the Miller columns left and
     /// maintains the forward/reverse history.
-    fn move_right(&mut self) -> MoveRight {
+    ///
+    /// `drive_preview` gates only the final preview load: the Miller-column
+    /// shift (which updates `center` — visible in split) always happens, so
+    /// split freshness is preserved; only the never-drawn preview decode is
+    /// skipped in split view.
+    fn move_right(&mut self, drive_preview: bool) -> MoveRight {
         let selected = self.center.panel().selected_path().map(|p| p.to_path_buf());
         let Some(selected) = selected else {
             return MoveRight::None;
@@ -205,13 +229,16 @@ impl Tab {
                 self.center.panel_mut().select_path(&path, None);
             }
 
-            let center_selected = self.center.panel().selected_path().map(|p| p.to_path_buf());
-            self.right.new_panel_delayed(center_selected.as_deref());
+            if drive_preview {
+                let center_selected =
+                    self.center.panel().selected_path().map(|p| p.to_path_buf());
+                self.right.new_panel_delayed(center_selected.as_deref());
 
-            if let Some(path) = self.rev_history.last() {
-                info!("set-right-panel selection");
-                let path = path.clone();
-                self.right.panel_mut().select_path(&path);
+                if let Some(path) = self.rev_history.last() {
+                    info!("set-right-panel selection");
+                    let path = path.clone();
+                    self.right.panel_mut().select_path(&path);
+                }
             }
 
             MoveRight::Descended(selected)
@@ -277,7 +304,7 @@ impl Tab {
     ///
     /// Returns `Some(path)` when the jump happened (so the manager can record
     /// it with zoxide), or `None` when it was a no-op (same path or missing).
-    fn jump(&mut self, path: PathBuf) -> Option<PathBuf> {
+    fn jump(&mut self, path: PathBuf, drive_preview: bool) -> Option<PathBuf> {
         // Don't do anything, if the path hasn't changed
         if path.as_path() == self.center.panel().path() {
             return None;
@@ -291,8 +318,9 @@ impl Tab {
         self.left.new_panel_instant(path.parent());
         self.left.panel_mut().select_path(&path, None);
         self.center.new_panel_instant(Some(&path));
-        let center_selected = self.center.panel().selected_path().map(|p| p.to_path_buf());
-        self.right.new_panel_delayed(center_selected.as_deref());
+        if drive_preview {
+            self.refresh_preview();
+        }
         Some(path)
     }
 
@@ -495,6 +523,7 @@ impl PanelManager {
     /// Cycles focus forward through the open tabs, wrapping at the end.
     fn focus_next(&mut self) {
         self.focused = next_focus(self.focused, self.tabs.len());
+        self.refresh_focused_preview();
         self.mark_dirty();
     }
 
@@ -502,7 +531,20 @@ impl PanelManager {
     fn focus_tab(&mut self, n: usize) {
         if n < self.tabs.len() {
             self.focused = n;
+            self.refresh_focused_preview();
             self.mark_dirty();
+        }
+    }
+
+    /// Refreshes the now-focused tab's preview so it matches its current center
+    /// selection — needed because preview-driving is skipped while a tab is in
+    /// split view or is a non-focused single-view tab (see `reload_all` /
+    /// `preview_visible`). No-op in split view (no preview drawn) and cheap when
+    /// the preview is already current (`new_panel_delayed` short-circuits on an
+    /// unchanged path).
+    fn refresh_focused_preview(&mut self) {
+        if self.preview_visible() {
+            self.active_mut().refresh_preview();
         }
     }
 
@@ -514,6 +556,10 @@ impl PanelManager {
         match self.view {
             ViewMode::Split => {
                 self.view = ViewMode::Single;
+                // Preview-driving was skipped while in split; refresh the
+                // now-visible focused tab's preview to match its current
+                // selection (it may be stale from navigation done in split).
+                self.refresh_focused_preview();
             }
             ViewMode::Single => {
                 if self.tabs.len() < 2 {
@@ -533,6 +579,14 @@ impl PanelManager {
         self.dirty = true;
     }
 
+    /// Whether the focused tab's preview is currently on screen. In split view
+    /// no preview is drawn at all, so navigation skips driving/decoding it; the
+    /// preview is refreshed on the way back to single view (`toggle_split`) and
+    /// on focus changes (`focus_next`/`focus_tab`) instead.
+    fn preview_visible(&self) -> bool {
+        matches!(self.view, ViewMode::Single)
+    }
+
     /// Reloads every tab's panels from disk (after a filesystem mutation).
     ///
     /// All tabs — not just the active one — are reloaded: a cross-tab
@@ -542,11 +596,22 @@ impl PanelManager {
     /// file still visible). Each `reload()` is a cheap async request whose
     /// result is routed back to the owning tab by `panel_id` (see the `dir_rx`
     /// handler), so reloading unchanged tabs is harmless.
+    ///
+    /// `left`/`center` are reloaded for ALL tabs (a background tab's center is
+    /// visible in split view, and a cross-tab mutation touches the source tab).
+    /// `right`/preview is reloaded only for the focused tab in single view — the
+    /// only place a preview is actually drawn — to avoid re-decoding off-screen
+    /// previews. On the next focus change / split→single the now-focused tab's
+    /// preview is refreshed anyway (`refresh_focused_preview`).
     fn reload_all(&mut self) {
-        for tab in self.tabs.iter_mut() {
+        let focused = self.focused;
+        let preview_visible = self.preview_visible();
+        for (idx, tab) in self.tabs.iter_mut().enumerate() {
             tab.left.reload();
             tab.center.reload();
-            tab.right.reload();
+            if preview_visible && idx == focused {
+                tab.right.reload();
+            }
         }
     }
 
@@ -914,21 +979,24 @@ impl PanelManager {
 
     fn move_up(&mut self, step: usize) {
         trace!("move-up");
-        if self.active_mut().move_up(step) {
+        let drive = self.preview_visible();
+        if self.active_mut().move_up(step, drive) {
             self.mark_dirty();
         }
     }
 
     fn move_down(&mut self, step: usize) {
         trace!("move-down");
-        if self.active_mut().move_down(step) {
+        let drive = self.preview_visible();
+        if self.active_mut().move_down(step, drive) {
             self.mark_dirty();
         }
     }
 
     fn move_right(&mut self) {
         trace!("move-right");
-        match self.active_mut().move_right() {
+        let drive = self.preview_visible();
+        match self.active_mut().move_right(drive) {
             MoveRight::None => {}
             MoveRight::Descended(dir) => {
                 // Record the visited directory with zoxide.
@@ -968,7 +1036,8 @@ impl PanelManager {
 
     fn jump(&mut self, path: PathBuf) {
         trace!("jump-to {}", path.display());
-        if let Some(path) = self.active_mut().jump(path) {
+        let drive = self.preview_visible();
+        if let Some(path) = self.active_mut().jump(path, drive) {
             if let Some(cmd) = zoxide_add_dir(&path) {
                 if let Err(e) = self.command_tx.send(cmd) {
                     error!("Failed to queue command: {}", e);
@@ -1483,15 +1552,28 @@ impl PanelManager {
                     // mutates the (non-focused) source tab's directory. Scope the
                     // `tab` borrow so it ends before `self.mark_dirty()`
                     // (a `&mut self` method), keeping the mark_dirty() invariant.
+                    // A `for … in .iter_mut().enumerate()` loop (rather than
+                    // `.any(...)`) because `panel` is MOVED into `update_panel`;
+                    // a `FnMut` closure can't capture a value it moves out.
+                    let focused = self.focused;
+                    let preview_visible = self.preview_visible();
                     let updated = 'update: {
-                        for tab in self.tabs.iter_mut() {
+                        for (idx, tab) in self.tabs.iter_mut().enumerate() {
                             if tab.center.check_update(&state) {
                                 trace!("panel-update: center <- {}", state.path().display());
                                 tab.center.update_panel(panel);
-                                // update preview (if necessary)
-                                let selected =
-                                    tab.center.panel().selected_path().map(|p| p.to_path_buf());
-                                tab.right.new_panel_delayed(selected.as_deref());
+                                // Only drive the preview when it is actually on
+                                // screen (focused tab, single view). For an
+                                // off-screen tab it is refreshed when it next
+                                // becomes visible (refresh_focused_preview).
+                                if preview_visible && idx == focused {
+                                    let selected = tab
+                                        .center
+                                        .panel()
+                                        .selected_path()
+                                        .map(|p| p.to_path_buf());
+                                    tab.right.new_panel_delayed(selected.as_deref());
+                                }
                                 break 'update true;
                             } else if tab.left.check_update(&state) {
                                 trace!("panel-update: left <- {}", state.path().display());
@@ -1518,6 +1600,13 @@ impl PanelManager {
                     }
                     let (panel, state) = result.unwrap();
 
+                    // Same all-tabs routing as dir_rx above: background tabs'
+                    // preview panels stay fresh too (a preview load driven while
+                    // focused may land after focus moved on).
+                    //
+                    // Written as a `for`+labeled-block, not `.iter_mut().any(...)`:
+                    // `panel` is MOVED into `update_panel`, and a `FnMut` closure
+                    // can't capture a value it moves out on each call.
                     let updated = 'update: {
                         for tab in self.tabs.iter_mut() {
                             if tab.right.check_update(&state) {
@@ -2219,16 +2308,16 @@ mod tests {
         // Sort order is: sub, zempty (dirs first), then a.txt, b.txt, c.txt.
         let mut f = fixture();
         // sub -> zempty
-        assert!(f.tab.move_down(1));
+        assert!(f.tab.move_down(1, true));
         assert_eq!(center_selected(&f.tab), Some(f.root.join("zempty")));
         // zempty -> a.txt
-        assert!(f.tab.move_down(1));
+        assert!(f.tab.move_down(1, true));
         assert_eq!(center_selected(&f.tab), Some(f.root.join("a.txt")));
         // a.txt -> b.txt
-        assert!(f.tab.move_down(1));
+        assert!(f.tab.move_down(1, true));
         assert_eq!(center_selected(&f.tab), Some(f.root.join("b.txt")));
         // back up to a.txt
-        assert!(f.tab.move_up(1));
+        assert!(f.tab.move_up(1, true));
         assert_eq!(center_selected(&f.tab), Some(f.root.join("a.txt")));
     }
 
@@ -2237,7 +2326,7 @@ mod tests {
         let mut f = fixture();
         // Already on the first entry (`sub`); moving up must not underflow and
         // must report "did not move".
-        assert!(!f.tab.move_up(1));
+        assert!(!f.tab.move_up(1, true));
         assert_eq!(center_selected(&f.tab), Some(f.root.join("sub")));
     }
 
@@ -2245,10 +2334,10 @@ mod tests {
     fn move_down_at_bottom_is_noop() {
         let mut f = fixture();
         // Jump to the very bottom.
-        assert!(f.tab.move_down(usize::MAX));
+        assert!(f.tab.move_down(usize::MAX, true));
         assert_eq!(center_selected(&f.tab), Some(f.root.join("c.txt")));
         // A further move down must report "did not move".
-        assert!(!f.tab.move_down(1));
+        assert!(!f.tab.move_down(1, true));
         assert_eq!(center_selected(&f.tab), Some(f.root.join("c.txt")));
     }
 
@@ -2258,7 +2347,7 @@ mod tests {
         let old_center = center_path(&f.tab); // root
         let sub = f.root.join("sub");
 
-        match f.tab.move_right() {
+        match f.tab.move_right(true) {
             MoveRight::Descended(dir) => assert_eq!(dir, sub),
             MoveRight::None => panic!("expected Descended, got None"),
             MoveRight::OpenFile { .. } => panic!("expected Descended, got OpenFile"),
@@ -2278,12 +2367,12 @@ mod tests {
     fn move_right_on_a_file_reports_openfile_without_shifting() {
         let mut f = fixture();
         // Move onto a regular file (sub -> zempty -> a.txt).
-        assert!(f.tab.move_down(1));
-        assert!(f.tab.move_down(1));
+        assert!(f.tab.move_down(1, true));
+        assert!(f.tab.move_down(1, true));
         assert_eq!(center_selected(&f.tab), Some(f.root.join("a.txt")));
         let center_before = center_path(&f.tab);
 
-        let outcome = f.tab.move_right();
+        let outcome = f.tab.move_right(true);
         match outcome {
             MoveRight::OpenFile { file, cwd } => {
                 assert_eq!(file, f.root.join("a.txt"));
@@ -2303,7 +2392,7 @@ mod tests {
         let sub = root.join("sub");
 
         // Descend into sub.
-        assert!(matches!(f.tab.move_right(), MoveRight::Descended(_)));
+        assert!(matches!(f.tab.move_right(true), MoveRight::Descended(_)));
         assert_eq!(center_path(&f.tab), sub);
 
         // Go back left.
@@ -2345,11 +2434,11 @@ mod tests {
         let sub = root.join("sub");
 
         // Create some history first.
-        assert!(matches!(f.tab.move_right(), MoveRight::Descended(_)));
+        assert!(matches!(f.tab.move_right(true), MoveRight::Descended(_)));
         assert_eq!(f.tab.fwd_history.len(), 1);
 
         // Jump back up to root.
-        let jumped = f.tab.jump(root.clone());
+        let jumped = f.tab.jump(root.clone(), true);
         assert_eq!(jumped, Some(root.clone()));
         assert_eq!(center_path(&f.tab), root);
         assert_eq!(f.tab.left.panel().path(), root.parent().unwrap());
@@ -2364,14 +2453,14 @@ mod tests {
     fn jump_to_same_path_is_noop() {
         let mut f = fixture();
         let here = center_path(&f.tab);
-        assert_eq!(f.tab.jump(here), None);
+        assert_eq!(f.tab.jump(here, true), None);
     }
 
     #[test]
     fn jump_to_missing_path_is_noop() {
         let mut f = fixture();
         let missing = f.root.join("does-not-exist");
-        assert_eq!(f.tab.jump(missing), None);
+        assert_eq!(f.tab.jump(missing, true), None);
     }
 
     #[test]
@@ -2388,12 +2477,12 @@ mod tests {
         let inner2 = sub.join("inner2.txt");
 
         // Descend into `sub`; default selection is the first child.
-        assert!(matches!(f.tab.move_right(), MoveRight::Descended(_)));
+        assert!(matches!(f.tab.move_right(true), MoveRight::Descended(_)));
         assert_eq!(center_path(&f.tab), sub);
         assert_eq!(center_selected(&f.tab), Some(inner1.clone()));
 
         // Move down to `inner2.txt` — the deeper selection we want restored.
-        assert!(f.tab.move_down(1));
+        assert!(f.tab.move_down(1, true));
         assert_eq!(center_selected(&f.tab), Some(inner2.clone()));
         // rev_history is empty until we climb back out.
         assert!(f.tab.rev_history.is_empty());
@@ -2406,7 +2495,7 @@ mod tests {
 
         // Descend again: rev_history is popped and the deeper `inner2.txt`
         // selection is restored (NOT the default `inner1.txt`).
-        assert!(matches!(f.tab.move_right(), MoveRight::Descended(_)));
+        assert!(matches!(f.tab.move_right(true), MoveRight::Descended(_)));
         assert_eq!(center_path(&f.tab), sub);
         assert_eq!(
             center_selected(&f.tab),
@@ -2427,9 +2516,9 @@ mod tests {
         let zempty = f.root.join("zempty");
 
         // sub -> zempty, then descend into it.
-        assert!(f.tab.move_down(1));
+        assert!(f.tab.move_down(1, true));
         assert_eq!(center_selected(&f.tab), Some(zempty.clone()));
-        assert!(matches!(f.tab.move_right(), MoveRight::Descended(_)));
+        assert!(matches!(f.tab.move_right(true), MoveRight::Descended(_)));
         assert_eq!(center_path(&f.tab), zempty);
         // The empty dir has no selection.
         assert_eq!(center_selected(&f.tab), None);
@@ -2438,7 +2527,7 @@ mod tests {
         let fwd_len_before = f.tab.fwd_history.len();
 
         // move_right on an empty directory: nothing selected -> None, no shift.
-        assert!(matches!(f.tab.move_right(), MoveRight::None));
+        assert!(matches!(f.tab.move_right(true), MoveRight::None));
         assert_eq!(center_path(&f.tab), center_before);
         assert_eq!(f.tab.fwd_history.len(), fwd_len_before);
     }
