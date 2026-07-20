@@ -16,7 +16,7 @@ use engine::{
 };
 use log::{error, info, warn};
 use logger::LogBuffer;
-use panel::{init_miller_panels, manager::PanelManager};
+use panel::{manager::PanelManager, ContentHandles};
 use rust_embed::Embed;
 use std::{
     fs::{File, OpenOptions},
@@ -324,16 +324,16 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    let miller_panels = init_miller_panels(
-        starting_path.clone(),
+    let handles = ContentHandles {
         directory_cache,
         preview_cache,
         directory_tx,
         preview_tx,
-    );
+    };
 
     let panel_manager = PanelManager::new(
-        miller_panels,
+        starting_path.clone(),
+        handles,
         use_trash,
         parser,
         dir_rx,

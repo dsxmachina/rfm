@@ -96,6 +96,49 @@ terminal. All effects and the derived redraws are applied centrally in
 `PanelManager::apply_mode_op` (manager.rs). The mode strings the debug
 socket reports come from `ModalInput::name()`.
 
+## Architecture: tabs & split view
+
+A `Tab` is one Miller-columns stack (`left`/`center`/`right` `ManagedPanel`s
+with its own cwd, selection and fwd/rev history). `PanelManager` holds
+`tabs: Vec<Tab>` + `focused: usize` + `view: ViewMode { Single, Split }`;
+`MAX_TABS = 4`. All tabs live and are watched at once (each carries its own
+file-watcher and content senders), so every tab's listing stays fresh even
+off-screen.
+
+Single view renders the focused tab's full Miller stack (left|center|right).
+Split view (`!`) renders only the `center` column of two adjacent tabs side
+by side — no preview column — the focused one bright, the other dimmed, with a
+divider. `Tab` cycles focus; `!` toggles back to single (auto-creating a 2nd
+tab if there was only one; refuses if the terminal is too narrow).
+
+Operations route through `active()`/`active_mut()` (the focused tab).
+Clipboard, undo/redo and `show_hidden` are **global** (manager-level); `marked`
+is **per-tab** (lives in the panels). Async panel updates route to the owning
+tab by `panel_id` (via `check_update`) across **all** tabs, not just the
+focused one — required so a background tab's `center` stays fresh in split and
+a cross-tab cut/copy-paste updates the (non-focused) source tab.
+
+Preview efficiency: the `right`/preview panel is driven only when it is
+actually on screen — i.e. the focused tab in single view. Navigation in split
+skips the preview decode entirely, and `reload_all` reloads `right` only for
+the focused single-view tab (but `left`/`center` for every tab). Whenever a
+tab's preview *becomes* visible again — split→single, or a focus change
+(`focus_next`/`focus_tab`) — `refresh_focused_preview` re-drives it from the
+current center selection, so it is never stale (`new_panel_delayed`
+short-circuits when the path is unchanged, keeping the refresh cheap).
+
+Debug socket: `state` exposes `view` (`"single"`/`"split"`), `focused`, and a
+`tabs[]` array (per-tab cwd/selection/marked); the scalar top-level fields
+mirror the focused tab for single-tab scripts. `entries [<tab>] left|center`
+takes an optional 0-based tab index (defaults to focused).
+
+Keys: `!`=toggle_split, `Tab`=focus_next, `gn`=new_tab, `q`/`ctrl-w`=close_tab
+(closing the *last* tab quits rfm, returning `CloseCmd::QuitWithPath`),
+`1`-`4`=focus_tab_N. These are OPT-IN in keys.toml (like undo/redo) —
+pre-existing user configs won't have them; the shipped `examples/keys.toml`
+includes them. Note `q` closes the focused tab (and quits on the last one);
+`Q` / `exit` always quit outright.
+
 ## Architecture: rendering
 
 Event-driven, not a render loop: the select loop draws only when an event

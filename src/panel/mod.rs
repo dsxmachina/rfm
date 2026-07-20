@@ -36,13 +36,25 @@ pub type MillerPanels = (
     ManagedPanel<PreviewPanel>,
 );
 
-pub fn init_miller_panels(
-    starting_path: PathBuf,
-    directory_cache: PanelCache<DirPanel>,
-    preview_cache: PanelCache<PreviewPanel>,
-    directory_tx: mpsc::UnboundedSender<PanelUpdate>,
-    preview_tx: mpsc::UnboundedSender<PanelUpdate>,
-) -> MillerPanels {
+/// The handles needed to build a Miller-columns stack: the panel caches and
+/// the per-panel content-request senders. These four values always travel and
+/// clone together (retained on `PanelManager` to spawn tabs dynamically), so
+/// they are bundled here rather than passed individually.
+#[derive(Clone)]
+pub struct ContentHandles {
+    pub directory_cache: PanelCache<DirPanel>,
+    pub preview_cache: PanelCache<PreviewPanel>,
+    pub directory_tx: mpsc::UnboundedSender<PanelUpdate>,
+    pub preview_tx: mpsc::UnboundedSender<PanelUpdate>,
+}
+
+pub fn init_miller_panels(starting_path: PathBuf, handles: ContentHandles) -> MillerPanels {
+    let ContentHandles {
+        directory_cache,
+        preview_cache,
+        directory_tx,
+        preview_tx,
+    } = handles;
     // Create three panels
     let mut left = ManagedPanel::new(directory_cache.clone(), directory_tx.clone(), false);
     let mut center = ManagedPanel::new(directory_cache, directory_tx, false);
@@ -397,6 +409,11 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
     }
 }
 
+/// Minimum terminal width for a usable split view. Below this,
+/// [`MillerColumns::split_halves`] returns `None`, which both `toggle_split`
+/// (refuses to enter split) and `draw_panels` (falls back to single) depend on.
+const MIN_SPLIT_WIDTH: u16 = 40;
+
 #[derive(Clone)]
 struct MillerColumns {
     left_x_range: Range<u16>,
@@ -428,5 +445,19 @@ impl MillerColumns {
 
     pub fn width(&self) -> u16 {
         self.width
+    }
+
+    /// Two equal halves for split view with a 1-column divider between them.
+    /// Returns `(left_half, right_half, divider_x)`, or `None` if the terminal
+    /// is too narrow to be usable as a split.
+    pub fn split_halves(&self) -> Option<(Range<u16>, Range<u16>, u16)> {
+        let w = self.width();
+        if w < MIN_SPLIT_WIDTH {
+            return None; // narrow-terminal guard
+        }
+        let mid = w / 2;
+        let left = 0..mid; // left half
+        let right = (mid + 1)..w; // right half (mid column = divider)
+        Some((left, right, mid)) // mid = divider column x
     }
 }

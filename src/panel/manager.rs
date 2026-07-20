@@ -13,7 +13,7 @@ use tokio::sync::watch;
 use crate::{
     command_queue::{zoxide_add_dir, QueueStatus, QueuedCommand},
     config::color::{color_dir_path, color_main},
-    debug::{ClipboardInfo, DebugRequest, EntryInfo, LogEntry, PaneId, StateSnapshot},
+    debug::{ClipboardInfo, DebugRequest, EntryInfo, LogEntry, PaneId, StateSnapshot, TabSnapshot},
     engine::commands::{CloseCmd, Command, CommandParser},
     engine::OpenEngine,
     logger::LogBuffer,
@@ -76,13 +76,289 @@ struct JumpMark {
     entry: Option<PathBuf>,
 }
 
-pub struct PanelManager {
-    /// Left panel
+/// Upper bound on the number of tabs. NOTE: the `focus_tab_1..4` key bindings
+/// in `commands.rs` mirror this value — to change it, update both.
+const MAX_TABS: usize = 4;
+
+/// How the screen is laid out. `Single` renders the focused tab's full Miller
+/// stack (left|center|right); `Split` renders only the `center` column of two
+/// adjacent tabs side by side. Closing down to one tab resets to `Single`.
+enum ViewMode {
+    Single,
+    Split,
+}
+
+/// Pure index math for tab focus, extracted so it can be unit-tested without
+/// standing up a whole [`PanelManager`]. The methods below call these so the
+/// tested logic *is* the shipped logic.
+///
+/// Next focus index after cycling forward through `len` tabs.
+fn next_focus(focused: usize, len: usize) -> usize {
+    (focused + 1) % len
+}
+
+/// Focus index to land on after removing the currently-focused tab, given the
+/// number of tabs remaining. Clamps into the shrunk range (removing the last
+/// tab steps focus back one; removing an earlier one keeps the same index).
+fn focus_after_close(focused: usize, len_after_removal: usize) -> usize {
+    focused.min(len_after_removal.saturating_sub(1))
+}
+
+/// Whether another tab may be opened without exceeding [`MAX_TABS`].
+fn can_add_tab(len: usize) -> bool {
+    len < MAX_TABS
+}
+
+/// One independent Miller-columns stack: its own cwd, selection and
+/// navigation history. Tabs are the unit the split view shows two of.
+struct Tab {
     left: ManagedPanel<DirPanel>,
-    /// Center panel
     center: ManagedPanel<DirPanel>,
-    /// Right panel
     right: ManagedPanel<PreviewPanel>,
+    fwd_history: Vec<(PathBuf, PathBuf)>,
+    rev_history: Vec<PathBuf>,
+    previous: PathBuf,
+}
+
+/// Outcome of [`Tab::move_right`], describing the manager-level side-effects
+/// the caller must still apply. The pure panel/history mechanics have already
+/// happened inside the method; this only carries what `PanelManager` needs to
+/// touch its own (non-tab-local) state.
+enum MoveRight {
+    /// Nothing was selected; the manager should do nothing.
+    None,
+    /// Descended into the carried directory. The manager should record it with
+    /// zoxide and unmark the (now shifted) left/right panels.
+    Descended(PathBuf),
+    /// The selection was a file, not a directory. The manager should set the
+    /// process cwd to `cwd` and open `file` with its opener, then unmark.
+    OpenFile { file: PathBuf, cwd: PathBuf },
+}
+
+impl Tab {
+    /// Drives the `right`/preview panel to match the current center selection.
+    ///
+    /// This is the single place that turns "center selection" into a preview
+    /// load; the navigation methods call it (gated on `drive_preview`) and the
+    /// manager also calls it directly to *refresh* a tab's preview when it
+    /// becomes visible again after preview-driving was skipped (split view, or
+    /// a background single-view tab). `new_panel_delayed` is a no-op when the
+    /// path is unchanged, so an extra refresh is cheap and safe.
+    fn refresh_preview(&mut self) {
+        let selected = self.center.panel().selected_path().map(|p| p.to_path_buf());
+        self.right.new_panel_delayed(selected.as_deref());
+    }
+
+    /// Moves the selection cursor up by `step`, refreshing the preview (when
+    /// `drive_preview`) and clearing the reverse-history when it actually moves.
+    ///
+    /// `drive_preview` is false in split view, where no preview is drawn — the
+    /// manager refreshes it on the way back to single view instead of decoding
+    /// previews that are never shown.
+    ///
+    /// Returns `true` if the cursor moved (so the manager can `mark_dirty`).
+    fn move_up(&mut self, step: usize, drive_preview: bool) -> bool {
+        if self.center.panel_mut().up(step) {
+            if drive_preview {
+                self.refresh_preview();
+            }
+            self.rev_history.clear();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Moves the selection cursor down by `step`. See [`Tab::move_up`].
+    fn move_down(&mut self, step: usize, drive_preview: bool) -> bool {
+        if self.center.panel_mut().down(step) {
+            if drive_preview {
+                self.refresh_preview();
+            }
+            self.rev_history.clear();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Descends into the selected entry (if it is a directory) or reports that
+    /// the selection is a file to open. Shifts the Miller columns left and
+    /// maintains the forward/reverse history.
+    ///
+    /// `drive_preview` gates only the final preview load: the Miller-column
+    /// shift (which updates `center` — visible in split) always happens, so
+    /// split freshness is preserved; only the never-drawn preview decode is
+    /// skipped in split view.
+    fn move_right(&mut self, drive_preview: bool) -> MoveRight {
+        let selected = self.center.panel().selected_path().map(|p| p.to_path_buf());
+        let Some(selected) = selected else {
+            return MoveRight::None;
+        };
+        // If the selected item is a directory, all panels will shift to the left
+        if selected.is_dir() {
+            self.previous = self.center.panel().path().to_path_buf();
+            debug!(
+                "push to history: {}, len={}",
+                self.previous.display(),
+                self.fwd_history.len()
+            );
+
+            // Remember forward history
+            self.fwd_history.push((
+                self.left.panel().path().to_owned(),
+                self.left
+                    .panel()
+                    .selected_path()
+                    .map(|p| p.to_owned())
+                    .unwrap_or_default(),
+            ));
+            let center_clone = self.center.panel().clone();
+            self.left.update_panel(center_clone);
+            let right_path = self.right.panel().maybe_path();
+            self.center.new_panel_instant(right_path);
+
+            if let Some(path) = self.rev_history.pop() {
+                info!(
+                    "pop rev-history: {}, len={}",
+                    path.display(),
+                    self.rev_history.len()
+                );
+                info!("set-center-panel selection");
+                self.center.panel_mut().select_path(&path, None);
+            }
+
+            if drive_preview {
+                let center_selected =
+                    self.center.panel().selected_path().map(|p| p.to_path_buf());
+                self.right.new_panel_delayed(center_selected.as_deref());
+
+                if let Some(path) = self.rev_history.last() {
+                    info!("set-right-panel selection");
+                    let path = path.clone();
+                    self.right.panel_mut().select_path(&path);
+                }
+            }
+
+            MoveRight::Descended(selected)
+        } else {
+            let cwd = self.center.panel().path().to_path_buf();
+            MoveRight::OpenFile {
+                file: selected,
+                cwd,
+            }
+        }
+    }
+
+    /// Ascends into the parent directory, shifting the Miller columns right and
+    /// restoring the previous selection from the forward-history.
+    ///
+    /// Returns `true` if it moved (i.e. the left panel was non-empty), so the
+    /// manager can unmark and `mark_dirty`.
+    fn move_left(&mut self) -> bool {
+        // If the left panel is empty, we cannot move left:
+        if self.left.panel().selected_path().is_none() {
+            return false;
+        }
+        if let Some(path) = self.right.panel().maybe_path() {
+            info!(
+                "push to rev-history: {}, len={}",
+                path.display(),
+                self.rev_history.len()
+            );
+            self.rev_history.push(path);
+        }
+        self.previous = self.center.panel().path().to_path_buf();
+        let center_clone = self.center.panel().clone();
+        self.right.update_panel(PreviewPanel::Dir(center_clone));
+        let left_clone = self.left.panel().clone();
+        self.center.update_panel(left_clone);
+        // | m | l | m |
+        // TODO: When we followed some symlink we don't want to take the parent here.
+        match self.fwd_history.pop() {
+            Some((previous, selected)) => {
+                debug!(
+                    "using history: {}, selected={}, len={}",
+                    previous.display(),
+                    selected.display(),
+                    self.fwd_history.len()
+                );
+                self.left.new_panel_instant(Some(previous));
+                info!("set-left-panel selection");
+                self.left.panel_mut().select_path(&selected, None);
+            }
+            None => {
+                let center_path = self.center.panel().path().to_path_buf();
+                let parent = center_path.parent();
+                info!("using parent: {:?}", parent);
+                self.left.new_panel_instant(parent);
+                info!("set-left-panel selection");
+                self.left.panel_mut().select_path(&center_path, None);
+            }
+        }
+        true
+    }
+
+    /// Jumps directly to `path`, clearing all navigation history.
+    ///
+    /// Returns `Some(path)` when the jump happened (so the manager can record
+    /// it with zoxide), or `None` when it was a no-op (same path or missing).
+    fn jump(&mut self, path: PathBuf, drive_preview: bool) -> Option<PathBuf> {
+        // Don't do anything, if the path hasn't changed
+        if path.as_path() == self.center.panel().path() {
+            return None;
+        }
+        if !path.exists() {
+            return None;
+        }
+        self.fwd_history.clear(); // Delete history when jumping
+        self.rev_history.clear();
+        self.previous = self.center.panel().path().to_path_buf();
+        self.left.new_panel_instant(path.parent());
+        self.left.panel_mut().select_path(&path, None);
+        self.center.new_panel_instant(Some(&path));
+        if drive_preview {
+            self.refresh_preview();
+        }
+        Some(path)
+    }
+
+    /// Builds a fresh, fully-wired [`Tab`] rooted at `cwd`, reusing the same
+    /// construction path as the initial panels ([`init_miller_panels`]): left =
+    /// parent, center = `cwd`, right = center's selection. The caches and
+    /// content senders are cloned per panel, so the new tab gets its own live
+    /// file-watcher and real async content updates, exactly like the initial
+    /// stack.
+    fn new_at(cwd: &Path, handles: ContentHandles) -> Tab {
+        let (left, center, right) = init_miller_panels(cwd.to_path_buf(), handles);
+        Tab {
+            left,
+            center,
+            right,
+            fwd_history: Vec::new(),
+            rev_history: Vec::new(),
+            // A fresh tab's jump-previous points at its own cwd, so an
+            // immediate jump-back is a harmless no-op instead of jumping to the
+            // process CWD (".").
+            previous: cwd.to_path_buf(),
+        }
+    }
+}
+
+pub struct PanelManager {
+    /// Independent Miller-columns stacks. Exactly one for now; multi-tab
+    /// support arrives in a later task. `focused` indexes the active tab.
+    tabs: Vec<Tab>,
+    focused: usize,
+
+    /// Single vs. split view. Only `Single` is rendered for now.
+    view: ViewMode,
+
+    /// Handles retained to spawn new tabs dynamically: the panel caches and the
+    /// per-panel content-request senders. Cloned into each new tab's
+    /// `ManagedPanel`s so a dynamically-created tab gets a live watcher and real
+    /// async updates.
+    handles: ContentHandles,
 
     /// Mode of operation
     mode: Mode,
@@ -118,15 +394,6 @@ pub struct PanelManager {
     /// Event-stream from the terminal
     event_reader: EventStream,
 
-    /// History when going "forward"
-    fwd_history: Vec<(PathBuf, PathBuf)>,
-
-    /// History when going "backwards"
-    rev_history: Vec<PathBuf>,
-
-    /// Previous path
-    previous: PathBuf,
-
     /// Session-only vim-style jump-marks, keyed by letter.
     jump_marks: std::collections::HashMap<char, JumpMark>,
 
@@ -161,7 +428,8 @@ pub struct PanelManager {
 impl PanelManager {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        miller_panels: MillerPanels,
+        starting_path: PathBuf,
+        handles: ContentHandles,
         use_trash: bool,
         parser: CommandParser,
         dir_rx: mpsc::Receiver<(DirPanel, PanelState)>,
@@ -178,15 +446,17 @@ impl PanelManager {
         let terminal_size = terminal::size()?;
         let layout = MillerColumns::from_size(terminal_size);
 
-        // Split panels
-        let (left, center, right) = miller_panels;
-
         let (undo_tx, undo_rx) = mpsc::unbounded_channel();
 
+        // Single construction path: the initial tab is built exactly like any
+        // dynamically-created one, cloning the retained handles.
+        let tab = Tab::new_at(&starting_path, handles.clone());
+
         Ok(PanelManager {
-            left,
-            center,
-            right,
+            tabs: vec![tab],
+            focused: 0,
+            view: ViewMode::Single,
+            handles,
             mode: Mode::Normal,
             logger,
             clipboard: None,
@@ -199,9 +469,6 @@ impl PanelManager {
             show_log: false,
             dirty: true,
             event_reader,
-            fwd_history: Vec::new(),
-            rev_history: Vec::new(),
-            previous: ".".into(),
             jump_marks: std::collections::HashMap::new(),
             use_trash,
             parser,
@@ -215,15 +482,149 @@ impl PanelManager {
         })
     }
 
+    fn active(&self) -> &Tab {
+        &self.tabs[self.focused]
+    }
+
+    fn active_mut(&mut self) -> &mut Tab {
+        &mut self.tabs[self.focused]
+    }
+
+    /// Opens a new tab rooted at the focused tab's current directory and
+    /// focuses it. No-op (with a warning) once [`MAX_TABS`] is reached.
+    fn new_tab(&mut self) {
+        if !can_add_tab(self.tabs.len()) {
+            warn!("max {MAX_TABS} tabs reached");
+            return;
+        }
+        let cwd = self.active().center.panel().path().to_path_buf();
+        let tab = Tab::new_at(&cwd, self.handles.clone());
+        self.tabs.push(tab);
+        self.focused = self.tabs.len() - 1;
+        self.mark_dirty();
+    }
+
+    /// Closes the focused tab. Closing the *last* remaining tab quits rfm
+    /// (returning the same [`CloseCmd::QuitWithPath`] as [`Command::Quit`], so
+    /// `--choose-dir` still reports the focused tab's cwd). Otherwise the tab is
+    /// removed, focus clamps into the shrunk range, and dropping back to a
+    /// single tab reverts to [`ViewMode::Single`]; returns `None`.
+    fn close_tab(&mut self) -> Option<CloseCmd> {
+        if self.tabs.len() == 1 {
+            // Last tab: closing it exits the file manager.
+            return Some(CloseCmd::QuitWithPath {
+                path: self.active().center.panel().path().to_path_buf(),
+            });
+        }
+        self.tabs.remove(self.focused);
+        self.focused = focus_after_close(self.focused, self.tabs.len());
+        if self.tabs.len() == 1 {
+            self.view = ViewMode::Single;
+        }
+        // Closing the focused tab always changes which tab is focused (and may
+        // drop split→single), so refresh the now-focused tab's preview — it was
+        // never driven while off-screen/in-split (same reasoning as focus_next).
+        // No-op in split and short-circuits on an unchanged path, so it's cheap.
+        self.refresh_focused_preview();
+        self.mark_dirty();
+        None
+    }
+
+    /// Cycles focus forward through the open tabs, wrapping at the end.
+    fn focus_next(&mut self) {
+        self.focused = next_focus(self.focused, self.tabs.len());
+        self.refresh_focused_preview();
+        self.mark_dirty();
+    }
+
+    /// Focuses tab `n` if it exists; otherwise a no-op.
+    fn focus_tab(&mut self, n: usize) {
+        if n < self.tabs.len() {
+            self.focused = n;
+            self.refresh_focused_preview();
+            self.mark_dirty();
+        }
+    }
+
+    /// Refreshes the now-focused tab's preview so it matches its current center
+    /// selection — needed because preview-driving is skipped while a tab is in
+    /// split view or is a non-focused single-view tab (see `reload_all` /
+    /// `preview_visible`). No-op in split view (no preview drawn) and cheap when
+    /// the preview is already current (`new_panel_delayed` short-circuits on an
+    /// unchanged path).
+    fn refresh_focused_preview(&mut self) {
+        if self.preview_visible() {
+            self.active_mut().refresh_preview();
+        }
+    }
+
+    /// Toggle split-view. Entering split auto-creates a second tab (cloning the
+    /// focused cwd) when there is only one, then switches to
+    /// [`ViewMode::Split`] — unless the terminal is too narrow for a usable
+    /// split, in which case it stays single and warns.
+    fn toggle_split(&mut self) {
+        match self.view {
+            ViewMode::Split => {
+                self.view = ViewMode::Single;
+                // Preview-driving was skipped while in split; refresh the
+                // now-visible focused tab's preview to match its current
+                // selection (it may be stale from navigation done in split).
+                self.refresh_focused_preview();
+            }
+            ViewMode::Single => {
+                // Check the width BEFORE creating a tab, so a too-narrow
+                // terminal doesn't leave an orphan second tab behind.
+                if self.layout.split_halves().is_none() {
+                    warn!("terminal too narrow for split view");
+                } else {
+                    if self.tabs.len() < 2 {
+                        self.new_tab(); // clones focused cwd, focuses the new tab
+                    }
+                    self.view = ViewMode::Split;
+                }
+            }
+        }
+        self.mark_dirty();
+    }
+
     fn mark_dirty(&mut self) {
         self.dirty = true;
     }
 
-    /// Reloads all three panels from disk (after a filesystem mutation).
+    /// Whether the focused tab's preview is currently on screen. In split view
+    /// no preview is drawn at all, so navigation skips driving/decoding it; the
+    /// preview is refreshed on the way back to single view (`toggle_split`) and
+    /// on focus changes (`focus_next`/`focus_tab`) instead.
+    fn preview_visible(&self) -> bool {
+        matches!(self.view, ViewMode::Single)
+    }
+
+    /// Reloads every tab's panels from disk (after a filesystem mutation).
+    ///
+    /// All tabs — not just the active one — are reloaded: a cross-tab
+    /// cut/copy-paste mutates the source tab's directory, which may be a
+    /// different (non-focused) tab than the paste target. Reloading only the
+    /// active tab would leave the source tab showing a stale listing (a moved
+    /// file still visible). Each `reload()` is a cheap async request whose
+    /// result is routed back to the owning tab by `panel_id` (see the `dir_rx`
+    /// handler), so reloading unchanged tabs is harmless.
+    ///
+    /// `left`/`center` are reloaded for ALL tabs (a background tab's center is
+    /// visible in split view, and a cross-tab mutation touches the source tab).
+    /// `right`/preview is reloaded only for the focused tab in single view — the
+    /// only place a preview is actually drawn — to avoid re-decoding off-screen
+    /// previews. On the next focus change / split→single the now-focused tab's
+    /// preview is refreshed anyway (`refresh_focused_preview`).
     fn reload_all(&mut self) {
-        self.left.reload();
-        self.center.reload();
-        self.right.reload();
+        let focused = self.focused;
+        let preview_visible = self.preview_visible();
+        for (idx, tab) in self.tabs.iter_mut().enumerate() {
+            tab.left.reload();
+            tab.center.reload();
+            if preview_visible && idx == focused {
+                tab.right.reload();
+            }
+        }
     }
 
     /// Records a freshly created archive (`archive` is the opener's result, a
@@ -313,11 +714,12 @@ impl PanelManager {
             whoami::fallible::hostname().unwrap_or_else(|e| e.to_string())
         );
         let absolute = self
+            .active()
             .center
             .panel()
             .selected_path()
             .and_then(|f| f.canonicalize().ok())
-            .unwrap_or_else(|| self.center.panel().path().to_path_buf());
+            .unwrap_or_else(|| self.active().center.panel().path().to_path_buf());
         let file_name = absolute
             .file_name()
             .unwrap_or_default()
@@ -336,6 +738,35 @@ impl PanelManager {
             style::PrintStyledContent(prefix.to_string().with(color_dir_path()).bold()),
             style::PrintStyledContent(suffix.to_string().bold()),
         )?;
+
+        // Ranger-style tab numbers, right-aligned, when more than one tab is
+        // open. The focused tab's (1-based) number is highlighted, the rest
+        // muted. Numbers only — no paths — and they take priority on the right
+        // edge (the cwd text on the left is drawn first, so if the header is
+        // full the numbers overwrite its tail).
+        if self.tabs.len() > 1 {
+            // Width: one digit per tab plus a separating space between each.
+            let width = (self.tabs.len() * 2).saturating_sub(1) as u16;
+            let x = self.layout.width().saturating_sub(width);
+            queue!(self.stdout, cursor::MoveTo(x, 0))?;
+            for i in 0..self.tabs.len() {
+                if i > 0 {
+                    queue!(self.stdout, style::Print(" "))?;
+                }
+                let label = (i + 1).to_string();
+                if i == self.focused {
+                    queue!(
+                        self.stdout,
+                        style::PrintStyledContent(label.with(color_main()).reverse().bold()),
+                    )?;
+                } else {
+                    queue!(
+                        self.stdout,
+                        style::PrintStyledContent(label.dark_grey()),
+                    )?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -361,7 +792,7 @@ impl PanelManager {
                 ModalRegion::ConsoleOverlay => {}
             }
         }
-        let (permissions, metadata) = print_metadata(self.center.panel().selected_path());
+        let (permissions, metadata) = print_metadata(self.active().center.panel().selected_path());
         queue!(
             self.stdout,
             style::PrintStyledContent(permissions.dark_cyan()),
@@ -371,7 +802,7 @@ impl PanelManager {
 
         // TODO: We could place this into its own line, and also print some recommendations
         let key_buffer = self.parser.buffer();
-        let (n, m) = self.center.panel().index_vs_total();
+        let (n, m) = self.active().center.panel().index_vs_total();
         let n_files_string = format!("{n}/{m} ");
 
         // Okay, we CAN print the matching commands, but currently I am not very happy with this.
@@ -447,19 +878,76 @@ impl PanelManager {
         } else {
             start..end
         };
-        self.left.panel_mut().draw(
-            &mut self.stdout,
-            self.layout.left_x_range.clone(),
-            height.clone(),
-        )?;
-        self.center.panel_mut().draw(
-            &mut self.stdout,
-            self.layout.center_x_range.clone(),
-            height.clone(),
-        )?;
-        self.right
+
+        // In split view, draw two adjacent tabs' center columns side by side.
+        // Fall back to the single-view layout if the terminal is too narrow to
+        // split (defensive: `toggle_split` already guards against this).
+        if matches!(self.view, ViewMode::Split) {
+            if let Some((left_half, right_half, divider_x)) = self.layout.split_halves() {
+                return self.draw_split(height, left_half, right_half, divider_x);
+            }
+        }
+
+        let left_x = self.layout.left_x_range.clone();
+        let center_x = self.layout.center_x_range.clone();
+        let right_x = self.layout.right_x_range.clone();
+        // Direct field access (not `active_mut()`): the panels live in
+        // `self.tabs`, which is disjoint from `self.stdout` — the method
+        // call would borrow all of `self` and conflict with `&mut self.stdout`.
+        let tab = &mut self.tabs[self.focused];
+        // Single view: all three columns render with the bright highlight
+        // (`active = true`), matching the pre-split appearance. The
+        // active/inactive dimming distinction only applies in split view,
+        // where it tells the two center columns apart (see `draw_split`).
+        tab.left
             .panel_mut()
-            .draw(&mut self.stdout, self.layout.right_x_range.clone(), height)?;
+            .draw_active(&mut self.stdout, left_x, height.clone(), true)?;
+        tab.center
+            .panel_mut()
+            .draw_active(&mut self.stdout, center_x, height.clone(), true)?;
+        tab.right
+            .panel_mut()
+            .draw_active(&mut self.stdout, right_x, height, true)?;
+        Ok(())
+    }
+
+    /// Split view: render the `center` column of two adjacent tabs into the two
+    /// halves, the focused one active (bright cursor), the other dimmed, with a
+    /// vertical divider between them.
+    fn draw_split(
+        &mut self,
+        height: Range<u16>,
+        left_half: Range<u16>,
+        right_half: Range<u16>,
+        divider_x: u16,
+    ) -> Result<()> {
+        // The visible window is [base, base+1]. In split view tabs.len() >= 2
+        // always holds (see `toggle_split`), so this never underflows.
+        let base = if self.focused + 1 < self.tabs.len() {
+            self.focused
+        } else {
+            self.focused - 1
+        };
+
+        // Draw one tab at a time so each `&mut self.tabs[idx]` borrow is
+        // released before the next, keeping it disjoint from `&mut self.stdout`.
+        for (offset, x_range) in [(0usize, left_half), (1usize, right_half)] {
+            let idx = base + offset;
+            let active = idx == self.focused;
+            let tab = &mut self.tabs[idx];
+            tab.center
+                .panel_mut()
+                .draw_active(&mut self.stdout, x_range, height.clone(), active)?;
+        }
+
+        // Vertical divider between the two halves (muted).
+        for y in height.clone() {
+            queue!(
+                self.stdout,
+                cursor::MoveTo(divider_x, y),
+                style::PrintStyledContent("│".with(color_main())),
+            )?;
+        }
         Ok(())
     }
 
@@ -478,21 +966,24 @@ impl PanelManager {
 
     fn toggle_hidden(&mut self) {
         self.show_hidden = !self.show_hidden;
-        self.left.panel_mut().set_hidden(self.show_hidden);
-        self.center.panel_mut().set_hidden(self.show_hidden);
-        if let PreviewPanel::Dir(panel) = self.right.panel_mut() {
-            panel.set_hidden(self.show_hidden);
+        let show_hidden = self.show_hidden;
+        let tab = self.active_mut();
+        tab.left.panel_mut().set_hidden(show_hidden);
+        tab.center.panel_mut().set_hidden(show_hidden);
+        if let PreviewPanel::Dir(panel) = tab.right.panel_mut() {
+            panel.set_hidden(show_hidden);
         };
         // FIX: Re-selecting path. If we are in a hidden directory, we want to re-select the
         // correct path in the left panel.
-        self.left.panel_mut().select_path(
-            self.center.panel().path(),
-            Some(self.center.panel().selected_idx()),
-        );
+        let center_path = tab.center.panel().path().to_path_buf();
+        let center_idx = tab.center.panel().selected_idx();
+        tab.left
+            .panel_mut()
+            .select_path(&center_path, Some(center_idx));
         // Toggling hidden files off can re-clamp the center selection onto a
         // different entry, so refresh the preview to match (as move_up/down do).
-        self.right
-            .new_panel_delayed(self.center.panel().selected_path());
+        let center_selected = tab.center.panel().selected_path().map(|p| p.to_path_buf());
+        tab.right.new_panel_delayed(center_selected.as_deref());
         self.mark_dirty();
     }
 
@@ -503,164 +994,70 @@ impl PanelManager {
 
     fn move_up(&mut self, step: usize) {
         trace!("move-up");
-        if self.center.panel_mut().up(step) {
-            self.right
-                .new_panel_delayed(self.center.panel().selected_path());
+        let drive = self.preview_visible();
+        if self.active_mut().move_up(step, drive) {
             self.mark_dirty();
-            self.rev_history.clear();
-            // self.stack.push(Operation::Move(Movement::Up));
         }
     }
 
     fn move_down(&mut self, step: usize) {
         trace!("move-down");
-        if self.center.panel_mut().down(step) {
-            self.right
-                .new_panel_delayed(self.center.panel().selected_path());
+        let drive = self.preview_visible();
+        if self.active_mut().move_down(step, drive) {
             self.mark_dirty();
-            self.rev_history.clear();
-            // self.stack.push(Operation::Move(Movement::Down));
         }
     }
 
     fn move_right(&mut self) {
         trace!("move-right");
-        if let Some(selected) = self.center.panel().selected_path().map(|p| p.to_path_buf()) {
-            // If the selected item is a directory, all panels will shift to the left
-            if selected.is_dir() {
-                if let Some(cmd) = zoxide_add_dir(&selected) {
+        let drive = self.preview_visible();
+        match self.active_mut().move_right(drive) {
+            MoveRight::None => {}
+            MoveRight::Descended(dir) => {
+                // Record the visited directory with zoxide.
+                if let Some(cmd) = zoxide_add_dir(&dir) {
                     if let Err(e) = self.command_tx.send(cmd) {
                         error!("Failed to queue command: {}", e);
                     }
                 }
-                self.previous = self.center.panel().path().to_path_buf();
-                debug!(
-                    "push to history: {}, len={}",
-                    self.previous.display(),
-                    self.fwd_history.len()
-                );
-
-                // Remember forward history
-                self.fwd_history.push((
-                    self.left.panel().path().to_owned(),
-                    self.left
-                        .panel()
-                        .selected_path()
-                        .map(|p| p.to_owned())
-                        .unwrap_or_default(),
-                ));
-                self.left.update_panel(self.center.panel().clone());
-                self.center
-                    .new_panel_instant(self.right.panel().maybe_path());
-
-                if let Some(path) = self.rev_history.pop() {
-                    info!(
-                        "pop rev-history: {}, len={}",
-                        path.display(),
-                        self.rev_history.len()
-                    );
-                    info!("set-center-panel selection");
-                    self.center.panel_mut().select_path(&path, None);
-                }
-
-                self.right
-                    .new_panel_delayed(self.center.panel().selected_path());
-
-                if let Some(path) = self.rev_history.last() {
-                    info!("set-right-panel selection");
-                    self.right.panel_mut().select_path(path);
-                }
-
                 self.mark_dirty();
-            } else {
-                info!("Opening '{}'", selected.display());
-
-                // Change working directory so that child processes gets spawned from the currently active directory.
-                if let Err(e) = std::env::set_current_dir(self.center.panel().path()) {
+                self.unmark_left_right();
+            }
+            MoveRight::OpenFile { file, cwd } => {
+                info!("Opening '{}'", file.display());
+                // Change working directory so that child processes gets spawned
+                // from the currently active directory.
+                if let Err(e) = std::env::set_current_dir(&cwd) {
                     error!("Failed to set working-directory for process: {e}");
                 }
-                if let Err(e) = self.opener.open(selected) {
+                if let Err(e) = self.opener.open(file) {
                     /* failed to open selected */
                     error!("Opening failed: {e}");
                 }
                 self.mark_dirty();
+                self.unmark_left_right();
             }
-            // self.stack.push(Operation::Move(Movement::Right));
-            //
-            self.unmark_left_right();
         }
     }
 
     fn move_left(&mut self) {
         trace!("move-left");
-        // If the left panel is empty, we cannot move left:
-        if self.left.panel().selected_path().is_none() {
-            return;
+        if self.active_mut().move_left() {
+            self.unmark_left_right();
+            // All panels needs to be redrawn
+            self.mark_dirty();
         }
-        if let Some(path) = self.right.panel().maybe_path() {
-            info!(
-                "push to rev-history: {}, len={}",
-                path.display(),
-                self.rev_history.len()
-            );
-            self.rev_history.push(path);
-        }
-        self.previous = self.center.panel().path().to_path_buf();
-        self.right
-            .update_panel(PreviewPanel::Dir(self.center.panel().clone()));
-        self.center.update_panel(self.left.panel().clone());
-        // | m | l | m |
-        // TODO: When we followed some symlink we don't want to take the parent here.
-        match self.fwd_history.pop() {
-            Some((previous, selected)) => {
-                debug!(
-                    "using history: {}, selected={}, len={}",
-                    previous.display(),
-                    selected.display(),
-                    self.fwd_history.len()
-                );
-                self.left.new_panel_instant(Some(previous));
-                info!("set-left-panel selection");
-                self.left.panel_mut().select_path(&selected, None);
-            }
-            None => {
-                let parent = self.center.panel().path().parent();
-                info!("using parent: {:?}", parent);
-                self.left.new_panel_instant(parent);
-                info!("set-left-panel selection");
-                self.left
-                    .panel_mut()
-                    .select_path(self.center.panel().path(), None);
-            }
-        }
-
-        self.unmark_left_right();
-
-        // All panels needs to be redrawn
-        self.mark_dirty();
-        // self.stack.push(Operation::Move(Movement::Left));
     }
 
     fn jump(&mut self, path: PathBuf) {
         trace!("jump-to {}", path.display());
-        // Don't do anything, if the path hasn't changed
-        if path.as_path() == self.center.panel().path() {
-            return;
-        }
-        if path.exists() {
+        let drive = self.preview_visible();
+        if let Some(path) = self.active_mut().jump(path, drive) {
             if let Some(cmd) = zoxide_add_dir(&path) {
                 if let Err(e) = self.command_tx.send(cmd) {
                     error!("Failed to queue command: {}", e);
                 }
             }
-            self.fwd_history.clear(); // Delete history when jumping
-            self.rev_history.clear();
-            self.previous = self.center.panel().path().to_path_buf();
-            self.left.new_panel_instant(path.parent());
-            self.left.panel_mut().select_path(&path, None);
-            self.center.new_panel_instant(Some(&path));
-            self.right
-                .new_panel_delayed(self.center.panel().selected_path());
             self.mark_dirty();
         }
     }
@@ -678,16 +1075,17 @@ impl PanelManager {
             Move::PageForward => self.move_down(self.layout.height() as usize),
             Move::PageBackward => self.move_up(self.layout.height() as usize),
             Move::JumpTo(path) => self.jump(path.into()),
-            Move::JumpPrevious => self.jump(self.previous.clone()),
+            Move::JumpPrevious => self.jump(self.active().previous.clone()),
         };
     }
 
     /// Returns a reference to all marked items.
     fn marked_items(&self) -> Vec<&DirElem> {
+        let tab = self.active();
         let mut out = Vec::new();
-        out.extend(self.left.panel().elements().filter(|e| e.is_marked()));
-        out.extend(self.center.panel().elements().filter(|e| e.is_marked()));
-        if let PreviewPanel::Dir(panel) = self.right.panel() {
+        out.extend(tab.left.panel().elements().filter(|e| e.is_marked()));
+        out.extend(tab.center.panel().elements().filter(|e| e.is_marked()));
+        if let PreviewPanel::Dir(panel) = tab.right.panel() {
             out.extend(panel.elements().filter(|e| e.is_marked()))
         }
         out
@@ -695,7 +1093,8 @@ impl PanelManager {
 
     /// Unmarks all items in all panels
     fn unmark_all_items(&mut self) {
-        self.center
+        self.active_mut()
+            .center
             .panel_mut()
             .elements_mut()
             .for_each(|item| item.unmark());
@@ -704,12 +1103,13 @@ impl PanelManager {
 
     /// Unmarks all items in the left and right panels.
     fn unmark_left_right(&mut self) {
-        self.left
+        let tab = self.active_mut();
+        tab.left
             .panel_mut()
             .elements_mut()
             .for_each(|item| item.unmark());
 
-        if let PreviewPanel::Dir(panel) = self.right.panel_mut() {
+        if let PreviewPanel::Dir(panel) = tab.right.panel_mut() {
             panel.elements_mut().for_each(|item| item.unmark());
         }
         self.mark_dirty();
@@ -729,8 +1129,9 @@ impl PanelManager {
             .collect();
         // If we have nothing marked, take the current selection
         if files.is_empty() {
-            self.center.panel_mut().mark_selected_item();
-            if let Some(path) = self.center.panel().selected_path() {
+            let tab = self.active_mut();
+            tab.center.panel_mut().mark_selected_item();
+            if let Some(path) = tab.center.panel().selected_path() {
                 vec![path.to_path_buf()]
             } else {
                 Vec::new()
@@ -1024,22 +1425,30 @@ impl PanelManager {
                 // ready — the event queue is drained.
                 let _ = reply.send(self.debug_seq);
             }
-            DebugRequest::Entries { pane, reply } => {
-                let panel = match pane {
-                    PaneId::Left => self.left.panel(),
-                    PaneId::Center => self.center.panel(),
+            DebugRequest::Entries { tab, pane, reply } => {
+                let idx = tab.unwrap_or(self.focused);
+                // Panic-safe: an out-of-range tab index yields an empty list
+                // rather than panic-indexing `self.tabs`.
+                let entries = match self.tabs.get(idx) {
+                    None => Vec::new(),
+                    Some(tab) => {
+                        let panel = match pane {
+                            PaneId::Left => tab.left.panel(),
+                            PaneId::Center => tab.center.panel(),
+                        };
+                        let selected_idx = panel.selected_idx();
+                        panel
+                            .elements()
+                            .enumerate()
+                            .map(|(idx, elem)| EntryInfo {
+                                name: elem.name().clone(),
+                                marked: elem.is_marked(),
+                                hidden: elem.is_hidden(),
+                                selected: idx == selected_idx,
+                            })
+                            .collect()
+                    }
                 };
-                let selected_idx = panel.selected_idx();
-                let entries = panel
-                    .elements()
-                    .enumerate()
-                    .map(|(idx, elem)| EntryInfo {
-                        name: elem.name().clone(),
-                        marked: elem.is_marked(),
-                        hidden: elem.is_hidden(),
-                        selected: idx == selected_idx,
-                    })
-                    .collect();
                 let _ = reply.send(entries);
             }
             DebugRequest::Log { count, reply } => {
@@ -1066,15 +1475,14 @@ impl PanelManager {
         }
     }
 
-    fn state_snapshot(&self) -> StateSnapshot {
-        let center = self.center.panel();
-        // `index_vs_total()` returns a 1-based position; the snapshot
-        // exposes a 0-based index into the visible entries.
+    /// Builds a per-tab snapshot from a single tab's center panel, using the
+    /// exact same logic the scalar top-level fields use (so the mirror and the
+    /// `tabs` array agree). `index_vs_total()` returns a 1-based position; the
+    /// snapshot exposes a 0-based index into the visible entries.
+    fn tab_snapshot(tab: &Tab) -> TabSnapshot {
+        let center = tab.center.panel();
         let (position, total) = center.index_vs_total();
-        let queue = self.command_status_rx.borrow().clone();
-        StateSnapshot {
-            seq: self.debug_seq,
-            mode: self.mode_name().to_string(),
+        TabSnapshot {
             cwd: center.path().to_path_buf(),
             selection: center
                 .selected_path()
@@ -1087,13 +1495,38 @@ impl PanelManager {
                 .filter(|e| e.is_marked())
                 .map(|e| e.path().to_path_buf())
                 .collect(),
+        }
+    }
+
+    fn state_snapshot(&self) -> StateSnapshot {
+        let tabs: Vec<TabSnapshot> = self.tabs.iter().map(Self::tab_snapshot).collect();
+        // Mirror the focused tab onto the scalar top-level fields for backward
+        // compatibility with single-tab scripts.
+        let focused = &tabs[self.focused];
+        let active = self.active();
+        let queue = self.command_status_rx.borrow().clone();
+        StateSnapshot {
+            seq: self.debug_seq,
+            mode: self.mode_name().to_string(),
+            view: match self.view {
+                ViewMode::Single => "single",
+                ViewMode::Split => "split",
+            }
+            .to_string(),
+            focused: self.focused,
+            cwd: focused.cwd.clone(),
+            selection: focused.selection.clone(),
+            selected_idx: focused.selected_idx,
+            total: focused.total,
+            marked: focused.marked.clone(),
+            tabs,
             clipboard: self.clipboard.as_ref().map(|c| ClipboardInfo {
                 files: c.files.clone(),
                 op: if c.cut { "cut" } else { "copy" }.to_string(),
             }),
             show_hidden: self.show_hidden,
-            left_path: self.left.panel().path().to_path_buf(),
-            preview_path: self.right.panel().path().to_path_buf(),
+            left_path: active.left.panel().path().to_path_buf(),
+            preview_path: active.right.panel().path().to_path_buf(),
             queue_active: queue.active,
             queue_len: queue.queued_count,
             undo_depth: self.undo.undo_depth(),
@@ -1127,21 +1560,51 @@ impl PanelManager {
                     }
                     let (panel, state) = result.unwrap();
 
-                    // Find panel and update it
-                    if self.center.check_update(&state) {
-                        trace!("panel-update: center <- {}", state.path().display());
-                        self.center.update_panel(panel);
-                        // update preview (if necessary)
-                        self.right.new_panel_delayed(self.center.panel().selected_path());
-                        self.mark_dirty();
-                    } else if self.left.check_update(&state) {
-                        trace!("panel-update: left <- {}", state.path().display());
-                        self.left.update_panel(panel);
-                        self.left.panel_mut().select_path(self.center.panel().path(), Some(self.center.panel().selected_idx()));
-                        self.mark_dirty();
-                    } else {
+                    // Route the update to whichever tab owns the matching panel
+                    // (matched by `panel_id` via `check_update`) — NOT just the
+                    // focused tab. Background tabs must refresh too: their center
+                    // panels are visible in split view, and a cross-tab move
+                    // mutates the (non-focused) source tab's directory. Scope the
+                    // `tab` borrow so it ends before `self.mark_dirty()`
+                    // (a `&mut self` method), keeping the mark_dirty() invariant.
+                    // A `for … in .iter_mut().enumerate()` loop (rather than
+                    // `.any(...)`) because `panel` is MOVED into `update_panel`;
+                    // a `FnMut` closure can't capture a value it moves out.
+                    let focused = self.focused;
+                    let preview_visible = self.preview_visible();
+                    let updated = 'update: {
+                        for (idx, tab) in self.tabs.iter_mut().enumerate() {
+                            if tab.center.check_update(&state) {
+                                trace!("panel-update: center <- {}", state.path().display());
+                                tab.center.update_panel(panel);
+                                // Only drive the preview when it is actually on
+                                // screen (focused tab, single view). For an
+                                // off-screen tab it is refreshed when it next
+                                // becomes visible (refresh_focused_preview).
+                                if preview_visible && idx == focused {
+                                    let selected = tab
+                                        .center
+                                        .panel()
+                                        .selected_path()
+                                        .map(|p| p.to_path_buf());
+                                    tab.right.new_panel_delayed(selected.as_deref());
+                                }
+                                break 'update true;
+                            } else if tab.left.check_update(&state) {
+                                trace!("panel-update: left <- {}", state.path().display());
+                                tab.left.update_panel(panel);
+                                let center_path = tab.center.panel().path().to_path_buf();
+                                let center_idx = tab.center.panel().selected_idx();
+                                tab.left.panel_mut().select_path(&center_path, Some(center_idx));
+                                break 'update true;
+                            }
+                        }
                         // Reduce log level here, this is not that important
                         debug!("unknown panel update: {:?}", state);
+                        false
+                    };
+                    if updated {
+                        self.mark_dirty();
                     }
                 }
                 // Check incoming new preview-panels
@@ -1152,9 +1615,24 @@ impl PanelManager {
                     }
                     let (panel, state) = result.unwrap();
 
-                    if self.right.check_update(&state) {
-                        trace!("panel-update: preview <- {}", state.path().display());
-                        self.right.update_panel(panel);
+                    // Same all-tabs routing as dir_rx above: background tabs'
+                    // preview panels stay fresh too (a preview load driven while
+                    // focused may land after focus moved on).
+                    //
+                    // Written as a `for`+labeled-block, not `.iter_mut().any(...)`:
+                    // `panel` is MOVED into `update_panel`, and a `FnMut` closure
+                    // can't capture a value it moves out on each call.
+                    let updated = 'update: {
+                        for tab in self.tabs.iter_mut() {
+                            if tab.right.check_update(&state) {
+                                trace!("panel-update: preview <- {}", state.path().display());
+                                tab.right.update_panel(panel);
+                                break 'update true;
+                            }
+                        }
+                        false
+                    };
+                    if updated {
                         self.mark_dirty();
                     }
                 }
@@ -1215,26 +1693,31 @@ impl PanelManager {
                 self.jump(path);
             }
             ModeOp::UpdateSearch(pattern) => {
-                self.center.panel_mut().update_search(pattern);
+                self.active_mut().center.panel_mut().update_search(pattern);
             }
             ModeOp::FinishSearch(pattern) => {
-                self.center.panel_mut().finish_search(&pattern);
-                self.center.panel_mut().select_next_marked();
-                self.right
-                    .new_panel_delayed(self.center.panel().selected_path());
+                let tab = self.active_mut();
+                tab.center.panel_mut().finish_search(&pattern);
+                tab.center.panel_mut().select_next_marked();
+                let selected = tab.center.panel().selected_path().map(|p| p.to_path_buf());
+                tab.right.new_panel_delayed(selected.as_deref());
                 self.mode = Mode::Normal;
             }
             ModeOp::RenamePreview(name) => {
                 // The manager supplies the apply-time context: the preview
                 // is anchored at the currently selected entry.
-                let selected_idx = self.center.panel().selected_idx();
-                self.center
+                let tab = self.active_mut();
+                let selected_idx = tab.center.panel().selected_idx();
+                tab.center
                     .panel_mut()
                     .inject_rename_preview(name, selected_idx);
             }
             ModeOp::Rename { to } => self.apply_rename(to),
             ModeOp::CreatePreview { name, is_dir } => {
-                self.center.panel_mut().inject_new_element(name, is_dir);
+                self.active_mut()
+                    .center
+                    .panel_mut()
+                    .inject_new_element(name, is_dir);
             }
             ModeOp::Create { name, is_dir } => self.apply_create(name, is_dir),
             ModeOp::RestoreFromTrash { items } => {
@@ -1274,7 +1757,7 @@ impl PanelManager {
     /// Ported verbatim from the old inline rename Enter arm: same-path is
     /// a no-op, existing targets are never overwritten.
     fn apply_rename(&mut self, to: String) {
-        if let Some(from) = self.center.panel().selected_path() {
+        if let Some(from) = self.active().center.panel().selected_path() {
             let from = from.to_path_buf();
             let to_path = from.parent().map(|p| p.join(&to)).unwrap_or_default();
             // Don't rename if it's the same path
@@ -1298,9 +1781,10 @@ impl PanelManager {
             }
         }
         self.mode = Mode::Normal;
-        self.center.panel_mut().clear_rename_preview();
-        self.center.reload();
-        self.right.reload();
+        let tab = self.active_mut();
+        tab.center.panel_mut().clear_rename_preview();
+        tab.center.reload();
+        tab.right.reload();
         self.mark_dirty();
     }
 
@@ -1311,7 +1795,7 @@ impl PanelManager {
     /// typed name is trimmed here (at apply time), creation errors are
     /// only logged.
     fn apply_create(&mut self, name: String, is_dir: bool) {
-        let current_path = self.center.panel().path();
+        let current_path = self.active().center.panel().path().to_path_buf();
         let create_fn = if is_dir {
             |item| fs_extra::dir::create(item, false)
         } else {
@@ -1340,7 +1824,7 @@ impl PanelManager {
             self.undo.record(tx);
         }
         self.mode = Mode::Normal;
-        self.center.panel_mut().clear_new_element();
+        self.active_mut().center.panel_mut().clear_new_element();
         self.mark_dirty();
     }
 
@@ -1348,9 +1832,11 @@ impl PanelManager {
     fn apply_cleanup(&mut self, cleanup: Cleanup) {
         match cleanup {
             Cleanup::None => {}
-            Cleanup::Search => self.center.panel_mut().clear_search(),
-            Cleanup::RenamePreview => self.center.panel_mut().clear_rename_preview(),
-            Cleanup::CreatePreview => self.center.panel_mut().clear_new_element(),
+            Cleanup::Search => self.active_mut().center.panel_mut().clear_search(),
+            Cleanup::RenamePreview => {
+                self.active_mut().center.panel_mut().clear_rename_preview()
+            }
+            Cleanup::CreatePreview => self.active_mut().center.panel_mut().clear_new_element(),
             Cleanup::CdTo(path) => self.jump(path),
         }
     }
@@ -1399,9 +1885,10 @@ impl PanelManager {
                         // clean up after themselves — candidates for removal;
                         // the redraws stay regardless, because unmark is
                         // user-visible.
-                        self.center.panel_mut().clear_search();
-                        self.center.panel_mut().clear_new_element();
-                        self.center.panel_mut().clear_rename_preview();
+                        let tab = self.active_mut();
+                        tab.center.panel_mut().clear_search();
+                        tab.center.panel_mut().clear_new_element();
+                        tab.center.panel_mut().clear_rename_preview();
                         self.unmark_all_items();
                     }
                     match self.parser.add_event(key_event) {
@@ -1430,9 +1917,13 @@ impl PanelManager {
                             // construction (the same panel path the old
                             // manager-side field recorded before the seam).
                             self.mode = if zoxide {
-                                Mode::Modal(Box::new(Zoxide::from_panel(self.center.panel())))
+                                Mode::Modal(Box::new(Zoxide::from_panel(
+                                    self.active().center.panel(),
+                                )))
                             } else {
-                                Mode::Modal(Box::new(DirConsole::from_panel(self.center.panel())))
+                                Mode::Modal(Box::new(DirConsole::from_panel(
+                                    self.active().center.panel(),
+                                )))
                             };
                         }
                         Command::Search => {
@@ -1451,6 +1942,7 @@ impl PanelManager {
                                 // Single file rename - modal mode seeded
                                 // with the current file name
                                 let selected = self
+                                    .active()
                                     .center
                                     .panel()
                                     .selected_path()
@@ -1461,14 +1953,18 @@ impl PanelManager {
                             }
                         }
                         Command::Next => {
-                            self.center.panel_mut().select_next_marked();
-                            self.right
-                                .new_panel_delayed(self.center.panel().selected_path());
+                            let tab = self.active_mut();
+                            tab.center.panel_mut().select_next_marked();
+                            let selected =
+                                tab.center.panel().selected_path().map(|p| p.to_path_buf());
+                            tab.right.new_panel_delayed(selected.as_deref());
                         }
                         Command::Previous => {
-                            self.center.panel_mut().select_prev_marked();
-                            self.right
-                                .new_panel_delayed(self.center.panel().selected_path());
+                            let tab = self.active_mut();
+                            tab.center.panel_mut().select_prev_marked();
+                            let selected =
+                                tab.center.panel().selected_path().map(|p| p.to_path_buf());
+                            tab.right.new_panel_delayed(selected.as_deref());
                         }
                         Command::Mkdir => {
                             self.mode = Mode::Modal(Box::new(CreateItemMode::new(true)));
@@ -1477,11 +1973,34 @@ impl PanelManager {
                             self.mode = Mode::Modal(Box::new(CreateItemMode::new(false)));
                         }
                         Command::Mark => {
-                            self.center.panel_mut().mark_selected_item();
+                            self.active_mut().center.panel_mut().mark_selected_item();
                             self.move_cursor(Move::Down);
                         }
                         Command::Undo => self.apply_undo(),
                         Command::Redo => self.apply_redo(),
+                        Command::FocusNext => {
+                            trace!("command: focus next tab");
+                            self.focus_next();
+                        }
+                        Command::NewTab => {
+                            trace!("command: new tab");
+                            self.new_tab();
+                        }
+                        Command::CloseTab => {
+                            trace!("command: close tab");
+                            if let Some(close) = self.close_tab() {
+                                return Ok(Some(close));
+                            }
+                        }
+                        Command::FocusTab(n) => {
+                            trace!("command: focus tab {n}");
+                            // Config is 1-based; tabs are indexed from 0.
+                            self.focus_tab(n.saturating_sub(1));
+                        }
+                        Command::ToggleSplit => {
+                            trace!("command: toggle split");
+                            self.toggle_split();
+                        }
                         Command::Cut => {
                             let files = self.marked_or_selected();
                             info!("cut {} items", files.len());
@@ -1518,7 +2037,7 @@ impl PanelManager {
                         }
                         Command::Paste { overwrite } => {
                             self.unmark_all_items();
-                            let current_path = self.center.panel().path().to_path_buf();
+                            let current_path = self.active().center.panel().path().to_path_buf();
                             let clipboard = self.clipboard.take();
                             let undo_tx = self.undo_tx.clone();
                             tokio::task::spawn_blocking(move || {
@@ -1558,7 +2077,7 @@ impl PanelManager {
                         }
                         Command::Zip => {
                             let items = self.marked_or_selected();
-                            let dir = self.center.panel().path().to_path_buf();
+                            let dir = self.active().center.panel().path().to_path_buf();
                             if let Err(e) = std::env::set_current_dir(&dir) {
                                 error!("Failed to set working-directory for process: {e}");
                             }
@@ -1567,7 +2086,7 @@ impl PanelManager {
                         }
                         Command::Tar => {
                             let items = self.marked_or_selected();
-                            let dir = self.center.panel().path().to_path_buf();
+                            let dir = self.active().center.panel().path().to_path_buf();
                             if let Err(e) = std::env::set_current_dir(&dir) {
                                 error!("Failed to set working-directory for process: {e}");
                             }
@@ -1575,13 +2094,18 @@ impl PanelManager {
                             self.record_archive("tar", &dir, archive);
                         }
                         Command::Extract => {
-                            if let Some(archive) = self.center.panel().selected_path() {
-                                if let Err(e) =
-                                    std::env::set_current_dir(self.center.panel().path())
-                                {
+                            let archive = self
+                                .active()
+                                .center
+                                .panel()
+                                .selected_path()
+                                .map(|p| p.to_path_buf());
+                            if let Some(archive) = archive {
+                                let dir = self.active().center.panel().path().to_path_buf();
+                                if let Err(e) = std::env::set_current_dir(&dir) {
                                     error!("Failed to set working-directory for process: {e}");
                                 }
-                                if let Err(e) = self.opener.extract(archive.to_owned()) {
+                                if let Err(e) = self.opener.extract(archive) {
                                     warn!("Failed to extract archive: {e}");
                                 }
                             } else {
@@ -1590,7 +2114,7 @@ impl PanelManager {
                         }
                         Command::Quit => {
                             return Ok(Some(CloseCmd::QuitWithPath {
-                                path: self.center.panel().path().to_path_buf(),
+                                path: self.active().center.panel().path().to_path_buf(),
                             }));
                         }
                         Command::QuitWithoutPath => {
@@ -1604,7 +2128,7 @@ impl PanelManager {
                         } => {
                             let paths = self.marked_or_selected();
                             let expanded_cmd = expand_command(&cmd, &paths, &separator);
-                            let working_dir = self.center.panel().path().to_path_buf();
+                            let working_dir = self.active().center.panel().path().to_path_buf();
 
                             if interactive {
                                 // Run interactively in foreground
@@ -1650,8 +2174,9 @@ impl PanelManager {
                             self.unmark_all_items();
                         }
                         Command::SetJumpMark(c) => {
-                            let dir = self.center.panel().path().to_path_buf();
+                            let dir = self.active().center.panel().path().to_path_buf();
                             let entry = self
+                                .active()
                                 .center
                                 .panel()
                                 .selected_path()
@@ -1673,10 +2198,14 @@ impl PanelManager {
                                         // jump() previewed the panel's default
                                         // selection; re-select the marked entry
                                         // and refresh the preview for it.
-                                        self.center.panel_mut().select_path(&entry, None);
-                                        self.right.new_panel_delayed(
-                                            self.center.panel().selected_path(),
-                                        );
+                                        let tab = self.active_mut();
+                                        tab.center.panel_mut().select_path(&entry, None);
+                                        let selected = tab
+                                            .center
+                                            .panel()
+                                            .selected_path()
+                                            .map(|p| p.to_path_buf());
+                                        tab.right.new_panel_delayed(selected.as_deref());
                                     }
                                     self.mark_dirty();
                                 }
@@ -1702,5 +2231,358 @@ impl PanelManager {
             self.mark_dirty();
         }
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content::PanelCache;
+    use std::fs::{self, canonicalize};
+    use tokio::sync::mpsc;
+
+    /// Everything a fixture-backed [`Tab`] needs to stay alive: the tab plus
+    /// the receiving ends of its content channels (dropping them would make the
+    /// `ManagedPanel` senders panic on `.expect("Receiver dropped")`).
+    struct TabFixture {
+        tab: Tab,
+        _dir_rx: mpsc::UnboundedReceiver<PanelUpdate>,
+        _prev_rx: mpsc::UnboundedReceiver<PanelUpdate>,
+        _tmp: tempfile::TempDir,
+        root: PathBuf,
+    }
+
+    /// Builds a real `Tab` rooted at a fresh tempdir laid out like:
+    ///
+    /// ```text
+    /// root/
+    ///   sub/            <- a subdirectory (sorts first, initial selection)
+    ///     inner1.txt
+    ///     inner2.txt
+    ///   zempty/         <- an empty subdirectory (sorts after `sub`, before files)
+    ///   a.txt
+    ///   b.txt
+    ///   c.txt
+    /// ```
+    ///
+    /// Note `sub` holds *two* files so a rev_history round-trip can restore a
+    /// specific deeper selection (not merely the default first child), and
+    /// `zempty` is deliberately named so it still sorts after `sub` — keeping
+    /// `sub` the initial selection that the other tests rely on.
+    ///
+    /// The panels are populated synchronously via `new_panel_instant`
+    /// (mirroring `init_miller_panels`), so navigation is observable without
+    /// any async content manager running.
+    fn fixture() -> TabFixture {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = canonicalize(tmp.path()).expect("canonicalize root");
+        fs::create_dir(root.join("sub")).unwrap();
+        fs::write(root.join("sub").join("inner1.txt"), b"x").unwrap();
+        fs::write(root.join("sub").join("inner2.txt"), b"x").unwrap();
+        fs::create_dir(root.join("zempty")).unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            fs::write(root.join(name), b"x").unwrap();
+        }
+
+        let (dir_tx, dir_rx) = mpsc::unbounded_channel::<PanelUpdate>();
+        let (prev_tx, prev_rx) = mpsc::unbounded_channel::<PanelUpdate>();
+        let handles = ContentHandles {
+            directory_cache: PanelCache::<DirPanel>::with_size(64),
+            preview_cache: PanelCache::<PreviewPanel>::with_size(64),
+            directory_tx: dir_tx,
+            preview_tx: prev_tx,
+        };
+
+        let tab = Tab::new_at(&root, handles);
+
+        TabFixture {
+            tab,
+            _dir_rx: dir_rx,
+            _prev_rx: prev_rx,
+            _tmp: tmp,
+            root,
+        }
+    }
+
+    fn center_path(tab: &Tab) -> PathBuf {
+        tab.center.panel().path().to_path_buf()
+    }
+
+    fn center_selected(tab: &Tab) -> Option<PathBuf> {
+        tab.center.panel().selected_path().map(|p| p.to_path_buf())
+    }
+
+    #[test]
+    fn initial_selection_is_the_subdir() {
+        // Directories sort before files, so `sub` is the initial selection.
+        let f = fixture();
+        assert_eq!(center_path(&f.tab), f.root);
+        assert_eq!(center_selected(&f.tab), Some(f.root.join("sub")));
+    }
+
+    #[test]
+    fn move_down_and_up_change_selection_within_bounds() {
+        // Sort order is: sub, zempty (dirs first), then a.txt, b.txt, c.txt.
+        let mut f = fixture();
+        // sub -> zempty
+        assert!(f.tab.move_down(1, true));
+        assert_eq!(center_selected(&f.tab), Some(f.root.join("zempty")));
+        // zempty -> a.txt
+        assert!(f.tab.move_down(1, true));
+        assert_eq!(center_selected(&f.tab), Some(f.root.join("a.txt")));
+        // a.txt -> b.txt
+        assert!(f.tab.move_down(1, true));
+        assert_eq!(center_selected(&f.tab), Some(f.root.join("b.txt")));
+        // back up to a.txt
+        assert!(f.tab.move_up(1, true));
+        assert_eq!(center_selected(&f.tab), Some(f.root.join("a.txt")));
+    }
+
+    #[test]
+    fn move_up_at_top_is_noop() {
+        let mut f = fixture();
+        // Already on the first entry (`sub`); moving up must not underflow and
+        // must report "did not move".
+        assert!(!f.tab.move_up(1, true));
+        assert_eq!(center_selected(&f.tab), Some(f.root.join("sub")));
+    }
+
+    #[test]
+    fn move_down_at_bottom_is_noop() {
+        let mut f = fixture();
+        // Jump to the very bottom.
+        assert!(f.tab.move_down(usize::MAX, true));
+        assert_eq!(center_selected(&f.tab), Some(f.root.join("c.txt")));
+        // A further move down must report "did not move".
+        assert!(!f.tab.move_down(1, true));
+        assert_eq!(center_selected(&f.tab), Some(f.root.join("c.txt")));
+    }
+
+    #[test]
+    fn move_right_into_subdir_shifts_panels_and_records_history() {
+        let mut f = fixture();
+        let old_center = center_path(&f.tab); // root
+        let sub = f.root.join("sub");
+
+        match f.tab.move_right(true) {
+            MoveRight::Descended(dir) => assert_eq!(dir, sub),
+            MoveRight::None => panic!("expected Descended, got None"),
+            MoveRight::OpenFile { .. } => panic!("expected Descended, got OpenFile"),
+        }
+
+        // center is now the subdir; left is the old center.
+        assert_eq!(center_path(&f.tab), sub);
+        assert_eq!(f.tab.left.panel().path(), old_center.as_path());
+        // one forward-history entry recording where we came from.
+        assert_eq!(f.tab.fwd_history.len(), 1);
+        assert_eq!(f.tab.fwd_history[0].0, f.root.parent().unwrap());
+        // previous cwd is remembered.
+        assert_eq!(f.tab.previous, old_center);
+    }
+
+    #[test]
+    fn move_right_on_a_file_reports_openfile_without_shifting() {
+        let mut f = fixture();
+        // Move onto a regular file (sub -> zempty -> a.txt).
+        assert!(f.tab.move_down(1, true));
+        assert!(f.tab.move_down(1, true));
+        assert_eq!(center_selected(&f.tab), Some(f.root.join("a.txt")));
+        let center_before = center_path(&f.tab);
+
+        let outcome = f.tab.move_right(true);
+        match outcome {
+            MoveRight::OpenFile { file, cwd } => {
+                assert_eq!(file, f.root.join("a.txt"));
+                assert_eq!(cwd, f.root);
+            }
+            _ => panic!("expected OpenFile"),
+        }
+        // Panels did not shift; no history recorded.
+        assert_eq!(center_path(&f.tab), center_before);
+        assert!(f.tab.fwd_history.is_empty());
+    }
+
+    #[test]
+    fn move_left_restores_selection_from_history() {
+        let mut f = fixture();
+        let root = f.root.clone();
+        let sub = root.join("sub");
+
+        // Descend into sub.
+        assert!(matches!(f.tab.move_right(true), MoveRight::Descended(_)));
+        assert_eq!(center_path(&f.tab), sub);
+
+        // Go back left.
+        assert!(f.tab.move_left());
+        // We are back at root, and `sub` is re-selected from forward-history.
+        assert_eq!(center_path(&f.tab), root);
+        assert_eq!(center_selected(&f.tab), Some(sub));
+        // forward-history was consumed.
+        assert!(f.tab.fwd_history.is_empty());
+    }
+
+    #[test]
+    fn move_left_stops_at_filesystem_root() {
+        // Climbing left repeatedly must terminate: once the center reaches the
+        // filesystem root, the left panel is empty and move_left is a no-op
+        // (returns false) instead of looping or underflowing.
+        let mut f = fixture();
+        // Bound the loop generously; the tempdir depth is small.
+        let mut moved = 0;
+        while f.tab.move_left() {
+            moved += 1;
+            assert!(moved < 100, "move_left did not terminate");
+        }
+        // We reached a point where move_left reports "did not move".
+        assert!(!f.tab.move_left());
+        // Center is at the filesystem root (has no parent, or parent == self).
+        let here = center_path(&f.tab);
+        assert!(
+            here.parent().is_none() || here.parent() == Some(here.as_path()),
+            "expected filesystem root, got {}",
+            here.display()
+        );
+    }
+
+    #[test]
+    fn jump_sets_center_and_clears_history() {
+        let mut f = fixture();
+        let root = f.root.clone();
+        let sub = root.join("sub");
+
+        // Create some history first.
+        assert!(matches!(f.tab.move_right(true), MoveRight::Descended(_)));
+        assert_eq!(f.tab.fwd_history.len(), 1);
+
+        // Jump back up to root.
+        let jumped = f.tab.jump(root.clone(), true);
+        assert_eq!(jumped, Some(root.clone()));
+        assert_eq!(center_path(&f.tab), root);
+        assert_eq!(f.tab.left.panel().path(), root.parent().unwrap());
+        // history cleared on jump.
+        assert!(f.tab.fwd_history.is_empty());
+        assert!(f.tab.rev_history.is_empty());
+        // previous remembers where we jumped from.
+        assert_eq!(f.tab.previous, sub);
+    }
+
+    #[test]
+    fn jump_to_same_path_is_noop() {
+        let mut f = fixture();
+        let here = center_path(&f.tab);
+        assert_eq!(f.tab.jump(here, true), None);
+    }
+
+    #[test]
+    fn jump_to_missing_path_is_noop() {
+        let mut f = fixture();
+        let missing = f.root.join("does-not-exist");
+        assert_eq!(f.tab.jump(missing, true), None);
+    }
+
+    #[test]
+    fn move_right_after_move_left_restores_deeper_selection_via_rev_history() {
+        // End-to-end exercise of the rev_history path: descend into `sub`,
+        // pick a *specific* child (not the default first one), climb back out
+        // (which pushes that child onto rev_history), then descend again. The
+        // pop-rev-history / set-center-selection logic must restore the exact
+        // deeper selection.
+        let mut f = fixture();
+        let root = f.root.clone();
+        let sub = root.join("sub");
+        let inner1 = sub.join("inner1.txt");
+        let inner2 = sub.join("inner2.txt");
+
+        // Descend into `sub`; default selection is the first child.
+        assert!(matches!(f.tab.move_right(true), MoveRight::Descended(_)));
+        assert_eq!(center_path(&f.tab), sub);
+        assert_eq!(center_selected(&f.tab), Some(inner1.clone()));
+
+        // Move down to `inner2.txt` — the deeper selection we want restored.
+        assert!(f.tab.move_down(1, true));
+        assert_eq!(center_selected(&f.tab), Some(inner2.clone()));
+        // rev_history is empty until we climb back out.
+        assert!(f.tab.rev_history.is_empty());
+
+        // Climb back to root; this pushes the highlighted child to rev_history.
+        assert!(f.tab.move_left());
+        assert_eq!(center_path(&f.tab), root);
+        assert_eq!(center_selected(&f.tab), Some(sub.clone()));
+        assert_eq!(f.tab.rev_history, vec![inner2.clone()]);
+
+        // Descend again: rev_history is popped and the deeper `inner2.txt`
+        // selection is restored (NOT the default `inner1.txt`).
+        assert!(matches!(f.tab.move_right(true), MoveRight::Descended(_)));
+        assert_eq!(center_path(&f.tab), sub);
+        assert_eq!(
+            center_selected(&f.tab),
+            Some(inner2),
+            "rev_history should restore the deeper selection, not default to {}",
+            inner1.display()
+        );
+        // rev_history was consumed by the pop.
+        assert!(f.tab.rev_history.is_empty());
+    }
+
+    #[test]
+    fn move_right_in_empty_dir_reports_none() {
+        // Descend into the empty subdirectory, then attempt to descend further.
+        // With nothing selected there is nothing to descend into, so move_right
+        // must report `None` and leave the panels untouched.
+        let mut f = fixture();
+        let zempty = f.root.join("zempty");
+
+        // sub -> zempty, then descend into it.
+        assert!(f.tab.move_down(1, true));
+        assert_eq!(center_selected(&f.tab), Some(zempty.clone()));
+        assert!(matches!(f.tab.move_right(true), MoveRight::Descended(_)));
+        assert_eq!(center_path(&f.tab), zempty);
+        // The empty dir has no selection.
+        assert_eq!(center_selected(&f.tab), None);
+
+        let center_before = center_path(&f.tab);
+        let fwd_len_before = f.tab.fwd_history.len();
+
+        // move_right on an empty directory: nothing selected -> None, no shift.
+        assert!(matches!(f.tab.move_right(true), MoveRight::None));
+        assert_eq!(center_path(&f.tab), center_before);
+        assert_eq!(f.tab.fwd_history.len(), fwd_len_before);
+    }
+
+    // --- tab-index math (the exact functions the methods call) --------------
+
+    #[test]
+    fn next_focus_wraps_forward() {
+        // 3 tabs: 0 -> 1 -> 2 -> 0.
+        assert_eq!(next_focus(0, 3), 1);
+        assert_eq!(next_focus(1, 3), 2);
+        assert_eq!(next_focus(2, 3), 0); // wraps at the end
+    }
+
+    #[test]
+    fn next_focus_single_tab_stays_put() {
+        assert_eq!(next_focus(0, 1), 0);
+    }
+
+    #[test]
+    fn focus_after_close_clamps_into_shrunk_range() {
+        // Closing the last (focused=2) of 3 tabs (2 remain) steps focus back.
+        assert_eq!(focus_after_close(2, 2), 1);
+        // Closing an earlier tab (focused=0), 2 remain, keeps index 0.
+        assert_eq!(focus_after_close(0, 2), 0);
+        // Closing a middle tab (focused=1) of 3 (2 remain) keeps index 1.
+        assert_eq!(focus_after_close(1, 2), 1);
+        // Down to a single tab: focus must clamp to 0.
+        assert_eq!(focus_after_close(1, 1), 0);
+        assert_eq!(focus_after_close(0, 1), 0);
+    }
+
+    #[test]
+    fn can_add_tab_respects_cap() {
+        assert!(can_add_tab(1));
+        assert!(can_add_tab(MAX_TABS - 1));
+        // At the cap, no more tabs may be added.
+        assert!(!can_add_tab(MAX_TABS));
+        assert!(!can_add_tab(MAX_TABS + 1));
     }
 }

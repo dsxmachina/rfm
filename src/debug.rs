@@ -1,9 +1,19 @@
 //! Debug/testing interface: a Unix socket exposing internal state.
 //!
 //! Enabled with `rfm --debug-socket <path>`. Protocol: one connection per
-//! command, one line in ("state" | "await-idle" | "entries <pane>"),
+//! command, one line in
+//! ("state" | "await-idle" | "entries [<tab>] left|center" | "log [n]"),
 //! one JSON line out. Intended for development and agent-driven testing,
 //! e.g. alongside `tmux send-keys` / `capture-pane`.
+//!
+//! `state` is tab-aware: it carries a `tabs` array (one [`TabSnapshot`] per
+//! open tab), the `focused` tab index and the current `view` ("single" |
+//! "split"). The scalar top-level fields (`cwd`, `selection`, `selected_idx`,
+//! `total`, `marked`, `left_path`, `preview_path`) MIRROR the focused tab, so
+//! existing single-tab scripts keep working.
+//!
+//! `entries` accepts an optional leading 0-based tab index:
+//! `entries center` targets the focused tab, `entries 1 center` targets tab 1.
 
 use std::{path::PathBuf, time::Duration};
 
@@ -17,6 +27,22 @@ use tokio::{
     time::timeout,
 };
 
+/// Per-tab view of a Miller-columns stack. One of these appears in
+/// [`StateSnapshot::tabs`] for every open tab. The scalar top-level fields of
+/// `StateSnapshot` mirror the focused tab's `TabSnapshot`.
+#[derive(Debug, Clone, Serialize)]
+pub struct TabSnapshot {
+    /// Path shown in this tab's center panel
+    pub cwd: PathBuf,
+    /// File name of the current selection in this tab's center panel
+    pub selection: Option<String>,
+    /// 0-based index of the selection among *visible* entries
+    pub selected_idx: usize,
+    pub total: usize,
+    /// Paths of all marked items in this tab's center panel
+    pub marked: Vec<PathBuf>,
+}
+
 /// Snapshot of the PanelManager state, built inside the event loop.
 #[derive(Debug, Clone, Serialize)]
 pub struct StateSnapshot {
@@ -24,22 +50,28 @@ pub struct StateSnapshot {
     pub seq: u64,
     /// Current input mode: normal | console | search | rename | mkdir | touch
     pub mode: String,
-    /// Path shown in the center panel
+    /// View mode: "single" | "split"
+    pub view: String,
+    /// 0-based index of the focused tab within `tabs`
+    pub focused: usize,
+    /// One snapshot per open tab. The scalar fields below mirror `tabs[focused]`.
+    pub tabs: Vec<TabSnapshot>,
+    /// Path shown in the focused tab's center panel (mirrors `tabs[focused].cwd`)
     pub cwd: PathBuf,
-    /// File name of the current selection in the center panel
+    /// File name of the current selection in the focused tab's center panel
     pub selection: Option<String>,
     /// 0-based index of the selection among *visible* entries; do not use
     /// it to index the `entries` reply, which lists all elements
     /// (including hidden ones)
     pub selected_idx: usize,
     pub total: usize,
-    /// Paths of all marked items in the center panel
+    /// Paths of all marked items in the focused tab's center panel
     pub marked: Vec<PathBuf>,
     pub clipboard: Option<ClipboardInfo>,
     pub show_hidden: bool,
-    /// Path shown in the left panel
+    /// Path shown in the focused tab's left panel
     pub left_path: PathBuf,
-    /// Path the preview panel is showing
+    /// Path the focused tab's preview panel is showing
     pub preview_path: PathBuf,
     /// Currently running background command, if any
     pub queue_active: Option<String>,
@@ -94,6 +126,8 @@ pub enum DebugRequest {
         reply: oneshot::Sender<u64>,
     },
     Entries {
+        /// 0-based tab index; `None` targets the focused tab.
+        tab: Option<usize>,
         pane: PaneId,
         reply: oneshot::Sender<Vec<EntryInfo>>,
     },
@@ -108,8 +142,18 @@ pub enum DebugRequest {
 pub enum DebugCommand {
     State,
     AwaitIdle,
-    Entries(PaneId),
+    /// `entries [<tab>] left|center`. `tab` is a 0-based index; `None` targets
+    /// the focused tab.
+    Entries { tab: Option<usize>, pane: PaneId },
     Log(Option<usize>),
+}
+
+fn parse_pane(word: &str) -> Option<PaneId> {
+    match word {
+        "left" => Some(PaneId::Left),
+        "center" => Some(PaneId::Center),
+        _ => None,
+    }
 }
 
 pub fn parse_command(line: &str) -> Option<DebugCommand> {
@@ -117,8 +161,27 @@ pub fn parse_command(line: &str) -> Option<DebugCommand> {
     match (words.next()?, words.next()) {
         ("state", None) => Some(DebugCommand::State),
         ("await-idle", None) => Some(DebugCommand::AwaitIdle),
-        ("entries", Some("left")) => Some(DebugCommand::Entries(PaneId::Left)),
-        ("entries", Some("center")) => Some(DebugCommand::Entries(PaneId::Center)),
+        // `entries <pane>` — focused tab.
+        ("entries", Some(pane_or_tab)) => {
+            if let Some(pane) = parse_pane(pane_or_tab) {
+                // No trailing tokens allowed.
+                return match words.next() {
+                    None => Some(DebugCommand::Entries { tab: None, pane }),
+                    Some(_) => None,
+                };
+            }
+            // Otherwise the second word must be a 0-based tab index, followed
+            // by the pane: `entries <tab> <pane>`.
+            let tab: usize = pane_or_tab.parse().ok()?;
+            let pane = parse_pane(words.next()?)?;
+            match words.next() {
+                None => Some(DebugCommand::Entries {
+                    tab: Some(tab),
+                    pane,
+                }),
+                Some(_) => None,
+            }
+        }
         ("log", None) => Some(DebugCommand::Log(None)),
         ("log", Some(count)) => count.parse().ok().map(|n| DebugCommand::Log(Some(n))),
         _ => None,
@@ -195,10 +258,14 @@ async fn process_line(line: &str, request_tx: &mpsc::Sender<DebugRequest>) -> St
                 _ => r#"{"idle":false,"error":"timeout: not idle within 30s"}"#.into(),
             }
         }
-        Some(DebugCommand::Entries(pane)) => {
+        Some(DebugCommand::Entries { tab, pane }) => {
             let (tx, rx) = oneshot::channel();
             if request_tx
-                .send(DebugRequest::Entries { pane, reply: tx })
+                .send(DebugRequest::Entries {
+                    tab,
+                    pane,
+                    reply: tx,
+                })
                 .await
                 .is_err()
             {
@@ -226,7 +293,7 @@ async fn process_line(line: &str, request_tx: &mpsc::Sender<DebugRequest>) -> St
             }
         }
         None => {
-            r#"{"error":"unknown command (try: state | await-idle | entries left|center | log [n])"}"#
+            r#"{"error":"unknown command (try: state | await-idle | entries [<tab>] left|center | log [n])"}"#
                 .into()
         }
     }
@@ -241,6 +308,25 @@ mod tests {
         let snapshot = StateSnapshot {
             seq: 42,
             mode: "normal".into(),
+            view: "split".into(),
+            focused: 1,
+            tabs: vec![
+                TabSnapshot {
+                    cwd: "/tmp/one".into(),
+                    selection: Some("x.txt".into()),
+                    selected_idx: 0,
+                    total: 2,
+                    marked: vec![],
+                },
+                TabSnapshot {
+                    cwd: "/tmp/fixture".into(),
+                    selection: Some("b.txt".into()),
+                    selected_idx: 1,
+                    total: 3,
+                    marked: vec!["/tmp/fixture/a.txt".into()],
+                },
+            ],
+            // Scalar fields mirror the focused tab (index 1).
             cwd: "/tmp/fixture".into(),
             selection: Some("b.txt".into()),
             selected_idx: 1,
@@ -262,6 +348,13 @@ mod tests {
         let json = serde_json::to_string(&snapshot).unwrap();
         assert!(json.contains("\"seq\":42"));
         assert!(json.contains("\"mode\":\"normal\""));
+        // New tab-aware fields.
+        assert!(json.contains("\"view\":\"split\""));
+        assert!(json.contains("\"focused\":1"));
+        assert!(json.contains("\"tabs\":["));
+        assert!(json.contains("/tmp/one"), "tabs array missing tab 0: {json}");
+        // Backward-compat scalar fields still present, mirroring focused tab.
+        assert!(json.contains("\"cwd\":\"/tmp/fixture\""));
         assert!(json.contains("\"selection\":\"b.txt\""));
         assert!(json.contains("\"op\":\"copy\""));
     }
@@ -273,21 +366,55 @@ mod tests {
             parse_command("await-idle"),
             Some(DebugCommand::AwaitIdle)
         ));
+        // `entries <pane>` -> focused tab (tab: None)
         assert!(matches!(
             parse_command("entries left"),
-            Some(DebugCommand::Entries(PaneId::Left))
+            Some(DebugCommand::Entries {
+                tab: None,
+                pane: PaneId::Left
+            })
         ));
         assert!(matches!(
             parse_command("entries center"),
-            Some(DebugCommand::Entries(PaneId::Center))
+            Some(DebugCommand::Entries {
+                tab: None,
+                pane: PaneId::Center
+            })
+        ));
+        // `entries <tab> <pane>` -> explicit 0-based tab index
+        assert!(matches!(
+            parse_command("entries 1 center"),
+            Some(DebugCommand::Entries {
+                tab: Some(1),
+                pane: PaneId::Center
+            })
+        ));
+        assert!(matches!(
+            parse_command("entries 2 left"),
+            Some(DebugCommand::Entries {
+                tab: Some(2),
+                pane: PaneId::Left
+            })
+        ));
+        assert!(matches!(
+            parse_command("entries 0 center"),
+            Some(DebugCommand::Entries {
+                tab: Some(0),
+                pane: PaneId::Center
+            })
         ));
         // whitespace tolerance
         assert!(matches!(
             parse_command("  state "),
             Some(DebugCommand::State)
         ));
-        // unknown input
+        // unknown / malformed input
         assert!(parse_command("entries right").is_none());
+        assert!(parse_command("entries 1 right").is_none());
+        assert!(parse_command("entries x center").is_none());
+        assert!(parse_command("entries 1").is_none());
+        assert!(parse_command("entries center extra").is_none());
+        assert!(parse_command("entries 1 center extra").is_none());
         assert!(parse_command("bogus").is_none());
         assert!(parse_command("").is_none());
     }
@@ -313,6 +440,15 @@ mod tests {
                     let _ = reply.send(StateSnapshot {
                         seq: 7,
                         mode: "normal".into(),
+                        view: "single".into(),
+                        focused: 0,
+                        tabs: vec![TabSnapshot {
+                            cwd: "/tmp".into(),
+                            selection: None,
+                            selected_idx: 0,
+                            total: 0,
+                            marked: vec![],
+                        }],
                         cwd: "/tmp".into(),
                         selection: None,
                         selected_idx: 0,
@@ -332,9 +468,15 @@ mod tests {
                 DebugRequest::AwaitIdle { reply } => {
                     let _ = reply.send(7);
                 }
-                DebugRequest::Entries { reply, .. } => {
+                DebugRequest::Entries { tab, reply, .. } => {
+                    // Echo the requested tab into the name so tests can verify
+                    // the tab index survives the round-trip.
+                    let name = match tab {
+                        Some(n) => format!("tab{n}.txt"),
+                        None => "a.txt".into(),
+                    };
                     let _ = reply.send(vec![EntryInfo {
-                        name: "a.txt".into(),
+                        name,
                         marked: false,
                         hidden: false,
                         selected: true,
@@ -378,6 +520,12 @@ mod tests {
 
         let reply = query(&socket, "state").await;
         assert!(reply.contains("\"seq\":7"), "unexpected reply: {reply}");
+        assert!(
+            reply.contains("\"view\":\"single\"")
+                && reply.contains("\"focused\":0")
+                && reply.contains("\"tabs\":["),
+            "state missing tab-aware fields: {reply}"
+        );
 
         let reply = query(&socket, "await-idle").await;
         assert!(reply.contains("\"idle\":true"), "unexpected reply: {reply}");
@@ -385,6 +533,13 @@ mod tests {
         let reply = query(&socket, "entries center").await;
         assert!(
             reply.contains("\"name\":\"a.txt\""),
+            "unexpected reply: {reply}"
+        );
+
+        // Targeted-tab entries carry the tab index through.
+        let reply = query(&socket, "entries 1 center").await;
+        assert!(
+            reply.contains("\"name\":\"tab1.txt\""),
             "unexpected reply: {reply}"
         );
 

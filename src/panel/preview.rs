@@ -541,8 +541,28 @@ impl Draw for PreviewPanel {
         x_range: Range<u16>,
         y_range: Range<u16>,
     ) -> Result<()> {
+        // KNOWN DEBT: mirror of `DirPanel::draw` — the `active` flag lives on
+        // the inherent `draw_active`, not the shared `Draw` trait. This trait
+        // `draw` is the `active=false` default (the preview column is never the
+        // focused cursor in single view); split/single rendering calls
+        // `draw_active` explicitly to pass the real flag.
+        self.draw_active(stdout, x_range, y_range, false)
+    }
+}
+
+impl PreviewPanel {
+    /// Like [`Draw::draw`], but forwards `active` to a directory preview so it
+    /// can render a bright/dimmed cursor (used by split view). File and empty
+    /// previews have no cursor and ignore it.
+    pub fn draw_active(
+        &mut self,
+        stdout: &mut Stdout,
+        x_range: Range<u16>,
+        y_range: Range<u16>,
+        active: bool,
+    ) -> Result<()> {
         match self {
-            PreviewPanel::Dir(panel) => panel.draw(stdout, x_range, y_range),
+            PreviewPanel::Dir(panel) => panel.draw_active(stdout, x_range, y_range, active),
             PreviewPanel::File(preview) => preview.draw(stdout, x_range, y_range),
             PreviewPanel::Empty => {
                 // Draw empty panel
