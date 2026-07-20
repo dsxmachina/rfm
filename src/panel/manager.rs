@@ -533,12 +533,21 @@ impl PanelManager {
         self.dirty = true;
     }
 
-    /// Reloads all three panels from disk (after a filesystem mutation).
+    /// Reloads every tab's panels from disk (after a filesystem mutation).
+    ///
+    /// All tabs — not just the active one — are reloaded: a cross-tab
+    /// cut/copy-paste mutates the source tab's directory, which may be a
+    /// different (non-focused) tab than the paste target. Reloading only the
+    /// active tab would leave the source tab showing a stale listing (a moved
+    /// file still visible). Each `reload()` is a cheap async request whose
+    /// result is routed back to the owning tab by `panel_id` (see the `dir_rx`
+    /// handler), so reloading unchanged tabs is harmless.
     fn reload_all(&mut self) {
-        let tab = self.active_mut();
-        tab.left.reload();
-        tab.center.reload();
-        tab.right.reload();
+        for tab in self.tabs.iter_mut() {
+            tab.left.reload();
+            tab.center.reload();
+            tab.right.reload();
+        }
     }
 
     /// Records a freshly created archive (`archive` is the opener's result, a
@@ -1467,31 +1476,35 @@ impl PanelManager {
                     }
                     let (panel, state) = result.unwrap();
 
-                    // Find panel and update it. Scope the `tab` borrow so it
-                    // ends before `self.mark_dirty()` (a `&mut self` method) is
-                    // called, keeping the documented mark_dirty() invariant.
-                    let updated = {
-                        let tab = &mut self.tabs[self.focused];
-                        if tab.center.check_update(&state) {
-                            trace!("panel-update: center <- {}", state.path().display());
-                            tab.center.update_panel(panel);
-                            // update preview (if necessary)
-                            let selected =
-                                tab.center.panel().selected_path().map(|p| p.to_path_buf());
-                            tab.right.new_panel_delayed(selected.as_deref());
-                            true
-                        } else if tab.left.check_update(&state) {
-                            trace!("panel-update: left <- {}", state.path().display());
-                            tab.left.update_panel(panel);
-                            let center_path = tab.center.panel().path().to_path_buf();
-                            let center_idx = tab.center.panel().selected_idx();
-                            tab.left.panel_mut().select_path(&center_path, Some(center_idx));
-                            true
-                        } else {
-                            // Reduce log level here, this is not that important
-                            debug!("unknown panel update: {:?}", state);
-                            false
+                    // Route the update to whichever tab owns the matching panel
+                    // (matched by `panel_id` via `check_update`) — NOT just the
+                    // focused tab. Background tabs must refresh too: their center
+                    // panels are visible in split view, and a cross-tab move
+                    // mutates the (non-focused) source tab's directory. Scope the
+                    // `tab` borrow so it ends before `self.mark_dirty()`
+                    // (a `&mut self` method), keeping the mark_dirty() invariant.
+                    let updated = 'update: {
+                        for tab in self.tabs.iter_mut() {
+                            if tab.center.check_update(&state) {
+                                trace!("panel-update: center <- {}", state.path().display());
+                                tab.center.update_panel(panel);
+                                // update preview (if necessary)
+                                let selected =
+                                    tab.center.panel().selected_path().map(|p| p.to_path_buf());
+                                tab.right.new_panel_delayed(selected.as_deref());
+                                break 'update true;
+                            } else if tab.left.check_update(&state) {
+                                trace!("panel-update: left <- {}", state.path().display());
+                                tab.left.update_panel(panel);
+                                let center_path = tab.center.panel().path().to_path_buf();
+                                let center_idx = tab.center.panel().selected_idx();
+                                tab.left.panel_mut().select_path(&center_path, Some(center_idx));
+                                break 'update true;
+                            }
                         }
+                        // Reduce log level here, this is not that important
+                        debug!("unknown panel update: {:?}", state);
+                        false
                     };
                     if updated {
                         self.mark_dirty();
@@ -1505,15 +1518,15 @@ impl PanelManager {
                     }
                     let (panel, state) = result.unwrap();
 
-                    let updated = {
-                        let tab = &mut self.tabs[self.focused];
-                        if tab.right.check_update(&state) {
-                            trace!("panel-update: preview <- {}", state.path().display());
-                            tab.right.update_panel(panel);
-                            true
-                        } else {
-                            false
+                    let updated = 'update: {
+                        for tab in self.tabs.iter_mut() {
+                            if tab.right.check_update(&state) {
+                                trace!("panel-update: preview <- {}", state.path().display());
+                                tab.right.update_panel(panel);
+                                break 'update true;
+                            }
                         }
+                        false
                     };
                     if updated {
                         self.mark_dirty();
