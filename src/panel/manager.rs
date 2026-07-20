@@ -13,7 +13,7 @@ use tokio::sync::watch;
 use crate::{
     command_queue::{zoxide_add_dir, QueueStatus, QueuedCommand},
     config::color::{color_dir_path, color_main},
-    debug::{ClipboardInfo, DebugRequest, EntryInfo, LogEntry, PaneId, StateSnapshot},
+    debug::{ClipboardInfo, DebugRequest, EntryInfo, LogEntry, PaneId, StateSnapshot, TabSnapshot},
     engine::commands::{CloseCmd, Command, CommandParser},
     engine::OpenEngine,
     logger::LogBuffer,
@@ -1235,22 +1235,30 @@ impl PanelManager {
                 // ready — the event queue is drained.
                 let _ = reply.send(self.debug_seq);
             }
-            DebugRequest::Entries { pane, reply } => {
-                let panel = match pane {
-                    PaneId::Left => self.active().left.panel(),
-                    PaneId::Center => self.active().center.panel(),
+            DebugRequest::Entries { tab, pane, reply } => {
+                let idx = tab.unwrap_or(self.focused);
+                // Panic-safe: an out-of-range tab index yields an empty list
+                // rather than panic-indexing `self.tabs`.
+                let entries = match self.tabs.get(idx) {
+                    None => Vec::new(),
+                    Some(tab) => {
+                        let panel = match pane {
+                            PaneId::Left => tab.left.panel(),
+                            PaneId::Center => tab.center.panel(),
+                        };
+                        let selected_idx = panel.selected_idx();
+                        panel
+                            .elements()
+                            .enumerate()
+                            .map(|(idx, elem)| EntryInfo {
+                                name: elem.name().clone(),
+                                marked: elem.is_marked(),
+                                hidden: elem.is_hidden(),
+                                selected: idx == selected_idx,
+                            })
+                            .collect()
+                    }
                 };
-                let selected_idx = panel.selected_idx();
-                let entries = panel
-                    .elements()
-                    .enumerate()
-                    .map(|(idx, elem)| EntryInfo {
-                        name: elem.name().clone(),
-                        marked: elem.is_marked(),
-                        hidden: elem.is_hidden(),
-                        selected: idx == selected_idx,
-                    })
-                    .collect();
                 let _ = reply.send(entries);
             }
             DebugRequest::Log { count, reply } => {
@@ -1277,16 +1285,14 @@ impl PanelManager {
         }
     }
 
-    fn state_snapshot(&self) -> StateSnapshot {
-        let tab = self.active();
+    /// Builds a per-tab snapshot from a single tab's center panel, using the
+    /// exact same logic the scalar top-level fields use (so the mirror and the
+    /// `tabs` array agree). `index_vs_total()` returns a 1-based position; the
+    /// snapshot exposes a 0-based index into the visible entries.
+    fn tab_snapshot(tab: &Tab) -> TabSnapshot {
         let center = tab.center.panel();
-        // `index_vs_total()` returns a 1-based position; the snapshot
-        // exposes a 0-based index into the visible entries.
         let (position, total) = center.index_vs_total();
-        let queue = self.command_status_rx.borrow().clone();
-        StateSnapshot {
-            seq: self.debug_seq,
-            mode: self.mode_name().to_string(),
+        TabSnapshot {
             cwd: center.path().to_path_buf(),
             selection: center
                 .selected_path()
@@ -1299,13 +1305,38 @@ impl PanelManager {
                 .filter(|e| e.is_marked())
                 .map(|e| e.path().to_path_buf())
                 .collect(),
+        }
+    }
+
+    fn state_snapshot(&self) -> StateSnapshot {
+        let tabs: Vec<TabSnapshot> = self.tabs.iter().map(Self::tab_snapshot).collect();
+        // Mirror the focused tab onto the scalar top-level fields for backward
+        // compatibility with single-tab scripts.
+        let focused = &tabs[self.focused];
+        let active = self.active();
+        let queue = self.command_status_rx.borrow().clone();
+        StateSnapshot {
+            seq: self.debug_seq,
+            mode: self.mode_name().to_string(),
+            view: match self.view {
+                ViewMode::Single => "single",
+                ViewMode::Split => "split",
+            }
+            .to_string(),
+            focused: self.focused,
+            cwd: focused.cwd.clone(),
+            selection: focused.selection.clone(),
+            selected_idx: focused.selected_idx,
+            total: focused.total,
+            marked: focused.marked.clone(),
+            tabs,
             clipboard: self.clipboard.as_ref().map(|c| ClipboardInfo {
                 files: c.files.clone(),
                 op: if c.cut { "cut" } else { "copy" }.to_string(),
             }),
             show_hidden: self.show_hidden,
-            left_path: tab.left.panel().path().to_path_buf(),
-            preview_path: tab.right.panel().path().to_path_buf(),
+            left_path: active.left.panel().path().to_path_buf(),
+            preview_path: active.right.panel().path().to_path_buf(),
             queue_active: queue.active,
             queue_len: queue.queued_count,
             undo_depth: self.undo.undo_depth(),
