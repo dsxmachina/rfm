@@ -517,6 +517,11 @@ impl PanelManager {
         if self.tabs.len() == 1 {
             self.view = ViewMode::Single;
         }
+        // Closing the focused tab always changes which tab is focused (and may
+        // drop split→single), so refresh the now-focused tab's preview — it was
+        // never driven while off-screen/in-split (same reasoning as focus_next).
+        // No-op in split and short-circuits on an unchanged path, so it's cheap.
+        self.refresh_focused_preview();
         self.mark_dirty();
     }
 
