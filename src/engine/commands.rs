@@ -444,10 +444,15 @@ impl CommandParser {
     }
 
     /// Insert `<prefix><a-z>` chords, each producing `make(letter)`.
+    /// Explicit bindings on the same keys are left untouched — the
+    /// auto-generated chords always lose against them.
     fn insert_chords(&mut self, prefixes: Vec<String>, make: fn(char) -> Command) {
         for prefix in prefixes {
             for c in 'a'..='z' {
-                self.key_commands.insert(format!("{prefix}{c}"), make(c));
+                let chord = format!("{prefix}{c}");
+                if self.key_commands.get(&chord).is_none() {
+                    self.key_commands.insert(chord, make(c));
+                }
             }
         }
     }
@@ -689,6 +694,12 @@ impl CommandParser {
         } else {
             self.key_commands
                 .iter_prefix(&self.buffer)
+                .filter(|(k, v)| {
+                    // A jump-mark chord shadowed by a longer binding can
+                    // never fire (see add_event) — don't advertise it.
+                    !(matches!(v, Command::SetJumpMark(_) | Command::JumpToMark(_))
+                        && self.key_commands.iter_prefix(k.as_str()).count() > 1)
+                })
                 .map(|(k, v)| (k.clone(), v.to_string()))
                 .collect()
         }
@@ -726,6 +737,17 @@ impl CommandParser {
 
                 // Check if we have a valid command
                 if let Some(command) = self.key_commands.get(&self.buffer) {
+                    // Jump-mark chords are auto-generated over the whole
+                    // alphabet, so they must not shadow explicit bindings:
+                    // if a longer binding shares this prefix (`mkdir` over
+                    // `mk`), keep collecting keys and let the binding win.
+                    if matches!(
+                        command,
+                        Command::SetJumpMark(_) | Command::JumpToMark(_)
+                    ) && self.key_commands.iter_prefix(&self.buffer).count() > 1
+                    {
+                        return Command::None;
+                    }
                     self.buffer.clear();
                     trace!("Command: {:?}", command);
                     return command.clone();
@@ -776,6 +798,92 @@ mod jump_mark_tests {
             p.add_event(key('\'')),
             Command::Move(Move::JumpPrevious)
         ));
+    }
+
+    #[test]
+    fn longer_binding_wins_over_mark_chord() {
+        let mut p = CommandParser::default_bindings();
+        // "mkdir" shares the "mk" prefix with the auto-generated
+        // SetJumpMark('k') chord; the explicit binding must win.
+        assert!(matches!(p.add_event(key('m')), Command::None));
+        assert!(matches!(p.add_event(key('k')), Command::None)); // defers, no mark
+        assert!(matches!(p.add_event(key('d')), Command::None));
+        assert!(matches!(p.add_event(key('i')), Command::None));
+        assert!(matches!(p.add_event(key('r')), Command::Mkdir));
+    }
+
+    #[test]
+    fn deferred_mark_chord_does_not_fire_on_mismatch() {
+        let mut p = CommandParser::default_bindings();
+        assert!(matches!(p.add_event(key('m')), Command::None));
+        assert!(matches!(p.add_event(key('k')), Command::None)); // deferred
+        assert!(matches!(p.add_event(key('x')), Command::None)); // buffer cleared, no mark
+        assert!(matches!(p.add_event(key('j')), Command::Move(Move::Down)));
+    }
+
+    #[test]
+    fn unshadowed_mark_chord_still_fires_from_default_bindings() {
+        let mut p = CommandParser::default_bindings();
+        // No default binding starts with "ma", so the chord fires normally.
+        assert!(matches!(p.add_event(key('m')), Command::None));
+        assert!(matches!(p.add_event(key('a')), Command::SetJumpMark('a')));
+    }
+
+    #[test]
+    fn mark_chord_does_not_clobber_equal_length_binding() {
+        let toml = r#"
+[general]
+search = ["/"]
+mark = [" "]
+next = ["n"]
+previous = ["N"]
+view_trash = ["gT"]
+toggle_hidden = ["zh"]
+quit = ["q"]
+
+[movement]
+up = ["k"]
+down = ["j"]
+left = ["h"]
+right = ["l"]
+top = ["gg"]
+bottom = ["G"]
+page_forward = ["ctrl-f"]
+page_backward = ["ctrl-b"]
+half_page_forward = ["ctrl-d"]
+half_page_backward = ["ctrl-u"]
+jump_previous = ["''"]
+jump_to = [["ma", "/tmp"]]
+
+[manipulation]
+rename = ["rename"]
+mkdir = ["mkdir"]
+touch = ["touch"]
+cut = ["dd"]
+copy = ["yy"]
+delete = ["delete"]
+paste = ["pp"]
+paste_overwrite = ["po"]
+zip = ["zip"]
+tar = ["tar"]
+extract = ["extract"]
+"#;
+        let cfg: KeyConfig = toml::from_str(toml).expect("parse keys.toml");
+        let mut p = CommandParser::from_config(cfg);
+        // "ma" is an explicit jump_to binding; the auto-generated
+        // SetJumpMark('a') chord must not overwrite it.
+        assert!(matches!(p.add_event(key('m')), Command::None));
+        assert!(matches!(p.add_event(key('a')), Command::Move(Move::JumpTo(_))));
+    }
+
+    #[test]
+    fn shadowed_mark_chord_hidden_from_matching_commands() {
+        let mut p = CommandParser::default_bindings();
+        p.add_event(key('m'));
+        let keys: Vec<String> = p.matching_commands().into_iter().map(|(k, _)| k).collect();
+        assert!(keys.iter().any(|k| k == "mkdir"));
+        assert!(keys.iter().any(|k| k == "ma"));
+        assert!(!keys.iter().any(|k| k == "mk")); // dead chord, don't advertise
     }
 
     #[test]
