@@ -504,9 +504,20 @@ fn native_tar_list<R: io::Read>(reader: R) -> anyhow::Result<Vec<String>> {
     for entry in archive.entries()?.take(128) {
         let entry = entry?;
         let header = entry.header();
+        // Tar headers carry the permission bits only; the file type
+        // lives in the entry-type flag. OR it back in so unix_mode
+        // prints "-rw-r--r--" instead of "?rw-r--r--".
+        let type_bits = match header.entry_type() {
+            tar::EntryType::Directory => 0o040000,
+            tar::EntryType::Symlink => 0o120000,
+            tar::EntryType::Char => 0o020000,
+            tar::EntryType::Block => 0o060000,
+            tar::EntryType::Fifo => 0o010000,
+            _ => 0o100000,
+        };
         lines.push(format!(
             "{} {:>8}  {}",
-            unix_mode::to_string(header.mode().unwrap_or(0)),
+            unix_mode::to_string(type_bits | (header.mode().unwrap_or(0) & 0o7777)),
             crate::util::file_size_str(header.size().unwrap_or(0)),
             entry.path()?.display()
         ));
@@ -899,8 +910,10 @@ mod native_backend_tests {
         let archive = make_native_tar(tmp.path(), &files);
         let lines = native_tar_list(File::open(archive).unwrap()).unwrap();
         assert_eq!(lines.len(), 2);
+        // GNU tar headers carry no file-type bits in the mode; the type
+        // char must come from the entry type, not render as '?'.
         assert!(
-            lines[0].contains("a.txt") && lines[0].contains("rw-r--r--"),
+            lines[0].contains("a.txt") && lines[0].contains("-rw-r--r--"),
             "{lines:?}"
         );
     }
