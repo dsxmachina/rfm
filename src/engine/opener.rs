@@ -1,7 +1,10 @@
 use std::{
+    collections::HashMap,
     io::{stdout, Write},
     path::{Path, PathBuf},
     process::Command,
+    sync::Mutex,
+    time::SystemTime,
 };
 
 use crossterm::{
@@ -11,6 +14,7 @@ use crossterm::{
 };
 use log::{debug, info, warn};
 use mime::Mime;
+use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 
 use crate::util::check_filename;
@@ -49,12 +53,44 @@ pub fn get_mime_type<P: AsRef<Path>>(path: P) -> Mime {
 /// One bounded 512-byte read (enough to cover the `ustar` magic at
 /// offset 257); any error skips the sniff and never fails the caller.
 /// Only reached on the extension-fallback path.
+///
+/// Two hard requirements from the draw path (per-entry styling and the
+/// footer sniff on every repaint):
+/// - Never open a non-regular file: open() on a FIFO blocks until a
+///   writer appears (one named pipe in a browsed directory would wedge
+///   the whole UI), and opening device nodes can block or have side
+///   effects. `metadata()` follows symlinks, so a symlink to a regular
+///   file still gets sniffed.
+/// - Cache the result keyed on mtime, so a directory full of
+///   extensionless files costs one read per file, not one per repaint.
 fn sniffed(path: &Path) -> Option<Mime> {
     use std::io::Read;
+    /// path -> (mtime at sniff time, sniff result - `None` is cached too).
+    type SniffCache = HashMap<PathBuf, (Option<SystemTime>, Option<Mime>)>;
+    let meta = path.metadata().ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let mtime = meta.modified().ok();
+    static CACHE: OnceCell<Mutex<SniffCache>> = OnceCell::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some((cached_mtime, mime)) = cache.lock().unwrap().get(path) {
+        if *cached_mtime == mtime {
+            return mime.clone();
+        }
+    }
     let mut head = [0u8; 512];
     let mut file = std::fs::File::open(path).ok()?;
     let n = file.read(&mut head).ok()?;
-    sniff_mime(&head[..n])
+    let mime = sniff_mime(&head[..n]);
+    let mut cache = cache.lock().unwrap();
+    // Crude but sufficient bound: a full clear every ~4k distinct paths
+    // beats an unbounded map, and re-sniffing is cheap.
+    if cache.len() >= 4096 {
+        cache.clear();
+    }
+    cache.insert(path.to_path_buf(), (mtime, mime.clone()));
+    mime
 }
 
 /// Content sniff over the first bytes: shebang, then magic numbers
@@ -529,6 +565,23 @@ mod mime_tests {
     fn an_unreadable_extensionless_path_falls_back_to_text_plain() {
         // Sniff read errors must never fail the caller.
         assert_eq!(get_mime_type(Path::new("/no/such/file")), mime::TEXT_PLAIN);
+    }
+
+    #[test]
+    fn a_fifo_is_never_opened_by_the_sniff() {
+        // The sniff runs on the draw path (per-entry styling + footer);
+        // opening a FIFO for reading blocks until a writer appears, so a
+        // single named pipe in a browsed directory would wedge the whole
+        // UI. Non-regular files must be skipped without any open().
+        let tmp = tempfile::tempdir().unwrap();
+        let fifo = tmp.path().join("a named pipe"); // extensionless -> sniff path
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(status.success(), "creating the fixture fifo failed");
+        // Would block forever without the regular-file guard.
+        assert_eq!(get_mime_type(&fifo), mime::TEXT_PLAIN);
     }
 }
 
