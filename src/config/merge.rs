@@ -1,20 +1,93 @@
+use toml::map::Entry;
 use toml::Value;
 
 /// Recursively merge `user` over `base`. Tables merge key-by-key; any
 /// non-table value (scalars AND arrays) replaces the base value wholesale.
+/// On type mismatch (e.g. user writes a scalar where the default has a
+/// table) the user value wins; the typed deserialize downstream reports
+/// it with a precise path.
 pub fn deep_merge(base: &mut Value, user: Value) {
     match (base, user) {
         (Value::Table(b), Value::Table(u)) => {
             for (k, uv) in u {
-                match b.get_mut(&k) {
-                    Some(bv) => deep_merge(bv, uv),
-                    None => {
-                        b.insert(k, uv);
+                match b.entry(k) {
+                    Entry::Occupied(mut e) => deep_merge(e.get_mut(), uv),
+                    Entry::Vacant(e) => {
+                        e.insert(uv);
                     }
                 }
             }
         }
         (b, u) => *b = u,
+    }
+}
+
+/// Dotted paths of user keys that do not exist in the defaults tree.
+/// Subtrees whose top-level key is in WILDCARD_TABLES accept arbitrary
+/// keys ([styles.*], [commands.*], [open.*]) and are not checked.
+/// Type mismatches (key exists in defaults with a different shape) are
+/// NOT reported here; the typed deserialize catches those later.
+pub fn unknown_keys(defaults: &Value, user: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    if let (Value::Table(d), Value::Table(u)) = (defaults, user) {
+        collect_unknown(d, u, "", true, &mut out);
+    }
+    out
+}
+
+const WILDCARD_TABLES: &[&str] = &["styles", "commands", "open"];
+
+fn collect_unknown(
+    defaults: &toml::map::Map<String, Value>,
+    user: &toml::map::Map<String, Value>,
+    prefix: &str,
+    top_level: bool,
+    out: &mut Vec<String>,
+) {
+    for (key, user_val) in user {
+        if top_level && WILDCARD_TABLES.contains(&key.as_str()) {
+            continue;
+        }
+        let path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        match defaults.get(key) {
+            None => out.push(path),
+            // recurse only through table/table pairs; a type mismatch is
+            // neither unknown nor our business here
+            Some(Value::Table(d)) => {
+                if let Value::Table(u) = user_val {
+                    collect_unknown(d, u, &path, false, out);
+                }
+            }
+            Some(_) => {}
+        }
+    }
+}
+
+/// The minimal tree such that deep_merge(defaults, diff) == effective.
+/// Returns None when effective adds nothing over defaults.
+pub fn diff_from_defaults(defaults: &Value, effective: &Value) -> Option<Value> {
+    match (defaults, effective) {
+        (Value::Table(d), Value::Table(e)) => {
+            let mut out = toml::map::Map::new();
+            for (key, eff_val) in e {
+                match d.get(key) {
+                    Some(def_val) => {
+                        if let Some(diff) = diff_from_defaults(def_val, eff_val) {
+                            out.insert(key.clone(), diff);
+                        }
+                    }
+                    None => {
+                        out.insert(key.clone(), eff_val.clone());
+                    }
+                }
+            }
+            (!out.is_empty()).then_some(Value::Table(out))
+        }
+        (d, e) => (d != e).then(|| e.clone()),
     }
 }
 
@@ -71,5 +144,51 @@ mod tests {
         let mut base = v("[t]\nx = 1");
         deep_merge(&mut base, v("t = 3"));
         assert_eq!(base, v("t = 3"));
+    }
+
+    #[test]
+    fn nested_tables_merge_recursively() {
+        // recursion deeper than one table level: inner sibling keys survive
+        let mut base = v("[t.u]\nx = 1\ny = 2\n[t.w]\nz = 3");
+        deep_merge(&mut base, v("[t.u]\ny = 9"));
+        assert_eq!(base, v("[t.u]\nx = 1\ny = 9\n[t.w]\nz = 3"));
+    }
+
+    #[test]
+    fn unknown_key_reported_with_path() {
+        let d = v("[keys.movement]\npage_forward = [\"ctrl-f\"]");
+        let u = v("[keys.movement]\npgae_forward = [\"ctrl-f\"]");
+        assert_eq!(unknown_keys(&d, &u), vec!["keys.movement.pgae_forward"]);
+    }
+
+    #[test]
+    fn wildcard_tables_accept_any_key() {
+        let d = v("[styles]\n[commands]\n[open.text]\ndefault = { name = \"vim\", args = [], terminal = true }");
+        let u = v("[styles.image]\ncolor = \"cyan\"\n[commands.checksum]\nkeys = [\"cs\"]\ncmd = \"sha256sum $@\"\n[open.video]\ndefault = { name = \"mpv\", args = [], terminal = true }");
+        assert!(unknown_keys(&d, &u).is_empty());
+    }
+
+    #[test]
+    fn diff_drops_values_equal_to_default() {
+        let d = v("[general]\nuse_trash = true\nfancy_icons = false");
+        let e = v("[general]\nuse_trash = true\nfancy_icons = true");
+        assert_eq!(
+            diff_from_defaults(&d, &e).unwrap(),
+            v("[general]\nfancy_icons = true")
+        );
+    }
+
+    #[test]
+    fn diff_of_identical_trees_is_none() {
+        let d = v("[general]\nuse_trash = true");
+        assert!(diff_from_defaults(&d, &d.clone()).is_none());
+    }
+
+    #[test]
+    fn diff_keeps_explicit_unbind() {
+        // undo = [] differs from default ["u"] and must survive migrate-config
+        let d = v("[keys.manipulation]\nundo = [\"u\"]");
+        let e = v("[keys.manipulation]\nundo = []");
+        assert_eq!(diff_from_defaults(&d, &e).unwrap(), e);
     }
 }
