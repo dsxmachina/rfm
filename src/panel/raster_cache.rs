@@ -9,10 +9,6 @@
 //! `<seahash(abs path):016x>-<mtime_secs>-<kind>.jpg`. Every operation is
 //! best-effort — a preview is never lost to a cache fault, only recomputed.
 
-// TODO(raster-cache wiring): remove the allow once the producers and
-// main.rs init consume this module.
-#![allow(dead_code)]
-
 use image::{codecs::jpeg::JpegEncoder, DynamicImage};
 use once_cell::sync::OnceCell;
 use std::{
@@ -141,20 +137,6 @@ pub fn init(enabled: bool) {
 /// The cache directory, or `None` when persistence is disabled/unavailable.
 pub fn dir() -> Option<&'static Path> {
     RASTER_CACHE_DIR.get()?.as_deref()
-}
-
-/// Best-effort lookup in the session cache; always a miss when disabled.
-pub fn lookup(src: &Path, mtime_secs: u64, kind: &str) -> Option<DynamicImage> {
-    lookup_in(dir()?, src, mtime_secs, kind)
-}
-
-/// Best-effort store into the session cache; errors are logged at debug
-/// and swallowed — a preview is never lost to a cache fault.
-pub fn store(src: &Path, mtime_secs: u64, kind: &str, img: &DynamicImage) {
-    let Some(dir) = dir() else { return };
-    if let Err(e) = store_in(dir, src, mtime_secs, kind, img) {
-        log::debug!("raster cache store failed for {}: {e}", src.display());
-    }
 }
 
 /// Startup eviction for the session cache dir; intended for a
