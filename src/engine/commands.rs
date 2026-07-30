@@ -155,6 +155,74 @@ pub struct KeyConfig {
     pub tabs: Tabs,
 }
 
+impl KeyConfig {
+    /// Completeness guard for the embedded defaults file: asserts that EVERY
+    /// binding field is `Some`. The explicit list below IS the guard — when a
+    /// new Command/field is added, extend this list AND document the binding
+    /// in `examples/default-config.toml`, or the defaults test fails.
+    #[cfg(test)]
+    pub fn assert_complete(&self) {
+        macro_rules! req {
+            ($($f:expr, $n:literal;)+) => {
+                $(assert!($f.is_some(), concat!("default missing: ", $n));)+
+            }
+        }
+        req! {
+            // General (9)
+            self.general.search, "general.search";
+            self.general.mark, "general.mark";
+            self.general.next, "general.next";
+            self.general.previous, "general.previous";
+            self.general.view_trash, "general.view_trash";
+            self.general.toggle_hidden, "general.toggle_hidden";
+            self.general.toggle_log, "general.toggle_log";
+            self.general.quit, "general.quit";
+            self.general.quit_no_cd, "general.quit_no_cd";
+            // Movement (12)
+            self.movement.up, "movement.up";
+            self.movement.down, "movement.down";
+            self.movement.left, "movement.left";
+            self.movement.right, "movement.right";
+            self.movement.top, "movement.top";
+            self.movement.bottom, "movement.bottom";
+            self.movement.page_forward, "movement.page_forward";
+            self.movement.page_backward, "movement.page_backward";
+            self.movement.half_page_forward, "movement.half_page_forward";
+            self.movement.half_page_backward, "movement.half_page_backward";
+            self.movement.jump_previous, "movement.jump_previous";
+            self.movement.jump_to, "movement.jump_to";
+            // Manipulation (15)
+            self.manipulation.change_directory, "manipulation.change_directory";
+            self.manipulation.zoxide_query, "manipulation.zoxide_query";
+            self.manipulation.rename, "manipulation.rename";
+            self.manipulation.mkdir, "manipulation.mkdir";
+            self.manipulation.touch, "manipulation.touch";
+            self.manipulation.cut, "manipulation.cut";
+            self.manipulation.copy, "manipulation.copy";
+            self.manipulation.delete, "manipulation.delete";
+            self.manipulation.paste, "manipulation.paste";
+            self.manipulation.paste_overwrite, "manipulation.paste_overwrite";
+            self.manipulation.zip, "manipulation.zip";
+            self.manipulation.tar, "manipulation.tar";
+            self.manipulation.extract, "manipulation.extract";
+            self.manipulation.undo, "manipulation.undo";
+            self.manipulation.redo, "manipulation.redo";
+            // Tabs (8)
+            self.tabs.toggle_split, "tabs.toggle_split";
+            self.tabs.focus_next, "tabs.focus_next";
+            self.tabs.new_tab, "tabs.new_tab";
+            self.tabs.close_tab, "tabs.close_tab";
+            self.tabs.focus_tab_1, "tabs.focus_tab_1";
+            self.tabs.focus_tab_2, "tabs.focus_tab_2";
+            self.tabs.focus_tab_3, "tabs.focus_tab_3";
+            self.tabs.focus_tab_4, "tabs.focus_tab_4";
+            // JumpMarks (2)
+            self.jump_marks.set, "jump_marks.set";
+            self.jump_marks.jump, "jump_marks.jump";
+        }
+    }
+}
+
 #[test]
 fn test_split() {
     let s = "ctrl-f";

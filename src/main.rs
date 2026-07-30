@@ -17,7 +17,6 @@ use engine::{
 use log::{error, info, warn};
 use logger::LogBuffer;
 use panel::{manager::PanelManager, ContentHandles};
-use rust_embed::Embed;
 use std::{
     fs::{File, OpenOptions},
     io::{stdout, IsTerminal, Write},
@@ -28,6 +27,7 @@ use tokio::sync::mpsc;
 use util::xdg_config_home;
 
 use crate::config::color::{colors_from_config, colors_from_default};
+use crate::config::Examples;
 
 mod command_queue;
 mod config;
@@ -74,10 +74,6 @@ const ERROR_MSG: &str = "\
 | and include the error message below.                             |
 +------------------------------------------------------------------+
 ";
-
-#[derive(Embed)]
-#[folder = "examples/"]
-struct Examples;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {

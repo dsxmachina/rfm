@@ -19,6 +19,33 @@ pub struct Config {
     pub open: crate::engine::opener::OpenerConfig,
 }
 
+/// The embedded `examples/` directory — shipped default/example config files.
+#[derive(rust_embed::Embed)]
+#[folder = "examples/"]
+pub struct Examples;
+
+/// The single source of truth for rfm's defaults: the complete, annotated
+/// default configuration file embedded at compile time.
+pub const DEFAULT_CONFIG_FILE: &str = "default-config.toml";
+
+static DEFAULT_CONFIG: once_cell::sync::Lazy<String> = once_cell::sync::Lazy::new(|| {
+    let file = Examples::get(DEFAULT_CONFIG_FILE).expect("embedded default-config.toml");
+    String::from_utf8(file.data.into_owned()).expect("default-config.toml must be valid UTF-8")
+});
+
+/// The embedded default configuration as a string (e.g. for `--dump-config`
+/// and first-run file creation).
+pub fn default_config_str() -> &'static str {
+    &DEFAULT_CONFIG
+}
+
+/// The embedded default configuration parsed into a TOML tree.
+pub fn default_tree() -> toml::Value {
+    default_config_str()
+        .parse()
+        .expect("embedded default-config.toml must parse as TOML")
+}
+
 fn default_rate_limit_interval() -> u64 {
     500
 }
@@ -39,6 +66,27 @@ pub struct GeneralConfig {
     /// Use Nerd Font icons (requires a Nerd Font in your terminal)
     #[serde(default)]
     pub fancy_icons: bool,
+}
+
+#[cfg(test)]
+mod defaults_tests {
+    use super::*;
+
+    #[test]
+    fn embedded_defaults_deserialize() {
+        let config: Config = default_tree().try_into().unwrap();
+        // spot checks
+        assert!(config.general.use_trash);
+        assert_eq!(config.general.rate_limit_interval_ms, 500);
+    }
+
+    /// Completeness guard: every binding field must be present (Some) in the
+    /// defaults file — adding a Command without documenting it fails here.
+    #[test]
+    fn defaults_cover_every_binding_field() {
+        let config: Config = default_tree().try_into().unwrap();
+        config.keys.assert_complete(); // panics with the field name if None
+    }
 }
 
 pub mod color {
