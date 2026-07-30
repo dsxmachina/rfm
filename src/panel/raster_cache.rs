@@ -97,7 +97,28 @@ fn store_in(
         return Err(e);
     }
     std::fs::rename(&part, &entry)?;
+    cleanup_stale(dir, src, mtime_secs);
     Ok(())
+}
+
+/// Delete every entry of `src`'s hash whose name is NOT in the keep scope
+/// `<hash>-<mtime>-` (i.e. all rasters of older/newer mtimes, any kind,
+/// plus their orphaned .part files). Same-mtime entries of other kinds are
+/// valid and survive. Errors ignored — a racing instance may have removed
+/// the file already.
+pub(crate) fn cleanup_stale(dir: &Path, src: &Path, mtime_secs: u64) {
+    let hash = hash_prefix(src);
+    let keep = keep_prefix(src, mtime_secs);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name.starts_with(&hash) && !name.starts_with(&keep) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -164,6 +185,47 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert!(lookup_in(dir.path(), Path::new("/nope.png"), 100, KIND_IMAGE).is_none());
         assert!(dir_files(dir.path()).is_empty(), "no delete-attempt noise");
+    }
+
+    #[test]
+    fn store_removes_other_mtime_siblings_of_any_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = Path::new("/some/pic.png");
+        let other = Path::new("/other/pic.png");
+        store_in(dir.path(), src, 100, KIND_IMAGE, &test_img()).unwrap();
+        store_in(dir.path(), src, 100, KIND_VIDEO, &test_img()).unwrap();
+        store_in(dir.path(), other, 100, KIND_IMAGE, &test_img()).unwrap();
+        // an orphaned .part of an even older mtime
+        let orphan = dir
+            .path()
+            .join(format!("{}.999.part", entry_name(src, 90, KIND_IMAGE)));
+        std::fs::write(&orphan, b"partial").unwrap();
+
+        store_in(dir.path(), src, 200, KIND_IMAGE, &test_img()).unwrap();
+
+        // the fresh entry hits
+        assert!(lookup_in(dir.path(), src, 200, KIND_IMAGE).is_some());
+        // BOTH (src,100,*) entries and the old-mtime .part are gone
+        assert!(lookup_in(dir.path(), src, 100, KIND_IMAGE).is_none());
+        assert!(lookup_in(dir.path(), src, 100, KIND_VIDEO).is_none());
+        assert!(!orphan.exists());
+        // (other,100,img960) untouched
+        assert!(lookup_in(dir.path(), other, 100, KIND_IMAGE).is_some());
+        assert_eq!(dir_files(dir.path()).len(), 2);
+    }
+
+    #[test]
+    fn store_keeps_same_mtime_entries_of_other_kinds() {
+        // The extension design's warning case (widened-glob regression):
+        // same-mtime siblings of other kinds are NEVER swept.
+        let dir = tempfile::tempdir().unwrap();
+        let src = Path::new("/some/clip.mp4");
+        store_in(dir.path(), src, 100, KIND_VIDEO, &test_img()).unwrap();
+        store_in(dir.path(), src, 100, KIND_IMAGE, &test_img()).unwrap();
+        store_in(dir.path(), src, 100, KIND_IMAGE, &test_img()).unwrap();
+        assert!(lookup_in(dir.path(), src, 100, KIND_VIDEO).is_some());
+        assert!(lookup_in(dir.path(), src, 100, KIND_IMAGE).is_some());
+        assert_eq!(dir_files(dir.path()).len(), 2);
     }
 
     #[test]
