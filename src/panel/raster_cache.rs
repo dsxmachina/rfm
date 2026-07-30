@@ -14,10 +14,11 @@
 #![allow(dead_code)]
 
 use image::{codecs::jpeg::JpegEncoder, DynamicImage};
+use once_cell::sync::OnceCell;
 use std::{
     fs::File,
     io::{BufWriter, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 /// Kind tag for image thumbnails (bounded to 960×540 by the producer).
@@ -99,6 +100,61 @@ fn store_in(
     std::fs::rename(&part, &entry)?;
     cleanup_stale(dir, src, mtime_secs);
     Ok(())
+}
+
+/// The session-wide cache directory: `None` = persistence disabled (by
+/// config, or because the dir could not be resolved/created). Set once by
+/// [`init`] at startup; unset (e.g. in unit tests) behaves as disabled.
+static RASTER_CACHE_DIR: OnceCell<Option<PathBuf>> = OnceCell::new();
+
+/// Resolve-and-create core of [`init`]: `<cache_home>/rfm/thumbnails`.
+/// Any failure disables persistence for the session (warn once, never
+/// fatal — design §error handling).
+fn resolve_dir(enabled: bool, cache_home: anyhow::Result<PathBuf>) -> Option<PathBuf> {
+    if !enabled {
+        return None;
+    }
+    let dir = match cache_home {
+        Ok(home) => home.join("rfm").join("thumbnails"),
+        Err(e) => {
+            log::warn!("preview raster cache disabled: {e}");
+            return None;
+        }
+    };
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        log::warn!(
+            "preview raster cache disabled: cannot create {}: {e}",
+            dir.display()
+        );
+        return None;
+    }
+    Some(dir)
+}
+
+/// Initialize the persistent cache once at startup. `enabled` comes from
+/// the `preview_cache` config switch; resolution/creation failure runs the
+/// session with persistence off.
+pub fn init(enabled: bool) {
+    let _ = RASTER_CACHE_DIR.set(resolve_dir(enabled, crate::util::xdg_cache_home()));
+}
+
+/// The cache directory, or `None` when persistence is disabled/unavailable.
+pub fn dir() -> Option<&'static Path> {
+    RASTER_CACHE_DIR.get()?.as_deref()
+}
+
+/// Best-effort lookup in the session cache; always a miss when disabled.
+pub fn lookup(src: &Path, mtime_secs: u64, kind: &str) -> Option<DynamicImage> {
+    lookup_in(dir()?, src, mtime_secs, kind)
+}
+
+/// Best-effort store into the session cache; errors are logged at debug
+/// and swallowed — a preview is never lost to a cache fault.
+pub fn store(src: &Path, mtime_secs: u64, kind: &str, img: &DynamicImage) {
+    let Some(dir) = dir() else { return };
+    if let Err(e) = store_in(dir, src, mtime_secs, kind, img) {
+        log::debug!("raster cache store failed for {}: {e}", src.display());
+    }
 }
 
 /// Delete every entry of `src`'s hash whose name is NOT in the keep scope
@@ -226,6 +282,29 @@ mod tests {
         assert!(lookup_in(dir.path(), src, 100, KIND_VIDEO).is_some());
         assert!(lookup_in(dir.path(), src, 100, KIND_IMAGE).is_some());
         assert_eq!(dir_files(dir.path()).len(), 2);
+    }
+
+    #[test]
+    fn resolve_dir_disabled_or_unavailable_is_none() {
+        let base = tempfile::tempdir().unwrap();
+        // config switch off → disabled, and nothing is created
+        assert!(resolve_dir(false, Ok(base.path().to_path_buf())).is_none());
+        assert!(!base.path().join("rfm").exists());
+        // no resolvable cache home → disabled for the session
+        assert!(resolve_dir(true, Err(anyhow::anyhow!("no HOME"))).is_none());
+        // cache home resolves but the dir cannot be created (a file is in
+        // the way) → disabled for the session, no panic
+        let blocked = base.path().join("blocked");
+        std::fs::write(&blocked, b"file, not dir").unwrap();
+        assert!(resolve_dir(true, Ok(blocked)).is_none());
+    }
+
+    #[test]
+    fn resolve_dir_enabled_creates_and_returns_the_cache_dir() {
+        let base = tempfile::tempdir().unwrap();
+        let dir = resolve_dir(true, Ok(base.path().to_path_buf())).unwrap();
+        assert_eq!(dir, base.path().join("rfm").join("thumbnails"));
+        assert!(dir.is_dir());
     }
 
     #[test]
