@@ -228,7 +228,7 @@ impl FilePreview {
             ("video", _) => video_preview(&path, modified),
             ("application", "x-x509-ca-cert") => cert_preview(&path),
             ("application", "gzip") => cmd_to_preview("tar", tar_list(&path)),
-            ("application", "x-tar") => cmd_to_preview("tar", tar_list(&path)),
+            ("application", "x-tar") => tar_preview(&path),
             ("application", "zip") => zip_preview(&path),
             // Text based application/* types
             ("application", "x-sh")
@@ -491,6 +491,42 @@ fn native_zip_list(path: &Path) -> anyhow::Result<Vec<String>> {
         ));
     }
     Ok(lines)
+}
+
+/// List a tar stream natively: `mode size name` per entry, capped at
+/// 128. Generic over `Read` so the gzip arm can feed it a decoding
+/// stream; streaming, so only the first 128 headers are read even from
+/// a huge archive (which is what makes the kill-before-reap dance of
+/// `tar_list` unnecessary on the primary path).
+fn native_tar_list<R: io::Read>(reader: R) -> anyhow::Result<Vec<String>> {
+    let mut archive = tar::Archive::new(reader);
+    let mut lines = Vec::new();
+    for entry in archive.entries()?.take(128) {
+        let entry = entry?;
+        let header = entry.header();
+        lines.push(format!(
+            "{} {:>8}  {}",
+            unix_mode::to_string(header.mode().unwrap_or(0)),
+            crate::util::file_size_str(header.size().unwrap_or(0)),
+            entry.path()?.display()
+        ));
+    }
+    Ok(lines)
+}
+
+/// Native-first x-tar arm; the tar binary stays as the fallback (the
+/// zombie-reaping tar_list() is now only reachable through it).
+fn tar_preview(path: &Path) -> Preview {
+    let native = File::open(path)
+        .map_err(anyhow::Error::from)
+        .and_then(native_tar_list);
+    match native {
+        Ok(lines) => Preview::Text { lines },
+        Err(e) => {
+            log::debug!("native tar list failed, trying tar: {e}");
+            cmd_to_preview("tar", tar_list(path))
+        }
+    }
 }
 
 /// Native-first zip arm; unzip stays as the shell-out fallback.
@@ -790,6 +826,67 @@ mod native_backend_tests {
         std::fs::write(&bogus, b"definitely not a zip").unwrap();
         // Err is what triggers the unzip fallback in zip_preview().
         assert!(native_zip_list(&bogus).is_err());
+    }
+
+    /// Builds `dir/archive.tar` containing `files` via the tar crate.
+    fn make_native_tar(dir: &Path, files: &[String]) -> PathBuf {
+        let archive = dir.join("archive.tar");
+        let mut builder = tar::Builder::new(std::fs::File::create(&archive).unwrap());
+        for name in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(7);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, name.as_str(), &b"content"[..])
+                .unwrap();
+        }
+        builder.finish().unwrap();
+        archive
+    }
+
+    #[test]
+    fn native_tar_list_returns_all_names_of_a_small_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let files: Vec<String> = ["a.txt", "b.txt"].iter().map(|s| s.to_string()).collect();
+        let archive = make_native_tar(tmp.path(), &files);
+        let lines = native_tar_list(File::open(archive).unwrap()).unwrap();
+        assert_eq!(lines.len(), 2);
+        assert!(
+            lines[0].contains("a.txt") && lines[0].contains("rw-r--r--"),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn native_tar_list_caps_the_listing_at_128_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let files: Vec<String> = (0..130).map(|i| format!("file-{i:03}.txt")).collect();
+        let archive = make_native_tar(tmp.path(), &files);
+        assert_eq!(
+            native_tar_list(File::open(archive).unwrap()).unwrap().len(),
+            128
+        );
+    }
+
+    #[test]
+    fn native_tar_list_on_garbage_is_an_error() {
+        let garbage = std::io::Cursor::new(vec![0xffu8; 1024]);
+        assert!(native_tar_list(garbage).is_err());
+    }
+
+    #[test]
+    fn tar_preview_of_garbage_degrades_to_a_text_preview() {
+        // Corrupt archive: the native path errors, the tar-binary
+        // fallback runs (and errors too) - the result must still be
+        // text lines, never a panic or a blank preview.
+        let tmp = tempfile::tempdir().unwrap();
+        let bogus = tmp.path().join("corrupt.tar");
+        std::fs::write(&bogus, vec![0xffu8; 1024]).unwrap();
+        match tar_preview(&bogus) {
+            Preview::Text { lines } => assert!(!lines.is_empty()),
+            _ => panic!("expected a text preview"),
+        }
     }
 
     #[test]
