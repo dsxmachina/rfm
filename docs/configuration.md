@@ -27,7 +27,9 @@ preview_cache = true   # persist image/video preview thumbnails in
                        # $XDG_CACHE_HOME/rfm/thumbnails (usually ~/.cache/rfm/thumbnails)
                        # so they survive restarts. Pruned automatically at startup
                        # (entries older than 30 days, capped at 256 MiB).
-                       # When disabled, previews are cached in memory only.
+                       # When disabled, image previews stay in memory only;
+                       # video thumbnails still use a temp dir (usually tmpfs,
+                       # cleaned after 7 days), since ffmpeg writes to a file.
 fancy_icons = false    # use Nerd Font icons (needs a Nerd Font in your terminal)
 ```
 
