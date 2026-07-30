@@ -124,10 +124,34 @@ const MIGRATE_HEADER: &str = "\
 ";
 
 /// Returns human-readable summary lines. Writes config.toml, renames legacy
-/// files to *.bak. Pure-ish: all paths under `config_dir`.
+/// files to *.bak. Refuses (before any FS mutation) if a backup this run
+/// would create already exists — so an accidental re-run cannot destroy the
+/// previous run's backups. Pure-ish: all paths under `config_dir`.
 pub fn migrate(config_dir: &Path) -> anyhow::Result<Vec<String>> {
     let (user_tree, warnings, _) = effective_user_tree(config_dir, false);
-    let mut summary = warnings; // parse problems etc. are part of the story
+    // parse problems etc. are part of the story
+    let mut summary: Vec<String> = warnings
+        .into_iter()
+        .map(|w| format!("warning: {w}"))
+        .collect();
+
+    // Refuse before touching ANYTHING if a backup this run would create
+    // already exists — re-running migrate must never destroy the previous
+    // run's backups (the user's original files).
+    let clobbered: Vec<String> = ["config.toml", "keys.toml", "open.toml"]
+        .iter()
+        .filter(|file| config_dir.join(file).exists())
+        .map(|file| config_dir.join(format!("{file}.bak")))
+        .filter(|bak| bak.exists())
+        .map(|bak| bak.display().to_string())
+        .collect();
+    if !clobbered.is_empty() {
+        anyhow::bail!(
+            "refusing to migrate: {} already exists (a previous migration's backup) — \
+             remove or rename it first",
+            clobbered.join(", ")
+        );
+    }
 
     // The minimal overrides: everything in the effective user config that
     // differs from the embedded defaults (None → empty file, just the header).
@@ -141,6 +165,7 @@ pub fn migrate(config_dir: &Path) -> anyhow::Result<Vec<String>> {
         .with_context(|| format!("cannot create config dir {}", config_dir.display()))?;
 
     let config_file = config_dir.join("config.toml");
+    let mut backed_up = None;
     if config_file.exists() {
         let bak = config_dir.join("config.toml.bak");
         std::fs::rename(&config_file, &bak)
@@ -149,14 +174,21 @@ pub fn migrate(config_dir: &Path) -> anyhow::Result<Vec<String>> {
             "backed up the previous config.toml to {}",
             bak.display()
         ));
+        backed_up = Some(bak);
     }
     let content = if body.is_empty() {
         MIGRATE_HEADER.to_string()
     } else {
         format!("{MIGRATE_HEADER}\n{body}")
     };
-    std::fs::write(&config_file, content)
-        .with_context(|| format!("cannot write {}", config_file.display()))?;
+    std::fs::write(&config_file, content).with_context(|| match &backed_up {
+        Some(bak) => format!(
+            "cannot write {}; your previous config.toml is preserved at {}",
+            config_file.display(),
+            bak.display()
+        ),
+        None => format!("cannot write {}", config_file.display()),
+    })?;
     summary.push(if body.is_empty() {
         format!(
             "wrote {} — your setup matches the built-in defaults, so it is empty",
@@ -481,6 +513,45 @@ mod tests {
         );
         assert!(dir.path().join("keys.toml.bak").exists());
         assert!(!dir.path().join("keys.toml").exists());
+    }
+
+    /// Every regular file in `dir` with its content — for byte-identical
+    /// "nothing changed" assertions.
+    fn dir_snapshot(dir: &Path) -> Vec<(String, String)> {
+        let mut files: Vec<(String, String)> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| {
+                let e = e.unwrap();
+                (
+                    e.file_name().to_string_lossy().into_owned(),
+                    std::fs::read_to_string(e.path()).unwrap(),
+                )
+            })
+            .collect();
+        files.sort();
+        files
+    }
+
+    #[test]
+    fn migrate_refuses_to_clobber_existing_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "[general]\nfancy_icons = true").unwrap();
+        std::fs::write(dir.path().join("keys.toml"), "[movement]\nup = [\"x\"]").unwrap();
+        migrate(dir.path()).unwrap();
+        let after_first = dir_snapshot(dir.path());
+
+        // Run 2: config.toml exists AND config.toml.bak exists — must refuse
+        // instead of clobbering the user's original backup.
+        let err = migrate(dir.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("config.toml.bak"),
+            "error must name the offending backup, got: {err}"
+        );
+        assert_eq!(
+            dir_snapshot(dir.path()),
+            after_first,
+            "a refused migration must leave every file untouched"
+        );
     }
 
     #[test]
