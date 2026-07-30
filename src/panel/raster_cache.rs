@@ -157,6 +157,59 @@ pub fn store(src: &Path, mtime_secs: u64, kind: &str, img: &DynamicImage) {
     }
 }
 
+/// Startup prune: entries untouched for this long are dropped.
+const MAX_AGE: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 3600);
+/// Startup prune: after the age pass, evict oldest-first down to this
+/// shared budget (all kinds, one budget — extension design).
+const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Evict cache entries: first everything older than `max_age`, then the
+/// oldest survivors until the directory fits `max_total_bytes`. All errors
+/// ignored — concurrent-instance races are benign, and orphaned `.part`
+/// files are regular files that age out like everything else.
+fn prune_dir(
+    dir: &Path,
+    max_age: std::time::Duration,
+    max_total_bytes: u64,
+    now: std::time::SystemTime,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(PathBuf, std::time::SystemTime, u64)> = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let mtime = meta.modified().unwrap_or(now);
+        files.push((entry.path(), mtime, meta.len()));
+    }
+    // Age pass
+    files.retain(|(path, mtime, _)| {
+        let expired = now
+            .duration_since(*mtime)
+            .map(|age| age > max_age)
+            .unwrap_or(false);
+        if expired {
+            let _ = std::fs::remove_file(path);
+        }
+        !expired
+    });
+    // Size pass: oldest-first while over the cap, subtracting only on
+    // successful removal.
+    let mut total: u64 = files.iter().map(|(_, _, len)| len).sum();
+    files.sort_by_key(|(_, mtime, _)| *mtime);
+    for (path, _, len) in &files {
+        if total <= max_total_bytes {
+            break;
+        }
+        if std::fs::remove_file(path).is_ok() {
+            total = total.saturating_sub(*len);
+        }
+    }
+}
+
 /// Delete every entry of `src`'s hash whose name is NOT in the keep scope
 /// `<hash>-<mtime>-` (i.e. all rasters of older/newer mtimes, any kind,
 /// plus their orphaned .part files). Same-mtime entries of other kinds are
@@ -331,6 +384,52 @@ mod tests {
         let src = Path::new("/some/pic.png");
         assert!(store_in(&gone, src, 100, KIND_IMAGE, &test_img()).is_err());
         assert!(!gone.exists());
+    }
+
+    /// Backdate `path`'s mtime to `now - age` (no `touch` shell-out).
+    fn backdate(path: &Path, now: std::time::SystemTime, age: std::time::Duration) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(now - age)
+            .unwrap();
+    }
+
+    #[test]
+    fn prune_deletes_by_age() {
+        use std::time::{Duration, SystemTime};
+        let dir = tempfile::tempdir().unwrap();
+        let now = SystemTime::now();
+        let old = dir.path().join(entry_name(Path::new("/old.png"), 100, KIND_IMAGE));
+        let fresh = dir.path().join(entry_name(Path::new("/fresh.png"), 100, KIND_IMAGE));
+        std::fs::write(&old, vec![0u8; 10]).unwrap();
+        std::fs::write(&fresh, vec![0u8; 10]).unwrap();
+        backdate(&old, now, Duration::from_secs(31 * 24 * 3600));
+        // size cap at u64::MAX so only the age rule fires
+        prune_dir(dir.path(), MAX_AGE, u64::MAX, now);
+        assert!(!old.exists(), "31-day-old entry must be pruned");
+        assert!(fresh.exists(), "fresh entry must survive");
+    }
+
+    #[test]
+    fn prune_enforces_size_cap_oldest_first() {
+        use std::time::{Duration, SystemTime};
+        let dir = tempfile::tempdir().unwrap();
+        let now = SystemTime::now();
+        // Mix kinds in the names: one shared budget across producers
+        // (extension design requirement).
+        let oldest = dir.path().join(entry_name(Path::new("/a.mp4"), 100, KIND_VIDEO));
+        let mid = dir.path().join(entry_name(Path::new("/b.png"), 100, KIND_IMAGE));
+        let newest = dir.path().join(entry_name(Path::new("/c.png"), 100, KIND_IMAGE));
+        for (path, days) in [(&oldest, 3u64), (&mid, 2), (&newest, 1)] {
+            std::fs::write(path, vec![0u8; 1000]).unwrap();
+            backdate(path, now, Duration::from_secs(days * 24 * 3600));
+        }
+        prune_dir(dir.path(), MAX_AGE, 2500, now);
+        assert!(!oldest.exists(), "oldest must be evicted to meet the cap");
+        assert!(mid.exists());
+        assert!(newest.exists());
     }
 
     #[test]
