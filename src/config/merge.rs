@@ -69,6 +69,9 @@ fn collect_unknown(
 
 /// The minimal tree such that deep_merge(defaults, diff) == effective.
 /// Returns None when effective adds nothing over defaults.
+/// The minimality/round-trip guarantee assumes `effective` was produced
+/// by `deep_merge(defaults, _)` — i.e. it is a recursive key-superset of
+/// defaults; an `effective` missing default keys is out of contract.
 pub fn diff_from_defaults(defaults: &Value, effective: &Value) -> Option<Value> {
     match (defaults, effective) {
         (Value::Table(d), Value::Table(e)) => {
@@ -190,5 +193,42 @@ mod tests {
         let d = v("[keys.manipulation]\nundo = [\"u\"]");
         let e = v("[keys.manipulation]\nundo = []");
         assert_eq!(diff_from_defaults(&d, &e).unwrap(), e);
+    }
+
+    #[test]
+    fn diff_round_trips_through_merge() {
+        // the contract migrate-config depends on:
+        //   deep_merge(defaults, diff_from_defaults(defaults, effective))
+        //     == effective
+        // for any effective produced by deep_merge(defaults, user).
+        let defaults = v(concat!(
+            "[general]\nuse_trash = true\nfancy_icons = false\n",
+            "[keys.movement]\nundo = [\"u\"]\ndown = [\"j\"]\n",
+            "[open]\nsize = 1\n",
+        ));
+        let user = v(concat!(
+            "custom_key = 5\n", // (a) user-only key, absent from defaults
+            "[keys.movement]\nundo = []\n", // (d) emptied array vs default ["u"]
+            "[general]\nfancy_icons = true\n", // (b) nested table override
+            "open = \"scalar\"\n", // (c) user scalar where default has a table
+        ));
+
+        let mut effective = defaults.clone();
+        deep_merge(&mut effective, user);
+
+        let diff = diff_from_defaults(&defaults, &effective).unwrap();
+        let mut roundtrip = defaults.clone();
+        deep_merge(&mut roundtrip, diff);
+        assert_eq!(roundtrip, effective);
+    }
+
+    #[test]
+    fn unknown_keys_root_path_and_type_mismatch() {
+        // a top-level unknown key is reported with a bare (root) path...
+        // ...and a type mismatch (user table where the default has a scalar)
+        // is NOT reported, whatever keys the table holds inside.
+        let d = v("[general]\nuse_trash = true\nsize = 1");
+        let u = v("nosuch = 1\n[general.size]\nanything = 2\ngoes = 3");
+        assert_eq!(unknown_keys(&d, &u), vec!["nosuch"]);
     }
 }
