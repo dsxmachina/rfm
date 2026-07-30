@@ -13,6 +13,51 @@ use users::{get_group_by_gid, get_user_by_uid};
 use crate::engine::opener::get_mime_type;
 use crate::undo::FsChange;
 
+/// True when an executable named `name` exists in one of the
+/// directories of `path_var` (a PATH-style list).
+pub fn find_in_path(name: &str, path_var: &std::ffi::OsStr) -> bool {
+    std::env::split_paths(path_var).any(|dir| {
+        let candidate = dir.join(name);
+        candidate.is_file()
+            && candidate
+                .metadata()
+                .map(|m| m.permissions().mode() & 0o111 != 0)
+                .unwrap_or(false)
+    })
+}
+
+/// True when an executable named `name` is on the current PATH.
+pub fn binary_on_path(name: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|p| find_in_path(name, &p))
+        .unwrap_or(false)
+}
+
+#[test]
+fn find_in_path_only_matches_existing_binaries() {
+    let tmp = tempfile::tempdir().unwrap();
+    let with_bin = tmp.path().join("with-bin");
+    let empty = tmp.path().join("empty");
+    std::fs::create_dir(&with_bin).unwrap();
+    std::fs::create_dir(&empty).unwrap();
+    std::fs::write(with_bin.join("somebin"), "").unwrap();
+    std::fs::set_permissions(
+        with_bin.join("somebin"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    std::fs::write(with_bin.join("not-executable"), "").unwrap();
+
+    let path_var = std::env::join_paths([empty.clone(), with_bin]).unwrap();
+    assert!(find_in_path("somebin", &path_var));
+    assert!(!find_in_path("zoxide-definitely-missing", &path_var));
+    // A plain file without the executable bit must not count.
+    assert!(!find_in_path("not-executable", &path_var));
+    // A directory named like the binary must not count.
+    let path_var = std::env::join_paths([tmp.path().to_path_buf()]).unwrap();
+    assert!(!find_in_path("empty", &path_var));
+}
+
 pub fn file_size_str(file_size: u64) -> String {
     match file_size {
         0..=1023 => format!("{file_size} B"),
