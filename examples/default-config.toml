@@ -1,0 +1,351 @@
+# ============================================================================
+# default-config.toml — the complete, annotated default configuration of rfm
+# ============================================================================
+#
+# This file documents EVERY option together with its default value.
+# You do not need (and should not want) a copy of all of it: your own
+# ~/.config/rfm/config.toml is a sparse OVERRIDE — rfm always starts from the
+# built-in defaults shown here and applies only the lines you actually write.
+#
+#   - An empty (or absent) config.toml is perfectly valid: you get exactly
+#     the configuration described in this file.
+#   - To change something, copy just that line/section into your config.toml.
+#   - Print this reference at any time with:  rfm --dump-config
+#
+# Keybinding semantics:
+#   - Anything you bind yourself WINS. If one of your bindings collides with
+#     a default (of any command you did not mention), the default is dropped
+#     and a notice is logged at startup.
+#   - To remove a default binding without replacing it, set it to the empty
+#     list, e.g.:  undo = []
+#     (Absence means "use the default"; `[]` means "no binding at all".)
+#
+# Sections at a glance:
+#   [general]    behaviour switches (trash, icons, preview rate limit)
+#   [colors]     the four base UI colors (+ rename highlight)
+#   [styles.*]   per-mime-type colors and symbols for file listings
+#   [commands.*] user-defined shell commands with their own keybindings
+#   [keys.*]     all keybindings, grouped like the old keys.toml
+#   [open.*]     which application opens which mime-type
+# ============================================================================
+
+
+# ----------------------------------------------------------------------------
+# General behaviour
+# ----------------------------------------------------------------------------
+[general]
+# If set to 'true' (the default), rfm does not delete files instantly but moves
+# them to the freedesktop.org trash (~/.local/share/Trash, plus a per-device
+# trash on other mounts). Browse it with the 'gT' key; press 'r' there to
+# restore an item to its original location. Trashed files also show up in your
+# desktop's normal trash (Nautilus, gio, trash-cli) and vice versa.
+#
+# The freedesktop trash lives on the same disk as each deleted file, so deleting
+# stays a cheap rename even across multiple disks (no expensive cross-disk copy).
+#
+# This flag also determines whether a deletion can be undone (see 'undo'/'redo'):
+#   - use_trash = true  : delete moves to the trash and IS undoable ('u').
+#   - use_trash = false : delete is permanent and canNOT be undone. It is
+#                         recorded as a barrier that stops the undo history
+#                         (undo will not revert operations from before it).
+#
+# The undo stack itself lives only for the current session (it is not persisted);
+# the trash, however, is persistent.
+#
+use_trash = true
+
+# Use Nerd Font icons for file types.
+#
+# When enabled, rfm will use icons from the Nerd Fonts project (like yazi does).
+# This requires your terminal to be configured with a Nerd Font
+# (e.g., "Hack Nerd Font", "FiraCode Nerd Font", "JetBrainsMono Nerd Font").
+#
+# Nerd Fonts can be downloaded from: https://www.nerdfonts.com/
+#
+# When disabled (default), rfm uses standard Unicode symbols that work in any
+# terminal.
+#
+fancy_icons = false
+
+# Rate limit for preview updates in milliseconds.
+#
+# While you scroll, the preview panel waits this long before decoding the next
+# file. Lower values feel snappier but cause more decoding work on fast
+# scrolling; higher values are easier on large directories with heavy previews.
+#
+rate_limit_interval_ms = 500
+
+
+# ----------------------------------------------------------------------------
+# Colors
+#
+# For normal text, rfm uses the foreground and background color of your
+# terminal. Apart from that, there are only a handful of colors in use, each
+# configurable to any of the 16 base colors available in all terminals:
+#
+# black    , dark-red, dark-green, dark-yellow, dark-blue, dark-magenta, dark-cyan, grey
+# dark-grey,      red,      green,      yellow,      blue,      magenta,      cyan, white
+# ----------------------------------------------------------------------------
+[colors]
+# the 'main' color is used for things like the borders, directory names, and
+# the cursor
+main = "dark-green"
+
+# color of 'marked' items
+marked = "dark-yellow"
+
+# the 'highlight' color is used to highlight search results, or in the creation
+# of new items
+highlight = "red"
+
+# color of the top-row directory path
+dir_path = "dark-blue"
+
+# color of the pending part while renaming an item
+rename = "blue"
+
+
+# ----------------------------------------------------------------------------
+# Mime-type styles
+#
+# Configure colors and symbols for files based on their mime-type.
+# Each section is named after a mime-type (e.g., "image", "text/markdown").
+# You can specify 'color' and/or 'symbol' for each mime-type.
+#
+# Mime-type matching:
+#   - Exact match is tried first (e.g., "text/markdown")
+#   - Then type prefix is tried (e.g., "image" matches all image/* types)
+#
+# Default colors (yazi-like, if not overridden):
+#   - image/*         : magenta
+#   - audio/*         : cyan
+#   - video/*         : yellow
+#   - archives        : yellow (zip, tar, gz, 7z, rar)
+#   - application/pdf : red
+#   - text/markdown   : white
+#   - text/x-toml     : dark-yellow
+#   - application/json: yellow
+#   - yaml            : dark-cyan
+#   - xml             : yellow
+#   - (other files)   : grey
+#
+# Example configurations (uncomment to use):
+#
+# [styles.image]
+# color = "cyan"
+#
+# [styles.audio]
+# color = "magenta"
+#
+# [styles."text/markdown"]
+# color = "blue"
+# symbol = ""
+#
+# [styles."application/json"]
+# color = "dark-yellow"
+# symbol = "{}"
+
+
+# ----------------------------------------------------------------------------
+# User-defined commands
+#
+# Each entry defines a shell command with its own keybinding(s). The section
+# name after "commands." is the display name shown in the UI and the log.
+#
+#   keys        key sequences that trigger the command (same syntax as [keys])
+#   cmd         shell command template; "$@" expands to the marked items
+#               (or the current selection if nothing is marked), shell-escaped
+#   interactive true  -> runs in the foreground (rfm suspends the terminal,
+#                        e.g. for an editor or a pager)
+#               false -> runs queued in the background (default); exit codes
+#                        and stderr land in the log ('devlog' / debug socket)
+#   separator   string placed between the expanded paths (default: " ")
+#
+# Examples (uncomment to use):
+#
+# [commands.checksum]
+# keys = [ "cs" ]
+# cmd = "sha256sum $@ > checksums.txt"
+#
+# [commands.edit]
+# keys = [ "e" ]
+# cmd = "nvim $@"
+# interactive = true
+
+
+# ----------------------------------------------------------------------------
+# Keybindings
+#
+# The syntax is pretty simple:
+#
+# [keys.category]
+# command = [ "k" , "sk", "thirdkeybinding" ]
+#    ^        ^^^   ^^^^   ^^^^^^^^^^^^^^^^^
+#    |      single   |       or even words (without spaces)
+#    |       key   multiple
+#    |              keys
+#    |
+# Name of the command
+#
+# You can specify modifiers for single-key patterns, by using the prefixes
+# ctrl-X (for control-key + X)
+# alt-X  (for alt-key     + X)
+# meta-X (for meta-key    + X)
+# Where X can be any key you like ofc.
+# ----------------------------------------------------------------------------
+
+# General keybindings
+[keys.general]
+search        = [ "/", "search", "f" ] # search for items
+mark          = [ " " ]                # mark the selected item
+next          = [ "n" ]                # select the next marked item
+previous      = [ "N" ]                # select the previous marked item
+view_trash    = [ "gT" ]               # open the trash view (press 'r' there to restore an item)
+toggle_hidden = [ "zh" ]               # toggle visibility of hidden files
+toggle_log    = [ "devlog" ]           # toggle the developer log widget
+quit          = [ "Q", "exit" ]        # quit rfm outright ('q' closes the focused tab, and quits when it's the last one)
+# Quit without changing directories even if --choosedir is specified
+# (no default binding):
+quit_no_cd    = []
+
+# Movement related keybindings
+[keys.movement]
+up                 = [ "k" ]           # additional keybindings for moving the cursor "up"
+down               = [ "j" ]           # additional keybindings for moving the cursor "down"
+left               = [ "h" ]           # additional keybindings for moving the cursor "left"
+right              = [ "l" ]           # additional keybindings for moving the cursor "right"
+top                = [ "gg" ]          # move cursor to the top
+bottom             = [ "G" ]           # move cursor to the bottom
+page_forward       = [ "ctrl-f" ]      # move cursor one page forward
+page_backward      = [ "ctrl-b" ]      # move cursor one page backward
+half_page_forward  = [ "ctrl-d" ]      # move cursor half-page forward
+half_page_backward = [ "ctrl-u" ]      # move cursor half-page backward
+jump_previous      = [ "''" ]          # jump to previous directory
+#
+# You can define custom jump-marks.
+#
+# On the left side, you put the keybinding or key-combination,
+# and on the right side, the directory you want to jump into.
+# You can use "~" for "$HOME".
+#
+# Note: Environment variables are *not* supported !
+#
+# Note: your jump_to list REPLACES the default list below (overrides are
+# per-command, not per-entry) — copy the entries you want to keep.
+#
+jump_to = [ ["gh", "~"],
+            ["gc", "~/.config"],
+            ["gp", "~/Pictures"],
+            ["gd", "~/Documents"],
+            ["gD", "~/Downloads"],
+            ["gm", "~/Music"],
+            ["gr", "/"],
+            ["ge", "/etc"],
+            ["gu", "/usr"]]
+
+# Vim-style jump-marks (session-only): press <set><letter> to remember the
+# current directory + highlighted entry, and <jump><letter> to return to it.
+# Marks use letters a-z and are forgotten on quit.
+[keys.jump_marks]
+set  = [ "m" ]      # m<letter> sets a jump-mark (e.g. `ma`)
+jump = [ "'" ]      # '<letter> jumps to a jump-mark (e.g. `'a`)
+
+# multi-tab / split view
+#
+# Each tab keeps its own independent directory location. `focus_next` cycles
+# through the open tabs; `focus_tab_N` jumps straight to the N-th tab.
+[keys.tabs]
+toggle_split = [ "!" ]             # toggle split view (two tabs' center columns side by side)
+focus_next   = [ "Tab" ]           # cycle focus to the next tab
+new_tab      = [ "gn" ]            # open a new tab at the current directory
+close_tab    = [ "q", "ctrl-w" ]   # close the focused tab; closing the last tab quits rfm
+focus_tab_1  = [ "1" ]             # focus the first tab
+focus_tab_2  = [ "2" ]             # focus the second tab
+focus_tab_3  = [ "3" ]             # focus the third tab
+focus_tab_4  = [ "4" ]             # focus the fourth tab
+
+# Keybindings related to directory and file manipulation
+[keys.manipulation]
+change_directory = [ "cd" ]                    # enter "cd" mode (similar to emacs)
+zoxide_query     = [ "CD", "Cd", "cD" ]        # cd with zoxide (requires 'zoxide')
+rename           = [ "rename" ]                # rename selected item
+mkdir            = [ "mkdir" ]                 # create new directory
+touch            = [ "touch" ]                 # create new file
+cut              = [ "cut", "dd", "ctrl-x" ]   # cut selected items
+copy             = [ "copy", "yy", "ctrl-c" ]  # copy selected items
+delete           = [ "delete" ]                # delete selected items (to trash + undoable if use_trash, else permanent)
+paste            = [ "paste", "pp", "ctrl-v" ] # paste previously cut or copied items (does not overwrite)
+paste_overwrite  = [ "po", "ctrl-V" ]          # paste items and overwrite existing elements
+zip              = [ "zip" ]                   # create a zip archive from selected items (requires 'zip')
+tar              = [ "tar" ]                   # create a tar archive from selected items (requires 'tar')
+extract          = [ "extract", "unzip" ]      # extract archive in place (requires archive program)
+#
+# Undo/redo works within the running session only (the stack is not persisted).
+# Undoable: rename, cut/copy-paste, mkdir, touch, bulk-rename, zip/tar (redo of an
+# archive is not possible), and delete IF use_trash is enabled (see [general]).
+# A permanent delete (use_trash = false) and external commands are not undoable.
+#
+undo             = [ "u" ]                     # undo the last reversible operation
+redo             = [ "ctrl-r" ]                # redo the last undone operation
+
+
+# ----------------------------------------------------------------------------
+# Openers
+#
+# Configure how rfm opens files, split into sections per mime-type like
+# [open.text] or [open.application]. You can set a default application for
+# each mime-type with the "default" key:
+#
+# default = { name = "vim", args = [], terminal = true }
+#
+# The right side consists of the following keys:
+# {
+#   name = "vim",    # Name of the application to open
+#   args = ["-d"],   # Additional cmdline arguments
+#   terminal = true  # If terminal = false, an additional window is spawned and
+# }                  # rfm execution continues. If terminal = true, the
+#                    # application is launched inside the current session as a
+#                    # child process.
+#
+# If you want to use multiple applications for the same mime-type you can
+# define them with the "extensions" key of the section:
+#
+# extensions = [
+#   ["pdf",   { name = "zathura",     args = [], terminal = false } ],
+#   ["ppt",   { name = "libreoffice", args = [], terminal = false } ]
+# ]
+#
+# The right side is just a list of elements with the same syntax that we used
+# for the "default" key.
+#
+# If you are not sure what the mime-type of a specific file is, look at the
+# bottom line of rfm — it shows the mime-type of the current selection.
+# ----------------------------------------------------------------------------
+
+# --- Configure mime-type 'text'
+[open.text]
+default = { name = "vim", args = [], terminal = true }
+
+# --- Uncomment to configure mime-type 'image'
+#[open.image]
+#default = { name = "sxiv", args = [], terminal = true }
+
+# --- Uncomment to configure mime-type 'audio'
+#[open.audio]
+#default = { name = "mpv", args = [], terminal = true }
+
+# --- Uncomment to configure mime-type 'video'
+#[open.video]
+#default = { name = "mpv", args = [], terminal = true }
+
+# --- Uncomment to configure mime-type 'application'
+#[open.application]
+#default = { name = "nvim", args = [], terminal = true }
+#extensions = [
+#  ["pdf",   { name = "zathura",     args = [], terminal = false } ],
+#  ["docx",  { name = "libreoffice", args = [], terminal = false } ],
+#  ["xlsx",  { name = "libreoffice", args = [], terminal = false } ],
+#  ["xls",   { name = "libreoffice", args = [], terminal = false } ],
+#  ["pptx",  { name = "libreoffice", args = [], terminal = false } ],
+#  ["ppt",   { name = "libreoffice", args = [], terminal = false } ]
+#]
