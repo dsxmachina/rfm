@@ -60,87 +60,99 @@ impl From<ExpandedPath> for PathBuf {
     }
 }
 
-#[derive(Deserialize, Debug)]
-struct Manipulation {
-    change_directory: Option<Vec<String>>,
-    zoxide_query: Option<Vec<String>>,
-    rename: Vec<String>,
-    mkdir: Vec<String>,
-    touch: Vec<String>,
-    cut: Vec<String>,
-    copy: Vec<String>,
-    delete: Vec<String>,
-    paste: Vec<String>,
-    paste_overwrite: Vec<String>,
-    zip: Vec<String>,
-    tar: Vec<String>,
-    extract: Vec<String>,
-    undo: Option<Vec<String>>,
-    redo: Option<Vec<String>>,
-}
-
-#[derive(Deserialize, Debug)]
-struct Movement {
-    up: Vec<String>,
-    down: Vec<String>,
-    left: Vec<String>,
-    right: Vec<String>,
-    top: Vec<String>,
-    bottom: Vec<String>,
-    page_forward: Vec<String>,
-    page_backward: Vec<String>,
-    half_page_forward: Vec<String>,
-    half_page_backward: Vec<String>,
-    jump_previous: Vec<String>,
-    jump_to: Vec<(String, String)>,
+#[derive(Deserialize, Debug, Default)]
+#[serde(default)]
+pub struct Manipulation {
+    pub change_directory: Option<Vec<String>>,
+    pub zoxide_query: Option<Vec<String>>,
+    pub rename: Option<Vec<String>>,
+    pub mkdir: Option<Vec<String>>,
+    pub touch: Option<Vec<String>>,
+    pub cut: Option<Vec<String>>,
+    pub copy: Option<Vec<String>>,
+    pub delete: Option<Vec<String>>,
+    pub paste: Option<Vec<String>>,
+    pub paste_overwrite: Option<Vec<String>>,
+    pub zip: Option<Vec<String>>,
+    pub tar: Option<Vec<String>>,
+    pub extract: Option<Vec<String>>,
+    pub undo: Option<Vec<String>>,
+    pub redo: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Debug, Default)]
-struct Tabs {
-    toggle_split: Option<Vec<String>>,
-    focus_next: Option<Vec<String>>,
-    new_tab: Option<Vec<String>>,
-    close_tab: Option<Vec<String>>,
+#[serde(default)]
+pub struct Movement {
+    pub up: Option<Vec<String>>,
+    pub down: Option<Vec<String>>,
+    pub left: Option<Vec<String>>,
+    pub right: Option<Vec<String>>,
+    pub top: Option<Vec<String>>,
+    pub bottom: Option<Vec<String>>,
+    pub page_forward: Option<Vec<String>>,
+    pub page_backward: Option<Vec<String>>,
+    pub half_page_forward: Option<Vec<String>>,
+    pub half_page_backward: Option<Vec<String>>,
+    pub jump_previous: Option<Vec<String>>,
+    pub jump_to: Option<Vec<(String, String)>>,
+}
+
+#[derive(Deserialize, Debug, Default)]
+#[serde(default)]
+pub struct Tabs {
+    pub toggle_split: Option<Vec<String>>,
+    pub focus_next: Option<Vec<String>>,
+    pub new_tab: Option<Vec<String>>,
+    pub close_tab: Option<Vec<String>>,
     // Four explicit `focus_tab_N` fields because the config layer is a plain
     // string -> Command table with no argument form; this mirrors the
     // `MAX_TABS = 4` cap in the panel manager. To support a 5th tab, add
     // `focus_tab_5` here (+ its parser line) AND bump `MAX_TABS`.
-    focus_tab_1: Option<Vec<String>>,
-    focus_tab_2: Option<Vec<String>>,
-    focus_tab_3: Option<Vec<String>>,
-    focus_tab_4: Option<Vec<String>>,
+    pub focus_tab_1: Option<Vec<String>>,
+    pub focus_tab_2: Option<Vec<String>>,
+    pub focus_tab_3: Option<Vec<String>>,
+    pub focus_tab_4: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Debug, Default)]
-struct JumpMarks {
+#[serde(default)]
+pub struct JumpMarks {
     /// Prefix key(s) for setting a mark (default: `m`).
-    set: Option<Vec<String>>,
+    pub set: Option<Vec<String>>,
     /// Prefix key(s) for jumping to a mark (default: `'`).
-    jump: Option<Vec<String>>,
+    pub jump: Option<Vec<String>>,
 }
 
-#[derive(Deserialize, Debug)]
-struct General {
-    search: Vec<String>,
-    mark: Vec<String>,
-    next: Vec<String>,
-    previous: Vec<String>,
-    view_trash: Vec<String>,
-    toggle_hidden: Vec<String>,
-    toggle_log: Option<Vec<String>>,
-    quit: Vec<String>,
-    quit_no_cd: Option<Vec<String>>,
+#[derive(Deserialize, Debug, Default)]
+#[serde(default)]
+pub struct General {
+    pub search: Option<Vec<String>>,
+    pub mark: Option<Vec<String>>,
+    pub next: Option<Vec<String>>,
+    pub previous: Option<Vec<String>>,
+    pub view_trash: Option<Vec<String>>,
+    pub toggle_hidden: Option<Vec<String>>,
+    pub toggle_log: Option<Vec<String>>,
+    pub quit: Option<Vec<String>>,
+    pub quit_no_cd: Option<Vec<String>>,
 }
 
-#[derive(Deserialize, Debug)]
+/// Keybinding configuration. Doubles as the *user overlay* type (every
+/// field `None` = "use default", `Some(vec![])` = explicit unbind) and,
+/// parsed from the embedded defaults file, as the all-`Some` defaults
+/// instance.
+#[derive(Deserialize, Debug, Default)]
 pub struct KeyConfig {
-    general: General,
-    movement: Movement,
-    manipulation: Manipulation,
     #[serde(default)]
-    jump_marks: JumpMarks,
+    pub general: General,
     #[serde(default)]
-    tabs: Tabs,
+    pub movement: Movement,
+    #[serde(default)]
+    pub manipulation: Manipulation,
+    #[serde(default)]
+    pub jump_marks: JumpMarks,
+    #[serde(default)]
+    pub tabs: Tabs,
 }
 
 #[test]
@@ -304,49 +316,77 @@ impl CommandParser {
     pub fn from_config(config: KeyConfig) -> Self {
         let mut parser = CommandParser::new();
         // General commands
-        parser.insert(config.general.search, Command::Search);
-        parser.insert(config.general.mark, Command::Mark);
-        parser.insert(config.general.next, Command::Next);
-        parser.insert(config.general.previous, Command::Previous);
-        parser.insert(config.general.toggle_hidden, Command::ToggleHidden);
+        parser.insert(config.general.search.unwrap_or_default(), Command::Search);
+        parser.insert(config.general.mark.unwrap_or_default(), Command::Mark);
+        parser.insert(config.general.next.unwrap_or_default(), Command::Next);
+        parser.insert(
+            config.general.previous.unwrap_or_default(),
+            Command::Previous,
+        );
+        parser.insert(
+            config.general.toggle_hidden.unwrap_or_default(),
+            Command::ToggleHidden,
+        );
         parser.insert(
             config.general.toggle_log.unwrap_or_default(),
             Command::ToggleLog,
         );
-        parser.insert(config.general.view_trash, Command::ViewTrash);
-        parser.insert(config.general.quit, Command::Quit);
-        if let Some(quit_cmd) = config.general.quit_no_cd {
-            parser.insert(quit_cmd, Command::QuitWithoutPath);
-        }
+        parser.insert(
+            config.general.view_trash.unwrap_or_default(),
+            Command::ViewTrash,
+        );
+        parser.insert(config.general.quit.unwrap_or_default(), Command::Quit);
+        parser.insert(
+            config.general.quit_no_cd.unwrap_or_default(),
+            Command::QuitWithoutPath,
+        );
 
         // Movement commands
-        parser.insert(config.movement.up, Command::Move(Move::Up));
-        parser.insert(config.movement.down, Command::Move(Move::Down));
-        parser.insert(config.movement.left, Command::Move(Move::Left));
-        parser.insert(config.movement.right, Command::Move(Move::Right));
-        parser.insert(config.movement.top, Command::Move(Move::Top));
-        parser.insert(config.movement.bottom, Command::Move(Move::Bottom));
         parser.insert(
-            config.movement.page_forward,
+            config.movement.up.unwrap_or_default(),
+            Command::Move(Move::Up),
+        );
+        parser.insert(
+            config.movement.down.unwrap_or_default(),
+            Command::Move(Move::Down),
+        );
+        parser.insert(
+            config.movement.left.unwrap_or_default(),
+            Command::Move(Move::Left),
+        );
+        parser.insert(
+            config.movement.right.unwrap_or_default(),
+            Command::Move(Move::Right),
+        );
+        parser.insert(
+            config.movement.top.unwrap_or_default(),
+            Command::Move(Move::Top),
+        );
+        parser.insert(
+            config.movement.bottom.unwrap_or_default(),
+            Command::Move(Move::Bottom),
+        );
+        parser.insert(
+            config.movement.page_forward.unwrap_or_default(),
             Command::Move(Move::PageForward),
         );
         parser.insert(
-            config.movement.page_backward,
+            config.movement.page_backward.unwrap_or_default(),
             Command::Move(Move::PageBackward),
         );
         parser.insert(
-            config.movement.half_page_forward,
+            config.movement.half_page_forward.unwrap_or_default(),
             Command::Move(Move::HalfPageForward),
         );
         parser.insert(
-            config.movement.half_page_backward,
+            config.movement.half_page_backward.unwrap_or_default(),
             Command::Move(Move::HalfPageBackward),
         );
         parser.insert(
-            config.movement.jump_previous,
+            config.movement.jump_previous.unwrap_or_default(),
             Command::Move(Move::JumpPrevious),
         );
-        for (keys, path) in config.movement.jump_to {
+        for (keys, path) in config.movement.jump_to.unwrap_or_default() {
             parser
                 .key_commands
                 .insert(keys, Command::Move(Move::JumpTo(path.into())));
@@ -360,15 +400,30 @@ impl CommandParser {
             config.manipulation.zoxide_query.unwrap_or_default(),
             Command::Cd { zoxide: true },
         );
-        parser.insert(config.manipulation.rename, Command::Rename);
-        parser.insert(config.manipulation.mkdir, Command::Mkdir);
-        parser.insert(config.manipulation.touch, Command::Touch);
-        parser.insert(config.manipulation.cut, Command::Cut);
-        parser.insert(config.manipulation.copy, Command::Copy);
-        parser.insert(config.manipulation.delete, Command::Delete);
-        parser.insert(config.manipulation.zip, Command::Zip);
-        parser.insert(config.manipulation.tar, Command::Tar);
-        parser.insert(config.manipulation.extract, Command::Extract);
+        parser.insert(
+            config.manipulation.rename.unwrap_or_default(),
+            Command::Rename,
+        );
+        parser.insert(
+            config.manipulation.mkdir.unwrap_or_default(),
+            Command::Mkdir,
+        );
+        parser.insert(
+            config.manipulation.touch.unwrap_or_default(),
+            Command::Touch,
+        );
+        parser.insert(config.manipulation.cut.unwrap_or_default(), Command::Cut);
+        parser.insert(config.manipulation.copy.unwrap_or_default(), Command::Copy);
+        parser.insert(
+            config.manipulation.delete.unwrap_or_default(),
+            Command::Delete,
+        );
+        parser.insert(config.manipulation.zip.unwrap_or_default(), Command::Zip);
+        parser.insert(config.manipulation.tar.unwrap_or_default(), Command::Tar);
+        parser.insert(
+            config.manipulation.extract.unwrap_or_default(),
+            Command::Extract,
+        );
         parser.insert(config.manipulation.undo.unwrap_or_default(), Command::Undo);
         parser.insert(config.manipulation.redo.unwrap_or_default(), Command::Redo);
 
@@ -400,11 +455,11 @@ impl CommandParser {
             Command::FocusTab(4),
         );
         parser.insert(
-            config.manipulation.paste,
+            config.manipulation.paste.unwrap_or_default(),
             Command::Paste { overwrite: false },
         );
         parser.insert(
-            config.manipulation.paste_overwrite,
+            config.manipulation.paste_overwrite.unwrap_or_default(),
             Command::Paste { overwrite: true },
         );
 
@@ -741,10 +796,8 @@ impl CommandParser {
                     // alphabet, so they must not shadow explicit bindings:
                     // if a longer binding shares this prefix (`mkdir` over
                     // `mk`), keep collecting keys and let the binding win.
-                    if matches!(
-                        command,
-                        Command::SetJumpMark(_) | Command::JumpToMark(_)
-                    ) && self.key_commands.iter_prefix(&self.buffer).count() > 1
+                    if matches!(command, Command::SetJumpMark(_) | Command::JumpToMark(_))
+                        && self.key_commands.iter_prefix(&self.buffer).count() > 1
                     {
                         return Command::None;
                     }
@@ -873,7 +926,10 @@ extract = ["extract"]
         // "ma" is an explicit jump_to binding; the auto-generated
         // SetJumpMark('a') chord must not overwrite it.
         assert!(matches!(p.add_event(key('m')), Command::None));
-        assert!(matches!(p.add_event(key('a')), Command::Move(Move::JumpTo(_))));
+        assert!(matches!(
+            p.add_event(key('a')),
+            Command::Move(Move::JumpTo(_))
+        ));
     }
 
     #[test]
@@ -1011,5 +1067,20 @@ focus_tab_1 = ["1"]
         // new_tab = ["gn"] still resolves as a two-key chord.
         assert!(matches!(p.add_event(key('g')), Command::None));
         assert!(matches!(p.add_event(key('n')), Command::NewTab));
+    }
+
+    #[test]
+    fn key_config_parses_from_empty_and_partial_toml() {
+        // empty: every field None
+        let empty: KeyConfig = toml::from_str("").unwrap();
+        assert!(empty.movement.up.is_none());
+        assert!(empty.manipulation.undo.is_none());
+
+        // partial: only what is written is Some; [] stays Some(empty)
+        let partial: KeyConfig =
+            toml::from_str("[manipulation]\nundo = []\n[movement]\nup = [\"k\"]").unwrap();
+        assert_eq!(partial.movement.up, Some(vec!["k".into()]));
+        assert_eq!(partial.manipulation.undo, Some(vec![]));
+        assert!(partial.movement.down.is_none());
     }
 }

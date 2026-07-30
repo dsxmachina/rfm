@@ -13,6 +13,10 @@ pub struct Config {
     pub styles: StyleConfig,
     #[serde(default)]
     pub commands: CommandsConfig,
+    #[serde(default)]
+    pub keys: crate::engine::commands::KeyConfig,
+    #[serde(default)]
+    pub open: crate::engine::opener::OpenerConfig,
 }
 
 fn default_rate_limit_interval() -> u64 {
@@ -49,14 +53,18 @@ pub mod color {
     pub static COLOR_DIR_PATH: OnceCell<Color> = OnceCell::new();
     pub static COLOR_RENAME: OnceCell<Color> = OnceCell::new();
 
+    fn default_rename_color() -> String {
+        "blue".into()
+    }
+
     #[derive(Deserialize, Debug)]
     pub struct ColorConfig {
         main: String,
         marked: String,
         highlight: String,
         dir_path: String,
-        #[serde(default)]
-        rename: Option<String>,
+        #[serde(default = "default_rename_color")]
+        rename: String,
     }
 
     fn extract_color(string: String) -> Result<Color> {
@@ -74,14 +82,8 @@ pub mod color {
         let highlight =
             extract_color(config.highlight).context("Failed to set 'highlight' color")?;
         let dir_path = extract_color(config.dir_path).context("Failed to set 'dir_path' color")?;
-        let rename = config
-            .rename
-            .map(extract_color)
-            .transpose()
-            .context("Failed to set 'rename' color")?
-            .unwrap_or(Color::Blue);
+        let rename = extract_color(config.rename).context("Failed to set 'rename' color")?;
         COLOR_MAIN.set(main).expect("color must be unset");
-        COLOR_MAIN.get_or_init(|| main);
         COLOR_MARKED.set(marked).expect("color must be unset");
         COLOR_HIGHLIGHT.set(highlight).expect("color must be unset");
         COLOR_DIR_PATH.set(dir_path).expect("color must be unset");
