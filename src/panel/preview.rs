@@ -223,7 +223,7 @@ impl FilePreview {
         let mime = get_mime_type(&path);
 
         let preview = match (mime.type_().as_str(), mime.subtype().as_str()) {
-            ("image", _) => image_preview(&path, mediainfo(&path).unwrap_or_default()),
+            ("image", _) => native_image_preview(&path, &mime),
             ("audio", _) => audio_preview(&path),
             ("video", _) => video_preview(&path, modified),
             ("application", "x-x509-ca-cert") => cert_preview(&path),
@@ -293,6 +293,55 @@ impl FilePreview {
             },
             resize_cache: None,
         }
+    }
+}
+
+/// Info footer for an image preview, built from the decoded image and
+/// file metadata instead of a mediainfo shell-out.
+fn image_info_lines(
+    img: &DynamicImage,
+    byte_size: u64,
+    modified: SystemTime,
+    subtype: &str,
+) -> Vec<String> {
+    use time::OffsetDateTime;
+    let t = OffsetDateTime::from(modified);
+    vec![
+        format!("{} × {}  {:?}", img.width(), img.height(), img.color()),
+        format!("{subtype} · {}", crate::util::file_size_str(byte_size)),
+        format!(
+            "{}-{:02}-{:02} {:02}:{:02}:{:02}",
+            t.year(),
+            u8::from(t.month()),
+            t.day(),
+            t.hour(),
+            t.minute(),
+            t.second()
+        ),
+    ]
+}
+
+/// Image arm: decode once, derive the info lines from the decode itself
+/// (dimensions are read before the thumbnail shrink). `image_preview`
+/// stays untouched - the video path feeds it thumbnails.
+fn native_image_preview(path: &Path, mime: &mime::Mime) -> Preview {
+    let meta = path.metadata().ok();
+    let byte_size = meta.as_ref().map(|m| m.len()).unwrap_or_default();
+    let modified = meta
+        .and_then(|m| m.modified().ok())
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    match image::io::Reader::open(path).ok().and_then(|r| r.decode().ok()) {
+        Some(img) => {
+            let info = image_info_lines(&img, byte_size, modified, mime.subtype().as_str());
+            Preview::Image {
+                img: Some(img.thumbnail(960, 540)),
+                info,
+            }
+        }
+        None => Preview::Image {
+            img: None,
+            info: Vec::new(),
+        },
     }
 }
 
@@ -980,6 +1029,32 @@ impl PreviewPanel {
 #[cfg(test)]
 mod native_backend_tests {
     use super::*;
+
+    #[test]
+    fn image_info_lines_contain_dimensions_format_and_size() {
+        let img = DynamicImage::ImageRgb8(image::RgbImage::new(64, 48));
+        let lines = image_info_lines(&img, 1234, SystemTime::UNIX_EPOCH, "png");
+        let joined = lines.join("\n");
+        assert!(joined.contains("64 × 48"), "{joined}");
+        assert!(joined.contains("Rgb8"), "{joined}");
+        assert!(joined.contains("png"), "{joined}");
+        assert!(joined.contains("1.2 K"), "{joined}");
+    }
+
+    #[test]
+    fn native_image_preview_populates_info_without_mediainfo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("tiny.png");
+        image::RgbImage::new(8, 8).save(&path).unwrap();
+        let mime: mime::Mime = "image/png".parse().unwrap();
+        match native_image_preview(&path, &mime) {
+            Preview::Image { img, info } => {
+                assert!(img.is_some());
+                assert!(info.iter().any(|l| l.contains("8 × 8")), "{info:?}");
+            }
+            _ => panic!("expected an image preview"),
+        }
+    }
 
     /// Builds `dir/archive.zip` containing `files` via the zip crate.
     fn make_zip(dir: &Path, files: &[String]) -> PathBuf {
