@@ -7,9 +7,10 @@
 
 use std::path::Path;
 
+use anyhow::Context;
 use toml::Value;
 
-use super::merge::{deep_merge, unknown_keys};
+use super::merge::{deep_merge, diff_from_defaults, unknown_keys};
 use super::{default_tree, Config};
 use crate::engine::commands::KeyConfig;
 
@@ -30,16 +31,22 @@ const CONFIG_STUB: &str = "\
 pub struct LoadedConfig {
     pub config: Config,
     pub parser_input: KeyConfig, // user overlay (for build())
+    pub default_keys: KeyConfig, // the pure defaults' keys (for build())
     pub warnings: Vec<String>,   // unknown keys, dropped sections, legacy hints
     pub legacy_folded: bool,     // keys.toml/open.toml were folded in
 }
 
-pub fn load(config_dir: &Path) -> LoadedConfig {
+/// Steps 1–2 of the load pipeline, shared by `load` and `migrate`: read
+/// config.toml and fold legacy keys.toml/open.toml in. Only `load` passes
+/// `write_stub` (first-run stub when config.toml is absent) — `migrate`
+/// must see the directory untouched.
+fn effective_user_tree(config_dir: &Path, write_stub: bool) -> (Value, Vec<String>, bool) {
     let mut warnings = Vec::new();
     let mut legacy_folded = false;
 
-    // --- 1. Read config.toml (absent → write the stub, start empty; a
-    // present-but-unreadable/unparseable file is left alone and defaults run).
+    // --- 1. Read config.toml (absent → optionally write the stub, start
+    // empty; a present-but-unreadable/unparseable file is left alone and
+    // defaults run).
     let config_file = config_dir.join("config.toml");
     let mut user_tree = if config_file.exists() {
         match std::fs::read_to_string(&config_file) {
@@ -62,12 +69,19 @@ pub fn load(config_dir: &Path) -> LoadedConfig {
             }
         }
     } else {
-        let _ = std::fs::create_dir_all(config_dir);
-        if let Err(e) = std::fs::write(&config_file, CONFIG_STUB) {
-            warnings.push(format!(
-                "failed to write the config stub {}: {e}",
-                config_file.display()
-            ));
+        if write_stub {
+            if let Err(e) = std::fs::create_dir_all(config_dir) {
+                warnings.push(format!(
+                    "cannot create config dir {}: {e}",
+                    config_dir.display()
+                ));
+            }
+            if let Err(e) = std::fs::write(&config_file, CONFIG_STUB) {
+                warnings.push(format!(
+                    "failed to write the config stub {}: {e}",
+                    config_file.display()
+                ));
+            }
         }
         Value::Table(toml::map::Map::new())
     };
@@ -99,6 +113,76 @@ pub fn load(config_dir: &Path) -> LoadedConfig {
             Err(e) => warnings.push(format!("cannot parse legacy {file}: {e} — not folded in")),
         }
     }
+
+    (user_tree, warnings, legacy_folded)
+}
+
+/// Two-line header written atop the migrated config.toml.
+const MIGRATE_HEADER: &str = "\
+# migrated by rfm --migrate-config — sparse overrides over the built-in defaults.
+# See every available option together with its default value: rfm --dump-config
+";
+
+/// Returns human-readable summary lines. Writes config.toml, renames legacy
+/// files to *.bak. Pure-ish: all paths under `config_dir`.
+pub fn migrate(config_dir: &Path) -> anyhow::Result<Vec<String>> {
+    let (user_tree, warnings, _) = effective_user_tree(config_dir, false);
+    let mut summary = warnings; // parse problems etc. are part of the story
+
+    // The minimal overrides: everything in the effective user config that
+    // differs from the embedded defaults (None → empty file, just the header).
+    let diff = diff_from_defaults(&default_tree(), &user_tree);
+    let body = match &diff {
+        Some(tree) => toml::to_string_pretty(tree).context("cannot serialize the migrated config")?,
+        None => String::new(),
+    };
+
+    std::fs::create_dir_all(config_dir)
+        .with_context(|| format!("cannot create config dir {}", config_dir.display()))?;
+
+    let config_file = config_dir.join("config.toml");
+    if config_file.exists() {
+        let bak = config_dir.join("config.toml.bak");
+        std::fs::rename(&config_file, &bak)
+            .with_context(|| format!("cannot back up {}", config_file.display()))?;
+        summary.push(format!(
+            "backed up the previous config.toml to {}",
+            bak.display()
+        ));
+    }
+    let content = if body.is_empty() {
+        MIGRATE_HEADER.to_string()
+    } else {
+        format!("{MIGRATE_HEADER}\n{body}")
+    };
+    std::fs::write(&config_file, content)
+        .with_context(|| format!("cannot write {}", config_file.display()))?;
+    summary.push(if body.is_empty() {
+        format!(
+            "wrote {} — your setup matches the built-in defaults, so it is empty",
+            config_file.display()
+        )
+    } else {
+        format!("wrote {} with your overrides", config_file.display())
+    });
+
+    for file in ["keys.toml", "open.toml"] {
+        let path = config_dir.join(file);
+        if !path.exists() {
+            continue;
+        }
+        let bak = config_dir.join(format!("{file}.bak"));
+        std::fs::rename(&path, &bak)
+            .with_context(|| format!("cannot rename legacy {}", path.display()))?;
+        summary.push(format!("renamed legacy {file} to {file}.bak"));
+    }
+
+    Ok(summary)
+}
+
+pub fn load(config_dir: &Path) -> LoadedConfig {
+    // --- 1.+2. config.toml (stub on first run) + legacy fold-in.
+    let (mut user_tree, mut warnings, legacy_folded) = effective_user_tree(config_dir, true);
     if legacy_folded {
         warnings.push(
             "legacy keys.toml/open.toml were folded into your configuration — run \
@@ -196,9 +280,18 @@ pub fn load(config_dir: &Path) -> LoadedConfig {
             .expect("embedded default-config.toml must deserialize")
     });
 
+    // The pure defaults' keybindings — the first pass of CommandParser::build.
+    let default_keys: KeyConfig = defaults
+        .get("keys")
+        .cloned()
+        .expect("embedded default-config.toml has a [keys] section")
+        .try_into()
+        .expect("embedded default [keys] must deserialize");
+
     LoadedConfig {
         config,
         parser_input,
+        default_keys,
         warnings,
         legacy_folded,
     }
@@ -364,6 +457,50 @@ mod tests {
             .any(|w| w.contains("use_trsah")
                 && w.contains("did you mean")
                 && w.contains("`use_trash`")));
+    }
+
+    #[test]
+    fn migrate_writes_minimal_diff_and_baks_legacy() {
+        let dir = tempfile::tempdir().unwrap();
+        // stale full copy pinning an old default + one real customization
+        std::fs::write(
+            dir.path().join("keys.toml"),
+            "[movement]\nup = [\"k\"]\ndown = [\"j\"]\n[general]\nquit = [\"q\", \"exit\"]",
+        )
+        .unwrap();
+        migrate(dir.path()).unwrap();
+
+        let written = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        let tree: toml::Value = written.parse().unwrap();
+        // values equal to defaults were dropped:
+        assert!(tree.get("keys").and_then(|k| k.get("movement")).is_none());
+        // the real customization survived:
+        assert_eq!(
+            tree["keys"]["general"]["quit"],
+            toml::Value::try_from(vec!["q", "exit"]).unwrap()
+        );
+        assert!(dir.path().join("keys.toml.bak").exists());
+        assert!(!dir.path().join("keys.toml").exists());
+    }
+
+    #[test]
+    fn migrate_load_equivalence() {
+        // load(migrate(dir)) ≡ load(dir) — the invariant from the design doc
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "[general]\nfancy_icons = true").unwrap();
+        std::fs::write(dir.path().join("keys.toml"), "[movement]\nup = [\"x\"]").unwrap();
+        let before = load(dir.path());
+        migrate(dir.path()).unwrap();
+        let after = load(dir.path());
+        assert_eq!(
+            after.config.general.fancy_icons,
+            before.config.general.fancy_icons
+        );
+        assert_eq!(
+            after.parser_input.movement.up,
+            before.parser_input.movement.up
+        );
+        assert!(!after.legacy_folded);
     }
 
     #[test]

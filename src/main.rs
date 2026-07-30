@@ -58,8 +58,23 @@ struct Args {
     /// Print the complete annotated default configuration and exit
     #[arg(long)]
     dump_config: bool,
+    /// Unify the configuration into one minimal config.toml (folding legacy
+    /// keys.toml/open.toml in, renaming them to *.bak) and exit
+    #[arg(long)]
+    migrate_config: bool,
     /// Path to open (defaults to ".")
     path: Option<PathBuf>,
+}
+
+/// The config directory: `--config` wins, else `$XDG_CONFIG_HOME/rfm`.
+/// Resolution only — creating the directory is the caller's business.
+fn resolve_config_dir(cli_override: Option<PathBuf>) -> anyhow::Result<PathBuf> {
+    match cli_override {
+        Some(dir) => Ok(dir),
+        None => Ok(xdg_config_home()
+            .context("failed to get $XDG_CONFIG_HOME")?
+            .join("rfm")),
+    }
 }
 
 const ERROR_MSG: &str = "\
@@ -80,6 +95,14 @@ async fn main() -> anyhow::Result<()> {
 
     if args.dump_config {
         print!("{}", config::default_config_str());
+        return Ok(());
+    }
+
+    if args.migrate_config {
+        let config_dir = resolve_config_dir(args.config)?;
+        for line in config::load::migrate(&config_dir)? {
+            println!("{line}");
+        }
         return Ok(());
     }
 
@@ -138,13 +161,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // --- Read config directory
-    let config_dir = if let Some(config_dir) = args.config {
-        config_dir
-    } else {
-        xdg_config_home()
-            .context("failed to get $XDG_CONFIG_HOME")?
-            .join("rfm")
-    };
+    let config_dir = resolve_config_dir(args.config)?;
 
     // Create the config directory, if it is not present
     if !config_dir.exists() {
@@ -172,11 +189,8 @@ async fn main() -> anyhow::Result<()> {
         info!("Loaded {} user commands", loaded.config.commands.len());
     }
 
-    let default_config: config::Config = config::default_tree()
-        .try_into()
-        .expect("embedded defaults deserialize");
     let (parser, dropped) = CommandParser::build(
-        &default_config.keys,
+        &loaded.default_keys,
         &loaded.parser_input,
         &loaded.config.commands,
     );
