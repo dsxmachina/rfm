@@ -14,7 +14,7 @@ use crate::{
     util::{truncate_with_color_codes, ExactWidth},
 };
 
-use super::{BasePanel, DirPanel, Draw, PanelContent};
+use super::{thumb_cache, BasePanel, DirPanel, Draw, PanelContent};
 use crossterm::{
     cursor, queue,
     style::{self, Colors, Print, ResetColor, SetColors},
@@ -223,7 +223,9 @@ impl FilePreview {
         let mime = get_mime_type(&path);
 
         let preview = match (mime.type_().as_str(), mime.subtype().as_str()) {
-            ("image", _) => image_preview(&path, mediainfo(&path).unwrap_or_default()),
+            ("image", _) => {
+                cached_image_preview(&path, modified, mediainfo(&path).unwrap_or_default())
+            }
             ("audio", _) => cmd_to_preview("mediainfo", mediainfo(&path)),
             ("video", _) => video_preview(&path, modified),
             ("application", "x-x509-ca-cert") => cert_preview(&path),
@@ -302,6 +304,32 @@ impl FilePreview {
     }
 }
 
+fn mtime_secs(modified: SystemTime) -> u64 {
+    modified
+        .duration_since(UNIX_EPOCH)
+        .map(|t| t.as_secs())
+        .unwrap_or_default()
+}
+
+/// Image preview via the persistent thumbnail cache: on a hit only the
+/// small cached JPEG is decoded; on a miss the original is decoded,
+/// thumbnailed, and stored for next time.
+fn cached_image_preview(path: &Path, modified: SystemTime, info: Vec<String>) -> Preview {
+    let mtime = mtime_secs(modified);
+    if let Some(img) = thumb_cache::lookup(path, mtime) {
+        log::debug!("thumbnail cache hit for {}", path.display());
+        return Preview::Image {
+            img: Some(img),
+            info,
+        };
+    }
+    let preview = image_preview(path, info);
+    if let Preview::Image { img: Some(img), .. } = &preview {
+        thumb_cache::store(path, mtime, img);
+    }
+    preview
+}
+
 fn image_preview(path: impl AsRef<Path>, info: Vec<String>) -> Preview {
     log::debug!("--- creating image-preview for {}", path.as_ref().display());
     if let Ok(img_bytes) = image::io::Reader::open(&path) {
@@ -341,10 +369,7 @@ fn video_preview(path: impl AsRef<Path>, modified: SystemTime) -> Preview {
                 .and_then(|o| o.stdout.lines().take(128).collect()),
         );
     }
-    let modified = modified
-        .duration_since(UNIX_EPOCH)
-        .map(|t| t.as_secs())
-        .unwrap_or_default();
+    let modified = mtime_secs(modified);
 
     // Use ffmpeg
     match ffmpeg_thumbnail(&path, modified) {

@@ -50,15 +50,13 @@ pub fn dir() -> Option<&'static Path> {
     THUMB_CACHE_DIR.get().and_then(|d| d.as_deref())
 }
 
-// TODO(thumbnail-cache Task 7): called from the preview path.
-#[allow(dead_code)]
+/// Decoded cache entry for (`src_path`, `mtime_secs`), or `None` on
+/// miss or when the cache is disabled.
 pub fn lookup(src_path: &Path, mtime_secs: u64) -> Option<DynamicImage> {
     lookup_in(dir()?, src_path, mtime_secs)
 }
 
 /// Best-effort: a failed store only costs a future regeneration.
-// TODO(thumbnail-cache Task 7): called from the preview path.
-#[allow(dead_code)]
 pub fn store(src_path: &Path, mtime_secs: u64, img: &DynamicImage) {
     if let Some(dir) = dir() {
         if let Err(e) = store_in(dir, src_path, mtime_secs, img) {
