@@ -143,8 +143,8 @@ fn store_in(
 
 /// Remove every entry sharing `src_path`'s hash prefix except `keep`.
 /// Also catches orphaned `.part` files of that prefix. Errors ignored:
-/// a racing instance may have removed the file already.
-// TODO(thumbnail-cache Task 8): also called directly by the ffmpeg path.
+/// a racing instance may have removed the file already. Called from
+/// `store_in` and directly by the ffmpeg path (`ffmpeg_thumbnail`).
 pub(crate) fn cleanup_stale(dir: &Path, src_path: &Path, keep: &str) {
     let prefix = hash_prefix(src_path);
     let Ok(entries) = std::fs::read_dir(dir) else {
