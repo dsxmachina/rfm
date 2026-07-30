@@ -7,9 +7,15 @@
 use image::codecs::jpeg::JpegEncoder;
 use image::DynamicImage;
 use std::io::{BufWriter, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 const JPEG_QUALITY: u8 = 85;
+// TODO(thumbnail-cache Task 6): consumed by the public `prune()` wrapper.
+#[allow(dead_code)]
+const MAX_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
+#[allow(dead_code)]
+const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Cache filename for `path` at `mtime_secs`. Fixed-width hex hash +
 /// `-` separator keeps entries for one source file prefix-scannable.
@@ -46,7 +52,9 @@ fn lookup_in(dir: &Path, src_path: &Path, mtime_secs: u64) -> Option<DynamicImag
 /// orphaned `.part`s) of the same source path after a successful store.
 /// Same-process concurrent stores are safe: both write equivalent bytes
 /// for the same (path, mtime), and any corrupt outcome self-heals via
-/// `lookup_in`'s delete-on-decode-failure.
+/// `lookup_in`'s delete-on-decode-failure. Cross-instance races cost at
+/// most a regeneration: one instance's entry or in-flight `.part` may be
+/// deleted by another's cleanup, and the next miss simply re-stores.
 // TODO(thumbnail-cache Task 6): consumed by the public cache-dir wrappers.
 #[allow(dead_code)]
 fn store_in(
@@ -58,6 +66,8 @@ fn store_in(
     let name = entry_name(src_path, mtime_secs);
     let final_path = dir.join(&name);
     if final_path.exists() {
+        // Still sweep stale siblings a previously interrupted run left.
+        cleanup_stale(dir, src_path, &name);
         return Ok(());
     }
     let part = dir.join(format!("{name}.{}.part", std::process::id()));
@@ -97,11 +107,60 @@ pub(crate) fn cleanup_stale(dir: &Path, src_path: &Path, keep: &str) {
     }
 }
 
+/// Delete entries older than `max_age`, then oldest-first until the
+/// directory is under `max_total_bytes`. Also reaps orphaned `.part`
+/// files (they age out like everything else). Races with other
+/// instances are benign — all errors are ignored.
+// TODO(thumbnail-cache Task 6): consumed by the public `prune()` wrapper.
+#[allow(dead_code)]
+fn prune_dir(dir: &Path, max_age: Duration, max_total_bytes: u64, now: SystemTime) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(PathBuf, SystemTime, u64)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let meta = e.metadata().ok()?;
+            if !meta.is_file() {
+                return None;
+            }
+            Some((e.path(), meta.modified().ok()?, meta.len()))
+        })
+        .collect();
+    files.retain(|(path, mtime, _)| {
+        let expired = now.duration_since(*mtime).is_ok_and(|age| age > max_age);
+        if expired {
+            let _ = std::fs::remove_file(path);
+        }
+        !expired
+    });
+    let mut total: u64 = files.iter().map(|(_, _, len)| len).sum();
+    files.sort_by_key(|(_, mtime, _)| *mtime);
+    for (path, _, len) in files {
+        if total <= max_total_bytes {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            total = total.saturating_sub(len);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use image::DynamicImage;
     use std::path::Path;
+    use std::time::{Duration, SystemTime};
+
+    fn set_mtime(path: &Path, t: SystemTime) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(t)
+            .unwrap();
+    }
 
     fn test_img() -> DynamicImage {
         DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 4, image::Rgb([200, 10, 10])))
@@ -166,9 +225,39 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let src = Path::new("/photos/a.png");
         let entry = dir.path().join(entry_name(src, 100));
+        let stale = dir.path().join(entry_name(src, 90));
         std::fs::write(&entry, b"sentinel").unwrap();
+        std::fs::write(&stale, b"stale").unwrap();
         store_in(dir.path(), src, 100, &test_img()).unwrap();
         assert_eq!(std::fs::read(&entry).unwrap(), b"sentinel");
+        assert!(!stale.exists(), "skip path still cleans stale siblings");
+    }
+
+    #[test]
+    fn prune_deletes_by_age() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = SystemTime::now();
+        let old = dir.path().join("old.jpg");
+        let fresh = dir.path().join("fresh.jpg");
+        std::fs::write(&old, [0u8; 10]).unwrap();
+        std::fs::write(&fresh, [0u8; 10]).unwrap();
+        set_mtime(&old, now - Duration::from_secs(31 * 24 * 3600));
+        prune_dir(dir.path(), MAX_AGE, u64::MAX, now);
+        assert!(!old.exists() && fresh.exists());
+    }
+
+    #[test]
+    fn prune_enforces_size_cap_oldest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = SystemTime::now();
+        for (name, age_days) in [("a.jpg", 3), ("b.jpg", 2), ("c.jpg", 1)] {
+            let p = dir.path().join(name);
+            std::fs::write(&p, [0u8; 1000]).unwrap();
+            set_mtime(&p, now - Duration::from_secs(age_days * 24 * 3600));
+        }
+        prune_dir(dir.path(), MAX_AGE, 2500, now); // fits two entries
+        assert!(!dir.path().join("a.jpg").exists(), "oldest deleted first");
+        assert!(dir.path().join("b.jpg").exists() && dir.path().join("c.jpg").exists());
     }
 
     #[test]
