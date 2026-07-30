@@ -627,9 +627,9 @@ impl PanelManager {
         }
     }
 
-    /// Records a freshly created archive (`archive` is the opener's result, a
-    /// path relative to `dir`) as an undoable-but-not-redoable transaction —
-    /// archive content can't be replayed on redo.
+    /// Records a freshly created archive (`archive` is the opener's result,
+    /// the absolute archive path inside `dir`) as an undoable-but-not-redoable
+    /// transaction — archive content can't be replayed on redo.
     fn record_archive(&mut self, label: &str, dir: &Path, archive: std::io::Result<PathBuf>) {
         match archive {
             Ok(rel) => {
@@ -2109,7 +2109,7 @@ impl PanelManager {
                             if let Err(e) = std::env::set_current_dir(&dir) {
                                 error!("Failed to set working-directory for process: {e}");
                             }
-                            let archive = self.opener.zip(items);
+                            let archive = self.opener.zip(items, &dir);
                             self.record_archive("zip", &dir, archive);
                         }
                         Command::Tar => {
@@ -2118,7 +2118,7 @@ impl PanelManager {
                             if let Err(e) = std::env::set_current_dir(&dir) {
                                 error!("Failed to set working-directory for process: {e}");
                             }
-                            let archive = self.opener.tar(items);
+                            let archive = self.opener.tar(items, &dir);
                             self.record_archive("tar", &dir, archive);
                         }
                         Command::Extract => {
@@ -2133,7 +2133,7 @@ impl PanelManager {
                                 if let Err(e) = std::env::set_current_dir(&dir) {
                                     error!("Failed to set working-directory for process: {e}");
                                 }
-                                if let Err(e) = self.opener.extract(archive) {
+                                if let Err(e) = self.opener.extract(archive, &dir) {
                                     warn!("Failed to extract archive: {e}");
                                 }
                             } else {

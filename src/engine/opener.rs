@@ -40,6 +40,27 @@ pub fn get_mime_type<P: AsRef<Path>>(path: P) -> Mime {
     mime_guess::from_path(path).first_or_text_plain()
 }
 
+/// Leaves raw mode for the lifetime of the guard and restores it on drop —
+/// so every early `?` return of the open functions (e.g. a configured opener
+/// binary that is not installed) puts the terminal back instead of leaving
+/// the whole TUI without raw mode.
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn suspend() -> Result<RawModeGuard> {
+        terminal::disable_raw_mode()?;
+        Ok(RawModeGuard)
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        // Best effort: there is nothing left to do about a failure here.
+        let _ = terminal::enable_raw_mode();
+        let _ = crossterm::execute!(stdout(), terminal::DisableLineWrap);
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Application {
     name: String,
@@ -60,6 +81,12 @@ impl Application {
         if self.terminal {
             handle.wait()?;
             stdout().queue(terminal::DisableLineWrap)?.flush()?;
+        } else {
+            // GUI apps run detached: reap the child in the background so it
+            // doesn't linger as a zombie once it exits.
+            std::thread::spawn(move || {
+                let _ = handle.wait();
+            });
         }
         Ok(())
     }
@@ -145,7 +172,7 @@ impl OpenEngine {
         } else {
             path.canonicalize().unwrap_or_default()
         };
-        terminal::disable_raw_mode()?;
+        let _raw_mode = RawModeGuard::suspend()?;
         let mut stdout = stdout();
         stdout
             .queue(Clear(ClearType::All))?
@@ -221,7 +248,6 @@ impl OpenEngine {
                 }
             }
         }
-        terminal::enable_raw_mode()?;
         Ok(())
     }
 
@@ -234,7 +260,7 @@ impl OpenEngine {
         } else {
             path.canonicalize().unwrap_or_default()
         };
-        terminal::disable_raw_mode()?;
+        let _raw_mode = RawModeGuard::suspend()?;
         let mut stdout = stdout();
         stdout
             .queue(Clear(ClearType::All))?
@@ -254,50 +280,44 @@ impl OpenEngine {
             status
         };
 
-        terminal::enable_raw_mode()?;
         Ok(status)
     }
 
-    /// Creates a zip archive and returns the path it was written to.
-    pub fn zip(&self, items: Vec<PathBuf>) -> Result<PathBuf> {
+    /// Creates a zip archive in `dir` and returns the path it was written to.
+    pub fn zip(&self, items: Vec<PathBuf>, dir: &Path) -> Result<PathBuf> {
         info!("Creating zip archive from {} files", items.len());
+        require_binary("zip", "zip is not installed - install it to create zip archives")?;
         let mut process = std::process::Command::new("zip");
-        let archive_path = check_filename("output", ".", "zip")?;
+        let archive_path = check_filename("output", dir, "zip")?;
+        process.current_dir(dir);
         process.arg(archive_path.as_os_str());
         process.arg("--");
         for path in items.iter().flat_map(|p| p.file_name()) {
             process.arg(path);
         }
-        process
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .stdin(std::process::Stdio::null());
-        let mut handle = process.spawn()?;
-        handle.wait()?;
+        run_archive_tool(&mut process, "zip", Some(&archive_path))?;
         Ok(archive_path)
     }
 
-    /// Creates a tar.gz archive and returns the path it was written to.
-    pub fn tar(&self, items: Vec<PathBuf>) -> Result<PathBuf> {
+    /// Creates a tar.gz archive in `dir` and returns the path it was written to.
+    pub fn tar(&self, items: Vec<PathBuf>, dir: &Path) -> Result<PathBuf> {
         info!("Creating tar.gz archive from {} files", items.len());
+        require_binary("tar", "tar is not installed - install it to create tar archives")?;
         let mut process = std::process::Command::new("tar");
+        process.current_dir(dir);
         process.arg("-czf");
-        let archive_path = check_filename("output", ".", "tar.gz")?;
+        let archive_path = check_filename("output", dir, "tar.gz")?;
         process.arg(archive_path.as_os_str());
         process.arg("--");
         for path in items.iter().flat_map(|p| p.file_name()) {
             process.arg(path);
         }
-        process
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .stdin(std::process::Stdio::null());
-        let mut handle = process.spawn()?;
-        handle.wait()?;
+        run_archive_tool(&mut process, "tar", Some(&archive_path))?;
         Ok(archive_path)
     }
 
-    pub fn extract(&self, archive: PathBuf) -> Result<()> {
+    /// Extracts `archive` into `dir`.
+    pub fn extract(&self, archive: PathBuf, dir: &Path) -> Result<()> {
         info!("Extracting archive '{}'", archive.display());
         let extension = archive
             .extension()
@@ -308,28 +328,139 @@ impl OpenEngine {
 
         match (mime.type_().as_str(), mime.subtype().as_str()) {
             ("application", "gzip") => {
-                std::process::Command::new("tar")
+                require_binary("tar", "tar is not installed - install it to extract tar archives")?;
+                let mut process = std::process::Command::new("tar");
+                process
+                    .current_dir(dir)
                     .arg("-xzf")
-                    .arg(archive.as_os_str())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .stdin(std::process::Stdio::null())
-                    .spawn()?
-                    .wait()?;
+                    .arg(archive.as_os_str());
+                run_archive_tool(&mut process, "tar", None)?;
             }
             ("application", "zip") => {
-                std::process::Command::new("unzip")
-                    .arg(archive.as_os_str())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .stdin(std::process::Stdio::null())
-                    .spawn()?
-                    .wait()?;
+                require_binary(
+                    "unzip",
+                    "unzip is not installed - install it to extract zip archives",
+                )?;
+                let mut process = std::process::Command::new("unzip");
+                process.current_dir(dir).arg(archive.as_os_str());
+                run_archive_tool(&mut process, "unzip", None)?;
             }
             _ => {
                 log::warn!("{} is not an archive", archive.display());
             }
         }
         Ok(())
+    }
+}
+
+/// Errors with `msg` (NotFound) when `name` is not an executable on PATH,
+/// so a missing archiver surfaces as a readable message instead of a raw
+/// spawn error.
+fn require_binary(name: &str, msg: &str) -> Result<()> {
+    if crate::util::binary_on_path(name) {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(std::io::ErrorKind::NotFound, msg))
+    }
+}
+
+/// Runs a prepared archiver invocation and checks its exit status. On
+/// failure the partially written `archive_path` (if any) is removed and the
+/// exit code plus the first lines of stderr are surfaced in the error.
+fn run_archive_tool(
+    process: &mut Command,
+    tool: &str,
+    archive_path: Option<&Path>,
+) -> Result<()> {
+    let output = process.stdin(std::process::Stdio::null()).output()?;
+    if output.status.success() {
+        return Ok(());
+    }
+    // tar & friends may leave a partial archive behind on failure; the path
+    // came fresh from check_filename, so removing it can't hit user data.
+    if let Some(path) = archive_path {
+        if path.exists() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = stderr.lines().take(3).collect::<Vec<_>>().join(" | ");
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Other,
+        format!("{tool} failed ({}): {stderr}", output.status),
+    ))
+}
+
+#[cfg(test)]
+mod archive_tests {
+    use super::*;
+
+    fn fixture(names: &[&str]) -> (tempfile::TempDir, Vec<PathBuf>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let items = names
+            .iter()
+            .map(|name| {
+                let path = tmp.path().join(name);
+                std::fs::write(&path, format!("content of {name}")).unwrap();
+                path
+            })
+            .collect();
+        (tmp, items)
+    }
+
+    #[test]
+    fn tar_creates_an_archive_in_the_target_dir() {
+        let (tmp, items) = fixture(&["a.txt", "b.txt"]);
+        let archive = OpenEngine::default().tar(items, tmp.path()).unwrap();
+        assert!(archive.is_file());
+        assert_eq!(archive.parent(), Some(tmp.path()));
+    }
+
+    #[test]
+    fn tar_failure_reports_err_and_leaves_no_archive_behind() {
+        let (tmp, mut items) = fixture(&["a.txt"]);
+        items.push(tmp.path().join("missing.txt"));
+        // tar exits non-zero on the missing member but still writes the
+        // archive — the partial file must be cleaned up.
+        let result = OpenEngine::default().tar(items, tmp.path());
+        assert!(result.is_err());
+        assert!(!tmp.path().join("output.tar.gz").exists());
+    }
+
+    #[test]
+    fn zip_creates_an_archive_in_the_target_dir() {
+        let (tmp, items) = fixture(&["a.txt", "b.txt"]);
+        let archive = OpenEngine::default().zip(items, tmp.path()).unwrap();
+        assert!(archive.is_file());
+        assert_eq!(archive.parent(), Some(tmp.path()));
+    }
+
+    #[test]
+    fn zip_failure_reports_err_and_leaves_no_archive_behind() {
+        // zip exits 0 when at least one item matches, so only an
+        // all-missing item list produces a failure ("nothing to do").
+        let (tmp, _) = fixture(&[]);
+        let items = vec![tmp.path().join("missing.txt")];
+        let result = OpenEngine::default().zip(items, tmp.path());
+        assert!(result.is_err());
+        assert!(!tmp.path().join("output.zip").exists());
+    }
+
+    #[test]
+    fn extract_roundtrips_a_tar_archive() {
+        let (tmp, items) = fixture(&["a.txt", "b.txt"]);
+        let engine = OpenEngine::default();
+        let archive = engine.tar(items, tmp.path()).unwrap();
+
+        let out = tempfile::tempdir().unwrap();
+        engine.extract(archive, out.path()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(out.path().join("a.txt")).unwrap(),
+            "content of a.txt"
+        );
+        assert_eq!(
+            std::fs::read_to_string(out.path().join("b.txt")).unwrap(),
+            "content of b.txt"
+        );
     }
 }
