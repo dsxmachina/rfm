@@ -365,11 +365,24 @@ pub struct Zoxide {
     path: String,
     options: Vec<String>,
     opt_idx: usize,
+    available: bool,
 }
 
 impl Zoxide {
     pub fn from_panel(panel: &DirPanel) -> Self {
-        let path = ".".to_string();
+        Self::with_availability(panel, crate::command_queue::zoxide_available())
+    }
+
+    /// Like [`Zoxide::from_panel`], but with the PATH probe injected —
+    /// tests use this to pin the unavailable state deterministically.
+    fn with_availability(panel: &DirPanel, available: bool) -> Self {
+        // Show the hint right away when zoxide is missing, instead of
+        // only after the first keystroke.
+        let path = if available {
+            ".".to_string()
+        } else {
+            "zoxide is not installed".to_string()
+        };
         let starting_path = panel.path().to_path_buf();
         Zoxide {
             starting_path,
@@ -377,6 +390,7 @@ impl Zoxide {
             path,
             options: Vec::new(),
             opt_idx: 0,
+            available,
         }
     }
 
@@ -475,6 +489,23 @@ impl Draw for Zoxide {
 
 impl ModalInput for Zoxide {
     fn handle_key(&mut self, key_event: KeyEvent) -> ModeOp {
+        if !self.available {
+            // Without zoxide on PATH, every query would spawn a doomed
+            // process per keystroke; only Esc/Enter keep their exits,
+            // everything else just displays the hint.
+            return match key_event.code {
+                KeyCode::Enter => ModeOp::Exit {
+                    cleanup: Cleanup::None,
+                },
+                KeyCode::Esc => ModeOp::Exit {
+                    cleanup: Cleanup::CdTo(self.starting_path.clone()),
+                },
+                _ => {
+                    self.path = "zoxide is not installed".to_string();
+                    ModeOp::None
+                }
+            };
+        }
         match key_event.code {
             KeyCode::Backspace => {
                 self.opt_idx = 0;
@@ -628,6 +659,7 @@ mod tests {
     fn zoxide_esc_exits_to_its_starting_directory() {
         let mut console = Zoxide {
             starting_path: PathBuf::from("/origin"),
+            available: true,
             ..Default::default()
         };
         assert_eq!(
@@ -640,7 +672,10 @@ mod tests {
 
     #[test]
     fn zoxide_enter_exits_without_cleanup() {
-        let mut console = Zoxide::default();
+        let mut console = Zoxide {
+            available: true,
+            ..Default::default()
+        };
         assert_eq!(
             console.handle_key(key(KeyCode::Enter)),
             ModeOp::Exit {
@@ -656,11 +691,48 @@ mod tests {
         let mut console = Zoxide {
             starting_path: PathBuf::from("/origin"),
             input: "a".to_string(),
+            available: true,
             ..Default::default()
         };
         assert_eq!(
             console.handle_key(key(KeyCode::Backspace)),
             ModeOp::Cd(PathBuf::from("/origin"))
+        );
+    }
+
+    #[test]
+    fn zoxide_unavailable_char_reports_missing_binary() {
+        // Without zoxide on PATH, a keystroke must not spawn a doomed
+        // process; it just shows the hint where the suggestion would be.
+        let panel = DirPanel::empty();
+        let mut console = Zoxide::with_availability(&panel, false);
+        // The hint is shown from the start, and keystrokes keep it.
+        assert_eq!(console.path, "zoxide is not installed");
+        assert_eq!(console.handle_key(key(KeyCode::Char('x'))), ModeOp::None);
+        assert_eq!(console.path, "zoxide is not installed");
+    }
+
+    #[test]
+    fn zoxide_unavailable_esc_exits_to_its_starting_directory() {
+        let panel = DirPanel::empty();
+        let mut console = Zoxide::with_availability(&panel, false);
+        assert_eq!(
+            console.handle_key(key(KeyCode::Esc)),
+            ModeOp::Exit {
+                cleanup: Cleanup::CdTo(panel.path().to_path_buf())
+            }
+        );
+    }
+
+    #[test]
+    fn zoxide_unavailable_enter_exits_without_cleanup() {
+        let panel = DirPanel::empty();
+        let mut console = Zoxide::with_availability(&panel, false);
+        assert_eq!(
+            console.handle_key(key(KeyCode::Enter)),
+            ModeOp::Exit {
+                cleanup: Cleanup::None
+            }
         );
     }
 }
