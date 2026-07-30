@@ -330,7 +330,10 @@ fn native_image_preview(path: &Path, mime: &mime::Mime) -> Preview {
     let modified = meta
         .and_then(|m| m.modified().ok())
         .unwrap_or(SystemTime::UNIX_EPOCH);
-    match image::io::Reader::open(path).ok().and_then(|r| r.decode().ok()) {
+    match image::io::Reader::open(path)
+        .ok()
+        .and_then(|r| r.decode().ok())
+    {
         Some(img) => {
             let info = image_info_lines(&img, byte_size, modified, mime.subtype().as_str());
             Preview::Image {
@@ -338,10 +341,16 @@ fn native_image_preview(path: &Path, mime: &mime::Mime) -> Preview {
                 info,
             }
         }
-        None => Preview::Image {
-            img: None,
-            info: Vec::new(),
-        },
+        // Formats the image crate cannot decode (HEIC/AVIF/most RAW):
+        // keep the mediainfo shell-out as the last-resort fallback so
+        // exotic inputs still show an info block instead of nothing.
+        None => {
+            log::debug!(
+                "native image decode failed, trying mediainfo: {}",
+                path.display()
+            );
+            cmd_to_preview("mediainfo", mediainfo(path))
+        }
     }
 }
 
@@ -494,6 +503,18 @@ fn prune_older_than(dir: &Path, max_age: Duration) {
     }
 }
 
+/// `bat_preview`'s scrubbing convention, applied to every line-based
+/// native preview: attacker-controlled strings (archive member names,
+/// audio tags, certificate fields) may contain `\r`/`\n`, which must
+/// not break the one-entry-one-line invariant of the preview pane.
+fn scrub_line(line: String) -> String {
+    if line.contains(['\r', '\n']) {
+        line.replace(['\r', '\n'], "")
+    } else {
+        line
+    }
+}
+
 /// Parse a PEM or DER certificate and print the fields people actually
 /// inspect. Errors route the caller to the openssl/bat fallback.
 fn native_cert_lines(data: &[u8]) -> anyhow::Result<Vec<String>> {
@@ -520,7 +541,10 @@ fn native_cert_lines(data: &[u8]) -> anyhow::Result<Vec<String>> {
             lines.push(format!("SAN:        {name}"));
         }
     }
-    Ok(lines)
+    // Same 128-line cap as every other line-based preview: a hostile
+    // certificate with thousands of SAN entries stays bounded.
+    lines.truncate(128);
+    Ok(lines.into_iter().map(scrub_line).collect())
 }
 
 /// Native-first certificate arm; the openssl shell-out (with its bat
@@ -578,11 +602,11 @@ fn native_zip_list(path: &Path) -> anyhow::Result<Vec<String>> {
     let mut lines = Vec::new();
     for i in 0..archive.len().min(128) {
         let entry = archive.by_index_raw(i)?;
-        lines.push(format!(
+        lines.push(scrub_line(format!(
             "{:>8}  {}",
             crate::util::file_size_str(entry.size()),
             entry.name()
-        ));
+        )));
     }
     Ok(lines)
 }
@@ -609,12 +633,12 @@ fn native_tar_list<R: io::Read>(reader: R) -> anyhow::Result<Vec<String>> {
             tar::EntryType::Fifo => 0o010000,
             _ => 0o100000,
         };
-        lines.push(format!(
+        lines.push(scrub_line(format!(
             "{} {:>8}  {}",
             unix_mode::to_string(type_bits | (header.mode().unwrap_or(0) & 0o7777)),
             crate::util::file_size_str(header.size().unwrap_or(0)),
             entry.path()?.display()
-        ));
+        )));
     }
     Ok(lines)
 }
@@ -782,7 +806,7 @@ fn native_audio_lines(path: &Path) -> anyhow::Result<Vec<String>> {
             lines.push(format!("Year:        {year}"));
         }
     }
-    Ok(lines)
+    Ok(lines.into_iter().map(scrub_line).collect())
 }
 
 /// Native-first audio arm; mediainfo stays as the shell-out fallback.
@@ -1056,13 +1080,28 @@ mod native_backend_tests {
         }
     }
 
+    #[test]
+    fn native_image_preview_of_an_undecodable_image_falls_back_to_text() {
+        // Formats the image crate cannot decode (HEIC/AVIF/most RAW)
+        // must keep the mediainfo fallback: a text preview (mediainfo
+        // output, or its error block), never an empty image preview.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("photo.heic");
+        std::fs::write(&path, b"definitely not a decodable image").unwrap();
+        let mime: mime::Mime = "image/heic".parse().unwrap();
+        match native_image_preview(&path, &mime) {
+            Preview::Text { lines } => assert!(!lines.is_empty(), "{lines:?}"),
+            _ => panic!("expected the mediainfo text fallback"),
+        }
+    }
+
     /// Builds `dir/archive.zip` containing `files` via the zip crate.
     fn make_zip(dir: &Path, files: &[String]) -> PathBuf {
         use std::io::Write;
         let archive = dir.join("archive.zip");
         let mut writer = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
-        let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
+        let options: zip::write::FileOptions<'_, ()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         for name in files {
             writer.start_file(name.as_str(), options).unwrap();
             writer.write_all(b"content").unwrap();
@@ -1092,6 +1131,21 @@ mod native_backend_tests {
         let files: Vec<String> = (0..130).map(|i| format!("file-{i:03}.txt")).collect();
         let archive = make_zip(tmp.path(), &files);
         assert_eq!(native_zip_list(&archive).unwrap().len(), 128);
+    }
+
+    #[test]
+    fn native_zip_list_scrubs_newlines_from_member_names() {
+        // A crafted member name with \r/\n must not break the
+        // one-entry-one-line invariant (bat_preview's scrub convention).
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = make_zip(tmp.path(), &["evil\r\nname.txt".to_string()]);
+        let lines = native_zip_list(&archive).unwrap();
+        assert_eq!(lines.len(), 1);
+        assert!(
+            !lines[0].contains(['\r', '\n']),
+            "newlines must be scrubbed: {lines:?}"
+        );
+        assert!(lines[0].contains("evilname.txt"), "{lines:?}");
     }
 
     #[test]
@@ -1143,6 +1197,20 @@ mod native_backend_tests {
         assert_eq!(
             native_tar_list(File::open(archive).unwrap()).unwrap().len(),
             128
+        );
+    }
+
+    #[test]
+    fn native_tar_list_scrubs_newlines_from_member_names() {
+        // Same scrub convention as the zip lister: hostile member names
+        // must stay on one line.
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = make_native_tar(tmp.path(), &["evil\r\nname.txt".to_string()]);
+        let lines = native_tar_list(File::open(archive).unwrap()).unwrap();
+        assert_eq!(lines.len(), 1);
+        assert!(
+            !lines[0].contains(['\r', '\n']),
+            "newlines must be scrubbed: {lines:?}"
         );
     }
 
@@ -1311,6 +1379,10 @@ Q7ZNh7owTFb+WgkD0bBFJFVxePwzS/hyUAb6w+9Vufg=
     /// Minimal PCM WAV (1 s of silence, 8 kHz mono 8-bit), tagged via
     /// lofty itself - no committed binary, no external tool.
     fn make_tagged_wav(dir: &Path) -> PathBuf {
+        make_tagged_wav_titled(dir, "Test Title")
+    }
+
+    fn make_tagged_wav_titled(dir: &Path, title: &str) -> PathBuf {
         use lofty::prelude::*;
         use lofty::tag::{Tag, TagType};
         let path = dir.join("tone.wav");
@@ -1331,7 +1403,7 @@ Q7ZNh7owTFb+WgkD0bBFJFVxePwzS/hyUAb6w+9Vufg=
         wav.extend_from_slice(&vec![128u8; data_len as usize]);
         std::fs::write(&path, wav).unwrap();
         let mut tag = Tag::new(TagType::RiffInfo);
-        tag.set_title("Test Title".to_string());
+        tag.set_title(title.to_string());
         tag.set_artist("Test Artist".to_string());
         tag.save_to_path(&path, lofty::config::WriteOptions::default())
             .unwrap();
@@ -1348,6 +1420,20 @@ Q7ZNh7owTFb+WgkD0bBFJFVxePwzS/hyUAb6w+9Vufg=
         assert!(joined.contains("Test Artist"), "{joined}");
         assert!(joined.contains("Duration"), "{joined}");
         assert!(joined.contains("8000"), "sample rate expected: {joined}");
+    }
+
+    #[test]
+    fn native_audio_lines_scrub_newlines_from_tag_values() {
+        // ID3/RIFF tag values are attacker-controlled; embedded \r/\n
+        // must not smear the preview across lines.
+        let tmp = tempfile::tempdir().unwrap();
+        let wav = make_tagged_wav_titled(tmp.path(), "Evil\r\nTitle");
+        let lines = native_audio_lines(&wav).unwrap();
+        assert!(
+            lines.iter().all(|l| !l.contains(['\r', '\n'])),
+            "newlines must be scrubbed: {lines:?}"
+        );
+        assert!(lines.iter().any(|l| l.contains("EvilTitle")), "{lines:?}");
     }
 
     #[test]
@@ -1383,7 +1469,10 @@ Q7ZNh7owTFb+WgkD0bBFJFVxePwzS/hyUAb6w+9Vufg=
         assert!(joined.contains("blob.bin"), "{joined}");
         assert!(joined.contains("2.0 K"), "{joined}");
         assert!(joined.contains("application/octet-stream"), "{joined}");
-        assert!(joined.contains("rw-"), "permission string expected: {joined}");
+        assert!(
+            joined.contains("rw-"),
+            "permission string expected: {joined}"
+        );
     }
 
     #[test]
