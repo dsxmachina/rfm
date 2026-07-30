@@ -444,8 +444,52 @@ fn prune_older_than(dir: &Path, max_age: Duration) {
     }
 }
 
+/// Parse a PEM or DER certificate and print the fields people actually
+/// inspect. Errors route the caller to the openssl/bat fallback.
+fn native_cert_lines(data: &[u8]) -> anyhow::Result<Vec<String>> {
+    use x509_parser::prelude::*;
+    let der: Vec<u8>;
+    let cert_der: &[u8] = if data.starts_with(b"-----BEGIN") {
+        let (_, pem) = parse_x509_pem(data)?;
+        der = pem.contents;
+        &der
+    } else {
+        data
+    };
+    let (_, cert) = X509Certificate::from_der(cert_der)?;
+    let mut lines = vec![
+        format!("Subject:    {}", cert.subject()),
+        format!("Issuer:     {}", cert.issuer()),
+        format!("Not before: {}", cert.validity().not_before),
+        format!("Not after:  {}", cert.validity().not_after),
+        format!("Serial:     {}", cert.raw_serial_as_string()),
+        format!("Sig. alg.:  {}", cert.signature_algorithm.algorithm),
+    ];
+    if let Ok(Some(san)) = cert.subject_alternative_name() {
+        for name in &san.value.general_names {
+            lines.push(format!("SAN:        {name}"));
+        }
+    }
+    Ok(lines)
+}
+
+/// Native-first certificate arm; the openssl shell-out (with its bat
+/// fallback) only runs when the native parse fails.
 fn cert_preview(path: impl AsRef<Path>) -> Preview {
-    // Check, if ffmpeg exists
+    let native = std::fs::read(path.as_ref())
+        .map_err(anyhow::Error::from)
+        .and_then(|data| native_cert_lines(&data));
+    match native {
+        Ok(lines) => Preview::Text { lines },
+        Err(e) => {
+            log::debug!("native cert parse failed, trying openssl: {e}");
+            cert_preview_external(path)
+        }
+    }
+}
+
+fn cert_preview_external(path: impl AsRef<Path>) -> Preview {
+    // Check, if openssl exists
     static OPENSSL_INSTALLED: OnceCell<bool> = OnceCell::new();
     OPENSSL_INSTALLED.get_or_init(|| {
         let success = std::process::Command::new("openssl")
@@ -1037,6 +1081,71 @@ mod native_backend_tests {
         std::fs::write(&bogus, vec![0xffu8; 64]).unwrap();
         match gz_preview(&bogus) {
             Preview::Text { lines } => assert!(!lines.is_empty()),
+            _ => panic!("expected a text preview"),
+        }
+    }
+
+    /// Deterministic fixture, generated once via:
+    /// `openssl req -x509 -newkey rsa:2048 -keyout /dev/null -out /dev/stdout
+    ///  -days 3650 -nodes -subj "/CN=rfm-test/O=Example Org"
+    ///  -addext "subjectAltName=DNS:example.test"`
+    const TEST_PEM: &str = "-----BEGIN CERTIFICATE-----
+MIIDTDCCAjSgAwIBAgIUD861X4nFcMAGMDWLj/hTRRyWB8EwDQYJKoZIhvcNAQEL
+BQAwKTERMA8GA1UEAwwIcmZtLXRlc3QxFDASBgNVBAoMC0V4YW1wbGUgT3JnMB4X
+DTI2MDczMDE5MTk1NVoXDTM2MDcyNzE5MTk1NVowKTERMA8GA1UEAwwIcmZtLXRl
+c3QxFDASBgNVBAoMC0V4YW1wbGUgT3JnMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A
+MIIBCgKCAQEAmoeJKTcZztfVWsNO6H7wx8HeNOIBWBxrya9SF08nBzIHQigM/2My
+rO8doTZesvwpplUG2ZyngXL5yhssOjADclFvZfkYBgTGWdXN0v7FMcDsiGWJowz9
+Ac0/9J47MPkaxA/HxwrX6VNSVVueXeA2Uj7lS2wdViYnb7CP5aYnm+49GucVfb26
+XYAUC4C8P90BIgUk3Xm46DM6+bkcbX9GEWqLvD+v1tkH4aeJjKQ0Dk0Sd80xddwG
+yRcU61j2SOxByzEop/r2loaBYFYW4C6Px8QiZeca5k/Yj/mr4UN7n1cwpQtW6TYQ
+ltwbfe6s0axt54VPHhrRelGPJroMmnRBFwIDAQABo2wwajAdBgNVHQ4EFgQUTKq5
+p33mslVLdH+w05SrQvEDzccwHwYDVR0jBBgwFoAUTKq5p33mslVLdH+w05SrQvED
+zccwDwYDVR0TAQH/BAUwAwEB/zAXBgNVHREEEDAOggxleGFtcGxlLnRlc3QwDQYJ
+KoZIhvcNAQELBQADggEBADNEfWo/XLi5e+O2uU4IxU6hgeWERiKZTTkbLQLEmQIW
+L7qqKLXJNntmD0kfnLUcxjxcxYnT6PoJInc7VkeEnZa1aPoCo1SL3a8vHw2EBT4E
+ciIr3itD7fBxu8oZWn2L/rhVoyOooGcJY7sJLOMAUkPr5LFzr16aJ9BgbqJqiqAK
+kz4d/UmvTrE/YN0qxBr50MHesafMq4pdinNaFkn8+PbCpX1LrNZmdPcgBRY1gIt/
++j4USRPsMNfpiz/0HuwSEWt7gK+xOl+UOGcrlt8BC3BUhkGKjaSijrslLS8+0LeW
+Q7ZNh7owTFb+WgkD0bBFJFVxePwzS/hyUAb6w+9Vufg=
+-----END CERTIFICATE-----
+";
+
+    #[test]
+    fn native_cert_lines_include_subject_validity_and_san() {
+        let lines = native_cert_lines(TEST_PEM.as_bytes()).unwrap();
+        let joined = lines.join("\n");
+        assert!(joined.contains("rfm-test"), "{joined}");
+        assert!(joined.contains("Not before"), "{joined}");
+        assert!(joined.contains("Not after"), "{joined}");
+        assert!(joined.contains("example.test"), "{joined}");
+    }
+
+    #[test]
+    fn native_cert_lines_parse_der_as_well_as_pem() {
+        // The same certificate, DER-decoded from the PEM body.
+        let (_, pem) = x509_parser::pem::parse_x509_pem(TEST_PEM.as_bytes()).unwrap();
+        let lines = native_cert_lines(&pem.contents).unwrap();
+        assert!(lines.join("\n").contains("rfm-test"), "{lines:?}");
+    }
+
+    #[test]
+    fn native_cert_lines_on_garbage_are_an_error() {
+        // Err is what routes cert_preview to the openssl/bat fallback.
+        assert!(native_cert_lines(b"not a certificate").is_err());
+    }
+
+    #[test]
+    fn cert_preview_of_a_pem_file_is_native_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pem = tmp.path().join("server cert.pem");
+        std::fs::write(&pem, TEST_PEM).unwrap();
+        match cert_preview(&pem) {
+            Preview::Text { lines } => {
+                let joined = lines.join("\n");
+                assert!(joined.contains("Subject:"), "{joined}");
+                assert!(joined.contains("rfm-test"), "{joined}");
+            }
             _ => panic!("expected a text preview"),
         }
     }
