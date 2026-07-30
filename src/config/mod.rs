@@ -1,3 +1,5 @@
+pub mod merge;
+
 use serde::Deserialize;
 
 use crate::command_queue::CommandsConfig;
