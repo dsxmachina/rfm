@@ -19,6 +19,8 @@ use crate::util::check_filename;
 ///
 /// However: There are a few exceptions,
 /// where mime_guess is wrong, which is why we wrap the functionality here.
+/// When the extension has no real answer (none at all, or mime_guess
+/// falls back to octet-stream), the content is sniffed instead.
 pub fn get_mime_type<P: AsRef<Path>>(path: P) -> Mime {
     let ext = path.as_ref().extension().and_then(|e| e.to_str());
     // Check the special extensions here (for types that mime_guess doesn't handle correctly)
@@ -33,11 +35,53 @@ pub fn get_mime_type<P: AsRef<Path>>(path: P) -> Mime {
         Some("astro") => return "text/x-astro".parse().unwrap(),
         Some("gradle") => return "text/x-gradle".parse().unwrap(),
         Some("groovy") => return "text/x-groovy".parse().unwrap(),
-        None => return mime::TEXT_PLAIN,
+        // No extension: the guess has nothing to work with - sniff.
+        None => return sniffed(path.as_ref()).unwrap_or(mime::TEXT_PLAIN),
         _ => (),
     }
-    // Otherwise just use mime_guess
-    mime_guess::from_path(path).first_or_text_plain()
+    // Otherwise just use mime_guess; sniff only when it has no real answer.
+    match mime_guess::from_path(&path).first() {
+        Some(mime) if mime != mime::APPLICATION_OCTET_STREAM => mime,
+        _ => sniffed(path.as_ref()).unwrap_or(mime::TEXT_PLAIN),
+    }
+}
+
+/// One bounded 512-byte read (enough to cover the `ustar` magic at
+/// offset 257); any error skips the sniff and never fails the caller.
+/// Only reached on the extension-fallback path.
+fn sniffed(path: &Path) -> Option<Mime> {
+    use std::io::Read;
+    let mut head = [0u8; 512];
+    let mut file = std::fs::File::open(path).ok()?;
+    let n = file.read(&mut head).ok()?;
+    sniff_mime(&head[..n])
+}
+
+/// Content sniff over the first bytes: shebang, then magic numbers
+/// (infer: pdf/zip/gzip/sqlite/elf/png/jpeg/gif/tar/...), then a
+/// mostly-printable-UTF-8 heuristic. `None` means "no idea" - the
+/// caller keeps today's text/plain fallback.
+fn sniff_mime(head: &[u8]) -> Option<Mime> {
+    if head.is_empty() {
+        return None;
+    }
+    if head.starts_with(b"#!") {
+        return Some(mime::TEXT_PLAIN);
+    }
+    if let Some(kind) = infer::get(head) {
+        return kind.mime_type().parse().ok();
+    }
+    // A bounded window may cut a multi-byte char: only judge the valid
+    // prefix. Printable = no control bytes besides \n, \r, \t.
+    let valid = match std::str::from_utf8(head) {
+        Ok(s) => s,
+        Err(e) if e.valid_up_to() > 0 => std::str::from_utf8(&head[..e.valid_up_to()]).unwrap(),
+        Err(_) => return None,
+    };
+    let printable = valid
+        .chars()
+        .all(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t'));
+    printable.then_some(mime::TEXT_PLAIN)
 }
 
 /// Leaves raw mode for the lifetime of the guard and restores it on drop —
@@ -391,6 +435,101 @@ fn run_archive_tool(
         std::io::ErrorKind::Other,
         format!("{tool} failed ({}): {stderr}", output.status),
     ))
+}
+
+#[cfg(test)]
+mod mime_tests {
+    use super::*;
+
+    #[test]
+    fn sniff_mime_detects_a_shebang_as_text() {
+        assert_eq!(sniff_mime(b"#!/bin/sh\necho hi\n"), Some(mime::TEXT_PLAIN));
+    }
+
+    #[test]
+    fn sniff_mime_detects_pdf_zip_and_gzip_magic() {
+        assert_eq!(
+            sniff_mime(b"%PDF-1.4 rest").unwrap().to_string(),
+            "application/pdf"
+        );
+        assert_eq!(
+            sniff_mime(b"PK\x03\x04rest").unwrap().to_string(),
+            "application/zip"
+        );
+        assert_eq!(
+            sniff_mime(b"\x1f\x8b\x08rest").unwrap().to_string(),
+            "application/gzip"
+        );
+    }
+
+    #[test]
+    fn sniff_mime_treats_mostly_printable_utf8_as_text() {
+        assert_eq!(
+            sniff_mime("kein shebang, nur Text — ümlaute ok\n".as_bytes()),
+            Some(mime::TEXT_PLAIN)
+        );
+    }
+
+    #[test]
+    fn sniff_mime_judges_only_the_valid_prefix_of_a_cut_utf8_char() {
+        // A sniff window may cut a multi-byte char in half; the valid
+        // prefix alone must still count as text.
+        let mut head = "nur Text bis zum Schnitt: ü".as_bytes().to_vec();
+        head.pop(); // cut the two-byte ü in half
+        assert_eq!(sniff_mime(&head), Some(mime::TEXT_PLAIN));
+    }
+
+    #[test]
+    fn sniff_mime_returns_none_for_random_binary() {
+        assert_eq!(sniff_mime(&[0x00, 0x01, 0x02, 0xfe, 0xff, 0x00]), None);
+    }
+
+    #[test]
+    fn sniff_mime_returns_none_for_an_empty_head() {
+        assert_eq!(sniff_mime(b""), None);
+    }
+
+    #[test]
+    fn extensionless_shebang_script_gets_text_plain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let script = tmp.path().join("deploy script"); // space, no extension
+        std::fs::write(&script, "#!/bin/sh\necho hi\n").unwrap();
+        assert_eq!(get_mime_type(&script), mime::TEXT_PLAIN);
+    }
+
+    #[test]
+    fn extensionless_pdf_bytes_get_application_pdf() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = tmp.path().join("report");
+        std::fs::write(&pdf, b"%PDF-1.4\n%fake body").unwrap();
+        assert_eq!(get_mime_type(&pdf).to_string(), "application/pdf");
+    }
+
+    #[test]
+    fn an_unknown_binary_extension_gets_sniffed_too() {
+        // mime_guess has no answer for ".blob0815" - the octet-stream
+        // fallback path must sniff the content as well.
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = tmp.path().join("report.blob0815");
+        std::fs::write(&pdf, b"%PDF-1.4\n%fake body").unwrap();
+        assert_eq!(get_mime_type(&pdf).to_string(), "application/pdf");
+    }
+
+    #[test]
+    fn a_txt_file_with_zip_magic_keeps_its_extension_mime() {
+        // The sniff must only run on the fallback path - a known
+        // extension wins even when the content lies.
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("notes.txt");
+        std::fs::write(&file, b"PK\x03\x04 pretending to be a zip").unwrap();
+        assert_eq!(get_mime_type(&file), mime::TEXT_PLAIN);
+    }
+
+    #[test]
+    fn an_unreadable_extensionless_path_falls_back_to_text_plain() {
+        // Sniff read errors must never fail the caller.
+        assert_eq!(get_mime_type(Path::new("/no/such/file")), mime::TEXT_PLAIN);
+    }
 }
 
 #[cfg(test)]
