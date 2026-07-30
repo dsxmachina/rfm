@@ -243,8 +243,9 @@ impl FilePreview {
             ("application", "octet-stream") | ("application", "msgpack") => {
                 bat_preview(&path, true)
             }
-            // Use mediainfo for everything else
-            ("application", _) => cmd_to_preview("mediainfo", mediainfo(&path)),
+            // Native stat block for everything else (mediainfo is only
+            // the fallback for the rare unreadable-metadata case)
+            ("application", _) => stat_preview(&path, &mime),
             ("text", _) => bat_preview(&path, false),
             // Default to bat with binary mode enabled
             _ext => bat_preview(&path, true),
@@ -645,6 +646,53 @@ fn zip_preview(path: &Path) -> Preview {
                     .output()
                     .and_then(|o| o.stdout.lines().take(128).collect()),
             )
+        }
+    }
+}
+
+/// Dependency-free stat block for generic application/* files: path,
+/// size, mtime, MIME type, permissions. Replaces the mediainfo
+/// boilerplate; an Err routes to the mediainfo fallback.
+fn stat_block_lines(path: &Path, mime: &mime::Mime) -> io::Result<Vec<String>> {
+    use std::os::unix::fs::PermissionsExt;
+    use time::OffsetDateTime;
+    let meta = path.metadata()?;
+    let modified = meta
+        .modified()
+        .map(OffsetDateTime::from)
+        .map(|t| {
+            format!(
+                "{}-{:02}-{:02} {:02}:{:02}:{:02}",
+                t.year(),
+                u8::from(t.month()),
+                t.day(),
+                t.hour(),
+                t.minute(),
+                t.second()
+            )
+        })
+        .unwrap_or_else(|_| String::from("cannot read timestamp"));
+    Ok(vec![
+        format!("{}", path.display()),
+        String::new(),
+        format!("Size:        {}", crate::util::file_size_str(meta.len())),
+        format!("Modified:    {modified}"),
+        format!("MIME type:   {mime}"),
+        format!(
+            "Permissions: {}",
+            unix_mode::to_string(meta.permissions().mode())
+        ),
+    ])
+}
+
+/// Generic application/* arm: native stat block, mediainfo only as the
+/// fallback for the rare unreadable-metadata case.
+fn stat_preview(path: &Path, mime: &mime::Mime) -> Preview {
+    match stat_block_lines(path, mime) {
+        Ok(lines) => Preview::Text { lines },
+        Err(e) => {
+            log::debug!("stat block failed, trying mediainfo: {e}");
+            cmd_to_preview("mediainfo", mediainfo(path))
         }
     }
 }
@@ -1244,6 +1292,31 @@ Q7ZNh7owTFb+WgkD0bBFJFVxePwzS/hyUAb6w+9Vufg=
         let bogus = tmp.path().join("noise.flac");
         std::fs::write(&bogus, vec![0u8; 32]).unwrap();
         match audio_preview(&bogus) {
+            Preview::Text { lines } => assert!(!lines.is_empty()),
+            _ => panic!("expected a text preview"),
+        }
+    }
+
+    #[test]
+    fn stat_block_lines_contain_size_permissions_and_mime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("blob.bin");
+        std::fs::write(&path, vec![0u8; 2048]).unwrap();
+        let mime: mime::Mime = "application/octet-stream".parse().unwrap();
+        let lines = stat_block_lines(&path, &mime).unwrap();
+        let joined = lines.join("\n");
+        assert!(joined.contains("blob.bin"), "{joined}");
+        assert!(joined.contains("2.0 K"), "{joined}");
+        assert!(joined.contains("application/octet-stream"), "{joined}");
+        assert!(joined.contains("rw-"), "permission string expected: {joined}");
+    }
+
+    #[test]
+    fn stat_preview_of_a_missing_file_degrades_to_a_text_preview() {
+        // Metadata unreadable: the mediainfo fallback runs (and may
+        // error too) - the result must still be text lines.
+        let mime: mime::Mime = "application/x-frobnicate".parse().unwrap();
+        match stat_preview(Path::new("/no/such/file"), &mime) {
             Preview::Text { lines } => assert!(!lines.is_empty()),
             _ => panic!("expected a text preview"),
         }
