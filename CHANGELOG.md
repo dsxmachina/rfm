@@ -5,6 +5,39 @@ All notable changes to rfm are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] - 2026-07-30
+
+A robustness patch: rfm now degrades gracefully when the external programs it
+leans on (zoxide, zip/tar, ffmpeg, a configured opener) are missing or fail,
+instead of spamming errors, breaking the terminal or silently pretending
+success.
+
+### Fixed
+
+- Without zoxide installed, every directory change used to queue a background
+  `zoxide add` that failed visibly in the log (exit 127). Directory visits are
+  now only recorded when zoxide is actually on `PATH` (checked once per run).
+  The zoxide console (`CD`) shows a clean "zoxide is not installed" hint
+  instead of spawning a doomed process on every keystroke.
+- A configured opener that isn't installed no longer breaks the terminal: raw
+  mode is restored on every error path (previously the TUI stopped reacting to
+  single keypresses until restart). Applications opened in a separate window
+  (`terminal = false`) no longer linger as zombie processes.
+- `zip` / `tar` / `extract` now check that the archiver is installed ("zip is
+  not installed - ...") and that it actually succeeded. A failed run reports
+  the exit code and stderr, removes the partial archive, and no longer records
+  an undo entry for an archive that was never created.
+- Archive previews no longer leak a defunct `tar` process per preview.
+- Videos shorter than the 10 s thumbnail seek now fall back to a mediainfo
+  text preview instead of showing an empty panel.
+
+### Changed
+
+- Video thumbnails are stored under `<tmp>/rfm-thumbnails/` and pruned after
+  7 days, instead of accumulating in the temp dir forever. (Interim scheme —
+  the persistent `XDG_CACHE_HOME` cache is designed in
+  [docs/plans/2026-07-30-thumbnail-cache-design.md](docs/plans/2026-07-30-thumbnail-cache-design.md).)
+
 ## [0.4.2] - 2026-07-21
 
 ### Fixed
