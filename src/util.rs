@@ -385,6 +385,49 @@ pub fn xdg_config_home() -> anyhow::Result<PathBuf> {
     }
 }
 
+/// Query the XDG Cache Home (usually ~/.cache) according to
+/// https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
+// TODO(raster-cache wiring): remove the allow once main.rs initializes the cache.
+#[allow(dead_code)]
+pub fn xdg_cache_home() -> anyhow::Result<PathBuf> {
+    xdg_cache_home_from(
+        std::env::var_os("XDG_CACHE_HOME"),
+        std::env::var_os("HOME"),
+    )
+}
+
+/// Pure core of [`xdg_cache_home`]: `$XDG_CACHE_HOME`, else `$HOME/.cache`,
+/// else error. Parameterized so tests never touch the process environment.
+fn xdg_cache_home_from(
+    xdg: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> anyhow::Result<PathBuf> {
+    match xdg {
+        Some(xdg_cache) => Ok(PathBuf::from(xdg_cache)),
+        None => match home {
+            Some(home) => Ok(PathBuf::from(home).join(".cache")),
+            None => Err(anyhow!(
+                "Neither the XDG_CACHE_HOME nor the HOME environment variable was set."
+            ))?,
+        },
+    }
+}
+
+#[test]
+fn xdg_cache_home_prefers_env_then_home() {
+    use std::ffi::OsString;
+    assert_eq!(
+        xdg_cache_home_from(Some(OsString::from("/xdg/cache")), Some(OsString::from("/home/u")))
+            .unwrap(),
+        PathBuf::from("/xdg/cache")
+    );
+    assert_eq!(
+        xdg_cache_home_from(None, Some(OsString::from("/home/u"))).unwrap(),
+        PathBuf::from("/home/u/.cache")
+    );
+    assert!(xdg_cache_home_from(None, None).is_err());
+}
+
 /// Returns the permissions and metadata for some selected path, if any.
 ///
 /// The output is ready to be printed in the footer of the filemanager.
