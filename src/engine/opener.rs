@@ -337,6 +337,8 @@ impl OpenEngine {
                 run_archive_tool(&mut process, "tar", None)?;
             }
             ("application", "zip") => {
+                // NOTE: the zip crate (already a dependency for previews)
+                // could take over extraction here.
                 require_binary(
                     "unzip",
                     "unzip is not installed - install it to extract zip archives",

@@ -229,14 +229,7 @@ impl FilePreview {
             ("application", "x-x509-ca-cert") => cert_preview(&path),
             ("application", "gzip") => cmd_to_preview("tar", tar_list(&path)),
             ("application", "x-tar") => cmd_to_preview("tar", tar_list(&path)),
-            ("application", "zip") => cmd_to_preview(
-                "unzip",
-                std::process::Command::new("unzip")
-                    .arg("-l")
-                    .arg(&path)
-                    .output()
-                    .and_then(|o| o.stdout.lines().take(128).collect()),
-            ),
+            ("application", "zip") => zip_preview(&path),
             // Text based application/* types
             ("application", "x-sh")
             | ("application", "json")
@@ -483,6 +476,41 @@ fn cert_preview(path: impl AsRef<Path>) -> Preview {
     bat_preview(path, false)
 }
 
+/// List a zip archive natively: `size  name` per entry, capped at 128.
+/// Reads only the central directory - `by_index_raw` never inflates.
+fn native_zip_list(path: &Path) -> anyhow::Result<Vec<String>> {
+    let file = File::open(path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    let mut lines = Vec::new();
+    for i in 0..archive.len().min(128) {
+        let entry = archive.by_index_raw(i)?;
+        lines.push(format!(
+            "{:>8}  {}",
+            crate::util::file_size_str(entry.size()),
+            entry.name()
+        ));
+    }
+    Ok(lines)
+}
+
+/// Native-first zip arm; unzip stays as the shell-out fallback.
+fn zip_preview(path: &Path) -> Preview {
+    match native_zip_list(path) {
+        Ok(lines) => Preview::Text { lines },
+        Err(e) => {
+            log::debug!("native zip list failed, trying unzip: {e}");
+            cmd_to_preview(
+                "unzip",
+                std::process::Command::new("unzip")
+                    .arg("-l")
+                    .arg(path)
+                    .output()
+                    .and_then(|o| o.stdout.lines().take(128).collect()),
+            )
+        }
+    }
+}
+
 fn mediainfo(path: impl AsRef<Path>) -> io::Result<Vec<String>> {
     std::process::Command::new("mediainfo")
         .arg(path.as_ref())
@@ -709,6 +737,72 @@ impl PreviewPanel {
         if let PreviewPanel::Dir(panel) = self {
             log::debug!("preview-panel: selecting {}", selection.display());
             panel.select_path(selection, None);
+        }
+    }
+}
+
+#[cfg(test)]
+mod native_backend_tests {
+    use super::*;
+
+    /// Builds `dir/archive.zip` containing `files` via the zip crate.
+    fn make_zip(dir: &Path, files: &[String]) -> PathBuf {
+        use std::io::Write;
+        let archive = dir.join("archive.zip");
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+        let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for name in files {
+            writer.start_file(name.as_str(), options).unwrap();
+            writer.write_all(b"content").unwrap();
+        }
+        writer.finish().unwrap();
+        archive
+    }
+
+    #[test]
+    fn native_zip_list_returns_all_names_of_a_small_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let files: Vec<String> = ["a.txt", "b.txt", "dir/c.txt"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let archive = make_zip(tmp.path(), &files);
+        let lines = native_zip_list(&archive).unwrap();
+        assert_eq!(lines.len(), 3);
+        for (line, name) in lines.iter().zip(&files) {
+            assert!(line.contains(name.as_str()), "{line}");
+        }
+    }
+
+    #[test]
+    fn native_zip_list_caps_the_listing_at_128_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let files: Vec<String> = (0..130).map(|i| format!("file-{i:03}.txt")).collect();
+        let archive = make_zip(tmp.path(), &files);
+        assert_eq!(native_zip_list(&archive).unwrap().len(), 128);
+    }
+
+    #[test]
+    fn native_zip_list_on_garbage_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bogus = tmp.path().join("not-a.zip");
+        std::fs::write(&bogus, b"definitely not a zip").unwrap();
+        // Err is what triggers the unzip fallback in zip_preview().
+        assert!(native_zip_list(&bogus).is_err());
+    }
+
+    #[test]
+    fn zip_preview_of_garbage_degrades_to_a_text_preview() {
+        // Corrupt archive: the native path errors, the unzip fallback
+        // runs (and errors too) - the result must still be text lines,
+        // never a panic or a blank preview.
+        let tmp = tempfile::tempdir().unwrap();
+        let bogus = tmp.path().join("corrupt.zip");
+        std::fs::write(&bogus, b"definitely not a zip").unwrap();
+        match zip_preview(&bogus) {
+            Preview::Text { lines } => assert!(!lines.is_empty()),
+            _ => panic!("expected a text preview"),
         }
     }
 }
