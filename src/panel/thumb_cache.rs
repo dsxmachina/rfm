@@ -17,7 +17,6 @@ pub(crate) fn entry_name(path: &Path, mtime_secs: u64) -> String {
     format!("{}{mtime_secs}.jpg", hash_prefix(path))
 }
 
-// TODO(thumbnail-cache Task 4): also consumed by the stale-sibling cleanup in `store`.
 fn hash_prefix(path: &Path) -> String {
     format!(
         "{:016x}-",
@@ -42,7 +41,12 @@ fn lookup_in(dir: &Path, src_path: &Path, mtime_secs: u64) -> Option<DynamicImag
 }
 
 /// Encode `img` as JPEG into the cache, atomically: write a same-dir
-/// `.part` file, then rename. Never leaves a partial final entry.
+/// `.part` file, then rename. Never leaves a partial final entry, and
+/// never rewrites an existing one. Cleans stale siblings (old mtimes,
+/// orphaned `.part`s) of the same source path after a successful store.
+/// Same-process concurrent stores are safe: both write equivalent bytes
+/// for the same (path, mtime), and any corrupt outcome self-heals via
+/// `lookup_in`'s delete-on-decode-failure.
 // TODO(thumbnail-cache Task 6): consumed by the public cache-dir wrappers.
 #[allow(dead_code)]
 fn store_in(
@@ -67,8 +71,30 @@ fn store_in(
         let _ = std::fs::remove_file(&part);
         return Err(e);
     }
-    std::fs::rename(&part, &final_path)?;
+    if let Err(e) = std::fs::rename(&part, &final_path) {
+        let _ = std::fs::remove_file(&part);
+        return Err(e.into());
+    }
+    cleanup_stale(dir, src_path, &name);
     Ok(())
+}
+
+/// Remove every entry sharing `src_path`'s hash prefix except `keep`.
+/// Also catches orphaned `.part` files of that prefix. Errors ignored:
+/// a racing instance may have removed the file already.
+// TODO(thumbnail-cache Task 8): also called directly by the ffmpeg path.
+pub(crate) fn cleanup_stale(dir: &Path, src_path: &Path, keep: &str) {
+    let prefix = hash_prefix(src_path);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name.starts_with(&prefix) && name != keep {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -107,6 +133,42 @@ mod tests {
         std::fs::write(&entry, b"not a jpeg").unwrap();
         assert!(lookup_in(dir.path(), src, 100).is_none());
         assert!(!entry.exists(), "corrupt entry must be removed");
+    }
+
+    #[test]
+    fn store_removes_stale_siblings_but_not_other_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = Path::new("/photos/a.png");
+        let other = Path::new("/photos/b.png");
+        store_in(dir.path(), src, 100, &test_img()).unwrap();
+        store_in(dir.path(), other, 100, &test_img()).unwrap();
+        // orphaned .part from a dead process, same prefix
+        std::fs::write(
+            dir.path().join(format!("{}.999.part", entry_name(src, 90))),
+            b"x",
+        )
+        .unwrap();
+        store_in(dir.path(), src, 200, &test_img()).unwrap();
+        assert!(lookup_in(dir.path(), src, 200).is_some());
+        assert!(
+            lookup_in(dir.path(), src, 100).is_none(),
+            "stale sibling gone"
+        );
+        assert!(
+            lookup_in(dir.path(), other, 100).is_some(),
+            "other path untouched"
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn store_never_rewrites_an_existing_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = Path::new("/photos/a.png");
+        let entry = dir.path().join(entry_name(src, 100));
+        std::fs::write(&entry, b"sentinel").unwrap();
+        store_in(dir.path(), src, 100, &test_img()).unwrap();
+        assert_eq!(std::fs::read(&entry).unwrap(), b"sentinel");
     }
 
     #[test]
