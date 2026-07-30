@@ -12,12 +12,6 @@ use serde::Deserialize;
 const DEFAULT_SET_MARK_PREFIX: &str = "m";
 const DEFAULT_JUMP_MARK_PREFIX: &str = "'";
 
-const CTRL_C: KeyEvent = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
-const CTRL_X: KeyEvent = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
-const CTRL_V: KeyEvent = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
-const CTRL_F: KeyEvent = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL);
-const CTRL_SHIFT_V: KeyEvent = KeyEvent::new(KeyCode::Char('V'), KeyModifiers::CONTROL);
-
 /// Map a named special-key binding string to its [`KeyCode`]. These keys don't
 /// emit a `Char`, so they can't be matched via the keystroke buffer; the parser
 /// binds them as oneshot events instead. Returns `None` for ordinary strings.
@@ -28,6 +22,48 @@ fn named_key(s: &str) -> Option<KeyCode> {
         "Enter" => Some(KeyCode::Enter),
         _ => None,
     }
+}
+
+/// Where a binding string lives in the parser.
+enum Route {
+    /// Modifier chords (`ctrl-`/`alt-`/`meta-`) and named keys (`Tab`, ...):
+    /// oneshot events in `mod_commands`.
+    Event(KeyEvent),
+    /// Everything else: a keystroke pattern in the patricia `key_commands`.
+    Pattern(String),
+}
+
+/// The single source of truth for binding-string routing, shared by
+/// `insert` and `insert_default` so claim checks and insertions can
+/// never diverge. Returns `None` for unroutable strings (a bare
+/// modifier prefix like `"ctrl-"`).
+fn route(b: &str) -> Option<Route> {
+    for (prefix, modifier) in [
+        ("ctrl-", KeyModifiers::CONTROL),
+        ("alt-", KeyModifiers::ALT),
+        ("meta-", KeyModifiers::META),
+    ] {
+        if let Some(key) = b.strip_prefix(prefix) {
+            let c = key.chars().next()?;
+            return Some(Route::Event(KeyEvent::new(KeyCode::Char(c), modifier)));
+        }
+    }
+    if let Some(code) = named_key(b) {
+        return Some(Route::Event(KeyEvent::new(code, KeyModifiers::NONE)));
+    }
+    Some(Route::Pattern(b.to_string()))
+}
+
+/// A default binding that was skipped because its exact pattern was already
+/// claimed by the user (a user binding or a user-defined command).
+#[derive(Debug)]
+pub struct DroppedDefault {
+    /// Display of the default command that lost.
+    pub command: String,
+    /// The colliding binding pattern.
+    pub binding: String,
+    /// Display of the user command that claimed it.
+    pub kept: String,
 }
 
 #[derive(Debug, Clone)]
@@ -142,16 +178,12 @@ pub struct General {
 /// parsed from the embedded defaults file, as the all-`Some` defaults
 /// instance.
 #[derive(Deserialize, Debug, Default)]
+#[serde(default)]
 pub struct KeyConfig {
-    #[serde(default)]
     pub general: General,
-    #[serde(default)]
     pub movement: Movement,
-    #[serde(default)]
     pub manipulation: Manipulation,
-    #[serde(default)]
     pub jump_marks: JumpMarks,
-    #[serde(default)]
     pub tabs: Tabs,
 }
 
@@ -162,64 +194,88 @@ impl KeyConfig {
     /// in `examples/default-config.toml`, or the defaults test fails.
     #[cfg(test)]
     pub fn assert_complete(&self) {
+        // Exhaustive destructuring (no `..`): adding a field to any section
+        // breaks this test's compilation until it is covered below.
+        let KeyConfig {
+            general,
+            movement,
+            manipulation,
+            jump_marks,
+            tabs,
+        } = self;
+        let General {
+            search,
+            mark,
+            next,
+            previous,
+            view_trash,
+            toggle_hidden,
+            toggle_log,
+            quit,
+            quit_no_cd,
+        } = general;
+        let Movement {
+            up,
+            down,
+            left,
+            right,
+            top,
+            bottom,
+            page_forward,
+            page_backward,
+            half_page_forward,
+            half_page_backward,
+            jump_previous,
+            jump_to,
+        } = movement;
+        let Manipulation {
+            change_directory,
+            zoxide_query,
+            rename,
+            mkdir,
+            touch,
+            cut,
+            copy,
+            delete,
+            paste,
+            paste_overwrite,
+            zip,
+            tar,
+            extract,
+            undo,
+            redo,
+        } = manipulation;
+        let JumpMarks { set, jump } = jump_marks;
+        let Tabs {
+            toggle_split,
+            focus_next,
+            new_tab,
+            close_tab,
+            focus_tab_1,
+            focus_tab_2,
+            focus_tab_3,
+            focus_tab_4,
+        } = tabs;
+
         macro_rules! req {
-            ($($f:expr, $n:literal;)+) => {
-                $(assert!($f.is_some(), concat!("default missing: ", $n));)+
+            ($section:ident: $($f:ident),+ $(,)?) => {
+                $(assert!(
+                    $f.is_some(),
+                    concat!("default missing: ", stringify!($section), ".", stringify!($f))
+                );)+
             }
         }
-        req! {
-            // General (9)
-            self.general.search, "general.search";
-            self.general.mark, "general.mark";
-            self.general.next, "general.next";
-            self.general.previous, "general.previous";
-            self.general.view_trash, "general.view_trash";
-            self.general.toggle_hidden, "general.toggle_hidden";
-            self.general.toggle_log, "general.toggle_log";
-            self.general.quit, "general.quit";
-            self.general.quit_no_cd, "general.quit_no_cd";
-            // Movement (12)
-            self.movement.up, "movement.up";
-            self.movement.down, "movement.down";
-            self.movement.left, "movement.left";
-            self.movement.right, "movement.right";
-            self.movement.top, "movement.top";
-            self.movement.bottom, "movement.bottom";
-            self.movement.page_forward, "movement.page_forward";
-            self.movement.page_backward, "movement.page_backward";
-            self.movement.half_page_forward, "movement.half_page_forward";
-            self.movement.half_page_backward, "movement.half_page_backward";
-            self.movement.jump_previous, "movement.jump_previous";
-            self.movement.jump_to, "movement.jump_to";
-            // Manipulation (15)
-            self.manipulation.change_directory, "manipulation.change_directory";
-            self.manipulation.zoxide_query, "manipulation.zoxide_query";
-            self.manipulation.rename, "manipulation.rename";
-            self.manipulation.mkdir, "manipulation.mkdir";
-            self.manipulation.touch, "manipulation.touch";
-            self.manipulation.cut, "manipulation.cut";
-            self.manipulation.copy, "manipulation.copy";
-            self.manipulation.delete, "manipulation.delete";
-            self.manipulation.paste, "manipulation.paste";
-            self.manipulation.paste_overwrite, "manipulation.paste_overwrite";
-            self.manipulation.zip, "manipulation.zip";
-            self.manipulation.tar, "manipulation.tar";
-            self.manipulation.extract, "manipulation.extract";
-            self.manipulation.undo, "manipulation.undo";
-            self.manipulation.redo, "manipulation.redo";
-            // Tabs (8)
-            self.tabs.toggle_split, "tabs.toggle_split";
-            self.tabs.focus_next, "tabs.focus_next";
-            self.tabs.new_tab, "tabs.new_tab";
-            self.tabs.close_tab, "tabs.close_tab";
-            self.tabs.focus_tab_1, "tabs.focus_tab_1";
-            self.tabs.focus_tab_2, "tabs.focus_tab_2";
-            self.tabs.focus_tab_3, "tabs.focus_tab_3";
-            self.tabs.focus_tab_4, "tabs.focus_tab_4";
-            // JumpMarks (2)
-            self.jump_marks.set, "jump_marks.set";
-            self.jump_marks.jump, "jump_marks.jump";
-        }
+        req!(general: search, mark, next, previous, view_trash, toggle_hidden,
+            toggle_log, quit, quit_no_cd);
+        req!(movement: up, down, left, right, top, bottom, page_forward,
+            page_backward, half_page_forward, half_page_backward,
+            jump_previous, jump_to);
+        req!(manipulation: change_directory, zoxide_query, rename, mkdir,
+            touch, cut, copy, delete, paste, paste_overwrite, zip, tar,
+            extract, undo, redo);
+        req!(jump_marks: set, jump);
+        req!(tabs: toggle_split, focus_next, new_tab, close_tab, focus_tab_1,
+            focus_tab_2, focus_tab_3, focus_tab_4);
     }
 }
 
@@ -381,172 +437,160 @@ pub struct CommandParser {
 }
 
 impl CommandParser {
-    pub fn from_config(config: KeyConfig) -> Self {
+    /// Pass 1: user bindings + user-defined commands (they claim key space).
+    /// Pass 2: defaults for every field the user did not mention; a default
+    /// binding whose exact pattern is already claimed is dropped + reported.
+    /// Prefix overlaps are NOT conflicts — the patricia matcher already
+    /// defers on longer candidates (see `longer_binding_wins_over_mark_chord`).
+    pub fn build(
+        defaults: &KeyConfig,
+        user: &KeyConfig,
+        user_commands: &crate::command_queue::CommandsConfig,
+    ) -> (Self, Vec<DroppedDefault>) {
         let mut parser = CommandParser::new();
-        // General commands
-        parser.insert(config.general.search.unwrap_or_default(), Command::Search);
-        parser.insert(config.general.mark.unwrap_or_default(), Command::Mark);
-        parser.insert(config.general.next.unwrap_or_default(), Command::Next);
-        parser.insert(
-            config.general.previous.unwrap_or_default(),
-            Command::Previous,
-        );
-        parser.insert(
-            config.general.toggle_hidden.unwrap_or_default(),
-            Command::ToggleHidden,
-        );
-        parser.insert(
-            config.general.toggle_log.unwrap_or_default(),
-            Command::ToggleLog,
-        );
-        parser.insert(
-            config.general.view_trash.unwrap_or_default(),
-            Command::ViewTrash,
-        );
-        parser.insert(config.general.quit.unwrap_or_default(), Command::Quit);
-        parser.insert(
-            config.general.quit_no_cd.unwrap_or_default(),
-            Command::QuitWithoutPath,
-        );
+        let mut dropped = Vec::new();
 
-        // Movement commands
-        parser.insert(
-            config.movement.up.unwrap_or_default(),
-            Command::Move(Move::Up),
-        );
-        parser.insert(
-            config.movement.down.unwrap_or_default(),
-            Command::Move(Move::Down),
-        );
-        parser.insert(
-            config.movement.left.unwrap_or_default(),
-            Command::Move(Move::Left),
-        );
-        parser.insert(
-            config.movement.right.unwrap_or_default(),
-            Command::Move(Move::Right),
-        );
-        parser.insert(
-            config.movement.top.unwrap_or_default(),
-            Command::Move(Move::Top),
-        );
-        parser.insert(
-            config.movement.bottom.unwrap_or_default(),
-            Command::Move(Move::Bottom),
-        );
-        parser.insert(
-            config.movement.page_forward.unwrap_or_default(),
-            Command::Move(Move::PageForward),
-        );
-        parser.insert(
-            config.movement.page_backward.unwrap_or_default(),
-            Command::Move(Move::PageBackward),
-        );
-        parser.insert(
-            config.movement.half_page_forward.unwrap_or_default(),
-            Command::Move(Move::HalfPageForward),
-        );
-        parser.insert(
-            config.movement.half_page_backward.unwrap_or_default(),
-            Command::Move(Move::HalfPageBackward),
-        );
-        parser.insert(
-            config.movement.jump_previous.unwrap_or_default(),
-            Command::Move(Move::JumpPrevious),
-        );
-        for (keys, path) in config.movement.jump_to.unwrap_or_default() {
-            parser
-                .key_commands
-                .insert(keys, Command::Move(Move::JumpTo(path.into())));
+        // The fixed field table: (user field, default field, command).
+        // `jump_to` and the jump-mark prefixes are handled separately below.
+        let table = [
+            (&user.general.search, &defaults.general.search, Command::Search),
+            (&user.general.mark, &defaults.general.mark, Command::Mark),
+            (&user.general.next, &defaults.general.next, Command::Next),
+            (&user.general.previous, &defaults.general.previous, Command::Previous),
+            (&user.general.toggle_hidden, &defaults.general.toggle_hidden, Command::ToggleHidden),
+            (&user.general.toggle_log, &defaults.general.toggle_log, Command::ToggleLog),
+            (&user.general.view_trash, &defaults.general.view_trash, Command::ViewTrash),
+            (&user.general.quit, &defaults.general.quit, Command::Quit),
+            (&user.general.quit_no_cd, &defaults.general.quit_no_cd, Command::QuitWithoutPath),
+            (&user.movement.up, &defaults.movement.up, Command::Move(Move::Up)),
+            (&user.movement.down, &defaults.movement.down, Command::Move(Move::Down)),
+            (&user.movement.left, &defaults.movement.left, Command::Move(Move::Left)),
+            (&user.movement.right, &defaults.movement.right, Command::Move(Move::Right)),
+            (&user.movement.top, &defaults.movement.top, Command::Move(Move::Top)),
+            (&user.movement.bottom, &defaults.movement.bottom, Command::Move(Move::Bottom)),
+            (
+                &user.movement.page_forward,
+                &defaults.movement.page_forward,
+                Command::Move(Move::PageForward),
+            ),
+            (
+                &user.movement.page_backward,
+                &defaults.movement.page_backward,
+                Command::Move(Move::PageBackward),
+            ),
+            (
+                &user.movement.half_page_forward,
+                &defaults.movement.half_page_forward,
+                Command::Move(Move::HalfPageForward),
+            ),
+            (
+                &user.movement.half_page_backward,
+                &defaults.movement.half_page_backward,
+                Command::Move(Move::HalfPageBackward),
+            ),
+            (
+                &user.movement.jump_previous,
+                &defaults.movement.jump_previous,
+                Command::Move(Move::JumpPrevious),
+            ),
+            (
+                &user.manipulation.change_directory,
+                &defaults.manipulation.change_directory,
+                Command::Cd { zoxide: false },
+            ),
+            (
+                &user.manipulation.zoxide_query,
+                &defaults.manipulation.zoxide_query,
+                Command::Cd { zoxide: true },
+            ),
+            (&user.manipulation.rename, &defaults.manipulation.rename, Command::Rename),
+            (&user.manipulation.mkdir, &defaults.manipulation.mkdir, Command::Mkdir),
+            (&user.manipulation.touch, &defaults.manipulation.touch, Command::Touch),
+            (&user.manipulation.cut, &defaults.manipulation.cut, Command::Cut),
+            (&user.manipulation.copy, &defaults.manipulation.copy, Command::Copy),
+            (&user.manipulation.delete, &defaults.manipulation.delete, Command::Delete),
+            (
+                &user.manipulation.paste,
+                &defaults.manipulation.paste,
+                Command::Paste { overwrite: false },
+            ),
+            (
+                &user.manipulation.paste_overwrite,
+                &defaults.manipulation.paste_overwrite,
+                Command::Paste { overwrite: true },
+            ),
+            (&user.manipulation.zip, &defaults.manipulation.zip, Command::Zip),
+            (&user.manipulation.tar, &defaults.manipulation.tar, Command::Tar),
+            (&user.manipulation.extract, &defaults.manipulation.extract, Command::Extract),
+            (&user.manipulation.undo, &defaults.manipulation.undo, Command::Undo),
+            (&user.manipulation.redo, &defaults.manipulation.redo, Command::Redo),
+            (&user.tabs.toggle_split, &defaults.tabs.toggle_split, Command::ToggleSplit),
+            (&user.tabs.focus_next, &defaults.tabs.focus_next, Command::FocusNext),
+            (&user.tabs.new_tab, &defaults.tabs.new_tab, Command::NewTab),
+            (&user.tabs.close_tab, &defaults.tabs.close_tab, Command::CloseTab),
+            (&user.tabs.focus_tab_1, &defaults.tabs.focus_tab_1, Command::FocusTab(1)),
+            (&user.tabs.focus_tab_2, &defaults.tabs.focus_tab_2, Command::FocusTab(2)),
+            (&user.tabs.focus_tab_3, &defaults.tabs.focus_tab_3, Command::FocusTab(3)),
+            (&user.tabs.focus_tab_4, &defaults.tabs.focus_tab_4, Command::FocusTab(4)),
+        ];
+
+        // --- Pass 1: user bindings claim key space. `Some(vec![])` is an
+        // explicit unbind: it inserts nothing, but still marks the command
+        // as user-mentioned so pass 2 skips its defaults.
+        for (user_field, _, cmd) in &table {
+            if let Some(bindings) = user_field {
+                parser.insert(bindings.clone(), cmd.clone());
+            }
         }
-        // Manipulation commands
-        parser.insert(
-            config.manipulation.change_directory.unwrap_or_default(),
-            Command::Cd { zoxide: false },
-        );
-        parser.insert(
-            config.manipulation.zoxide_query.unwrap_or_default(),
-            Command::Cd { zoxide: true },
-        );
-        parser.insert(
-            config.manipulation.rename.unwrap_or_default(),
-            Command::Rename,
-        );
-        parser.insert(
-            config.manipulation.mkdir.unwrap_or_default(),
-            Command::Mkdir,
-        );
-        parser.insert(
-            config.manipulation.touch.unwrap_or_default(),
-            Command::Touch,
-        );
-        parser.insert(config.manipulation.cut.unwrap_or_default(), Command::Cut);
-        parser.insert(config.manipulation.copy.unwrap_or_default(), Command::Copy);
-        parser.insert(
-            config.manipulation.delete.unwrap_or_default(),
-            Command::Delete,
-        );
-        parser.insert(config.manipulation.zip.unwrap_or_default(), Command::Zip);
-        parser.insert(config.manipulation.tar.unwrap_or_default(), Command::Tar);
-        parser.insert(
-            config.manipulation.extract.unwrap_or_default(),
-            Command::Extract,
-        );
-        parser.insert(config.manipulation.undo.unwrap_or_default(), Command::Undo);
-        parser.insert(config.manipulation.redo.unwrap_or_default(), Command::Redo);
+        if let Some(jumps) = &user.movement.jump_to {
+            for (keys, path) in jumps {
+                parser
+                    .key_commands
+                    .insert(keys.clone(), Command::Move(Move::JumpTo(path.into())));
+            }
+        }
+        parser.add_user_commands(user_commands);
 
-        // Multi-tab / split-view commands
-        parser.insert(
-            config.tabs.toggle_split.unwrap_or_default(),
-            Command::ToggleSplit,
-        );
-        parser.insert(
-            config.tabs.focus_next.unwrap_or_default(),
-            Command::FocusNext,
-        );
-        parser.insert(config.tabs.new_tab.unwrap_or_default(), Command::NewTab);
-        parser.insert(config.tabs.close_tab.unwrap_or_default(), Command::CloseTab);
-        parser.insert(
-            config.tabs.focus_tab_1.unwrap_or_default(),
-            Command::FocusTab(1),
-        );
-        parser.insert(
-            config.tabs.focus_tab_2.unwrap_or_default(),
-            Command::FocusTab(2),
-        );
-        parser.insert(
-            config.tabs.focus_tab_3.unwrap_or_default(),
-            Command::FocusTab(3),
-        );
-        parser.insert(
-            config.tabs.focus_tab_4.unwrap_or_default(),
-            Command::FocusTab(4),
-        );
-        parser.insert(
-            config.manipulation.paste.unwrap_or_default(),
-            Command::Paste { overwrite: false },
-        );
-        parser.insert(
-            config.manipulation.paste_overwrite.unwrap_or_default(),
-            Command::Paste { overwrite: true },
-        );
+        // --- Pass 2: defaults for everything the user did not mention. An
+        // exact pattern collision with a claimed key drops the default.
+        for (user_field, default_field, cmd) in &table {
+            if user_field.is_none() {
+                for b in default_field.iter().flatten() {
+                    parser.insert_default(b, cmd, &mut dropped);
+                }
+            }
+        }
+        // A user `jump_to` list replaces the whole default list; with no user
+        // list, default entries are inserted individually so a single claimed
+        // chord does not take the rest of the defaults down with it.
+        if user.movement.jump_to.is_none() {
+            for (keys, path) in defaults.movement.jump_to.iter().flatten() {
+                parser.insert_default(keys, &Command::Move(Move::JumpTo(path.into())), &mut dropped);
+            }
+        }
 
-        parser.insert_jump_marks(
-            config
-                .jump_marks
-                .set
-                .unwrap_or_else(|| vec![DEFAULT_SET_MARK_PREFIX.to_string()]),
-            config
-                .jump_marks
-                .jump
-                .unwrap_or_else(|| vec![DEFAULT_JUMP_MARK_PREFIX.to_string()]),
-        );
+        // --- Jump-mark chords run last; `insert_chords` already skips
+        // claimed patterns. Prefixes: user value if mentioned, else the
+        // defaults' (all-`Some` by the completeness guard).
+        let set = user
+            .jump_marks
+            .set
+            .clone()
+            .or_else(|| defaults.jump_marks.set.clone())
+            .unwrap_or_else(|| vec![DEFAULT_SET_MARK_PREFIX.to_string()]);
+        let jump = user
+            .jump_marks
+            .jump
+            .clone()
+            .or_else(|| defaults.jump_marks.jump.clone())
+            .unwrap_or_else(|| vec![DEFAULT_JUMP_MARK_PREFIX.to_string()]);
+        parser.insert_jump_marks(set, jump);
 
-        parser
+        (parser, dropped)
     }
 
-    /// Add user-defined commands from config
-    pub fn add_user_commands(&mut self, commands: &crate::command_queue::CommandsConfig) {
+    /// Add user-defined commands from config (pass 1: they claim key space).
+    fn add_user_commands(&mut self, commands: &crate::command_queue::CommandsConfig) {
         for (name, entry) in commands {
             let cmd = Command::UserCommand {
                 name: name.clone(),
@@ -616,195 +660,45 @@ impl CommandParser {
 
     fn insert(&mut self, bindings: Vec<String>, cmd: Command) {
         for b in bindings {
-            // Check if b starts with "ctrl"
-            if b.starts_with("ctrl-") {
-                let (_, key) = b.split_at(5);
-                if key.is_empty() {
-                    continue;
+            match route(&b) {
+                Some(Route::Event(event)) => {
+                    self.mod_commands.insert(event, cmd.clone());
                 }
-                self.mod_commands.insert(
-                    KeyEvent::new(
-                        KeyCode::Char(key.chars().next().unwrap()),
-                        KeyModifiers::CONTROL,
-                    ),
-                    cmd.clone(),
-                );
-            } else if b.starts_with("alt-") {
-                let (_, key) = b.split_at(4);
-                if key.is_empty() {
-                    continue;
+                Some(Route::Pattern(pattern)) => {
+                    self.key_commands.insert(pattern, cmd.clone());
                 }
-                self.mod_commands.insert(
-                    KeyEvent::new(
-                        KeyCode::Char(key.chars().next().unwrap()),
-                        KeyModifiers::ALT,
-                    ),
-                    cmd.clone(),
-                );
-            } else if b.starts_with("meta-") {
-                let (_, key) = b.split_at(5);
-                if key.is_empty() {
-                    continue;
-                }
-                self.mod_commands.insert(
-                    KeyEvent::new(
-                        KeyCode::Char(key.chars().next().unwrap()),
-                        KeyModifiers::META,
-                    ),
-                    cmd.clone(),
-                );
-            } else if let Some(code) = named_key(&b) {
-                // Special keys that don't produce a `Char` (e.g. Tab) can't go
-                // through the buffer-string path; bind them as oneshot events.
-                self.mod_commands
-                    .insert(KeyEvent::new(code, KeyModifiers::NONE), cmd.clone());
-            } else {
-                self.key_commands.insert(b, cmd.clone());
+                None => {}
             }
         }
     }
 
-    pub fn default_bindings() -> Self {
-        // --- Commands for "normal" keys:
-        let mut key_commands = StringPatriciaMap::new();
-        // Basic movement commands
-        key_commands.insert("h", Command::Move(Move::Left));
-        key_commands.insert("j", Command::Move(Move::Down));
-        key_commands.insert("k", Command::Move(Move::Up));
-        key_commands.insert("l", Command::Move(Move::Right));
-
-        key_commands.insert("gg", Command::Move(Move::Top));
-        key_commands.insert("G", Command::Move(Move::Bottom));
-
-        // Jump to something
-        key_commands.insert("gh", Command::Move(Move::JumpTo("~".into())));
-        key_commands.insert("gr", Command::Move(Move::JumpTo("/".into())));
-        key_commands.insert("gc", Command::Move(Move::JumpTo("~/.config".into())));
-
-        key_commands.insert("ge", Command::Move(Move::JumpTo("/etc".into())));
-        key_commands.insert("gu", Command::Move(Move::JumpTo("/usr".into())));
-        key_commands.insert("gN", Command::Move(Move::JumpTo("/nix/store".into())));
-
-        // custom jumps
-        key_commands.insert("gp", Command::Move(Move::JumpTo("~/Projekte".into())));
-        key_commands.insert("gs", Command::Move(Move::JumpTo("~/.scripts".into())));
-        key_commands.insert("gb", Command::Move(Move::JumpTo("~/Bilder".into())));
-        key_commands.insert(
-            "gw",
-            Command::Move(Move::JumpTo("~/Bilder/wallpapers".into())),
-        );
-        key_commands.insert("gd", Command::Move(Move::JumpTo("~/Dokumente".into())));
-        key_commands.insert("gD", Command::Move(Move::JumpTo("~/Downloads".into())));
-        key_commands.insert(
-            "gl",
-            Command::Move(Move::JumpTo("~/Projekte/loadrunner-2021".into())),
-        );
-        key_commands.insert(
-            "gL",
-            Command::Move(Move::JumpTo(
-                "~/Projekte/loadrunner-2021/lr-localization".into(),
-            )),
-        );
-        key_commands.insert("gm", Command::Move(Move::JumpTo("~/Musik".into())));
-        key_commands.insert("gN", Command::Move(Move::JumpTo("/nix/store".into())));
-        key_commands.insert("gT", Command::ViewTrash);
-
-        // Toggle hidden files
-        key_commands.insert("zh", Command::ToggleHidden);
-
-        // Toggle log visibility
-        key_commands.insert("devlog", Command::ToggleLog);
-
-        // Jump to previous location
-        key_commands.insert("\'\'", Command::Move(Move::JumpPrevious));
-
-        // Mark current file
-        key_commands.insert(" ", Command::Mark);
-
-        // Copy, Paste, Cut, Delete
-        key_commands.insert("yy", Command::Copy);
-        key_commands.insert("copy", Command::Copy);
-        key_commands.insert("dd", Command::Cut);
-        key_commands.insert("cut", Command::Cut);
-        key_commands.insert("pp", Command::Paste { overwrite: false });
-        key_commands.insert("paste", Command::Paste { overwrite: false });
-        key_commands.insert("po", Command::Paste { overwrite: true });
-        key_commands.insert("delete", Command::Delete);
-
-        // Undo / Redo
-        key_commands.insert("u", Command::Undo);
-
-        // Search
-        key_commands.insert("/", Command::Search);
-        key_commands.insert("n", Command::Next);
-        key_commands.insert("N", Command::Previous);
-
-        // cd, mkdir, touch
-        key_commands.insert("cd", Command::Cd { zoxide: false });
-        key_commands.insert("mkdir", Command::Mkdir);
-        key_commands.insert("touch", Command::Touch);
-
-        // Rename
-        key_commands.insert("rename", Command::Rename);
-
-        // Quit
-        key_commands.insert("q", Command::Quit);
-
-        // --- Commands for modifier + key:
-        let mut mod_commands = HashMap::new();
-
-        // Search
-        mod_commands.insert(CTRL_F, Command::Search);
-
-        // Copy, Paste, Cut
-        mod_commands.insert(CTRL_C, Command::Copy);
-        mod_commands.insert(CTRL_X, Command::Cut);
-        mod_commands.insert(CTRL_V, Command::Paste { overwrite: false });
-        mod_commands.insert(CTRL_SHIFT_V, Command::Paste { overwrite: true });
-
-        // Redo
-        mod_commands.insert(
-            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
-            Command::Redo,
-        );
-
-        // Escape from what you are doing
-        // mod_commands.insert(CTRL_C, Command::Esc);
-
-        // Advanced movement
-        mod_commands.insert(
-            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
-            Command::Move(Move::PageForward),
-        );
-        mod_commands.insert(
-            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
-            Command::Move(Move::PageBackward),
-        );
-        mod_commands.insert(
-            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
-            Command::Move(Move::HalfPageForward),
-        );
-        mod_commands.insert(
-            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
-            Command::Move(Move::HalfPageBackward),
-        );
-
-        // Toggle hidden (backspace)
-        // mod_commands.insert(
-        //     KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-        //     Command::ToggleHidden,
-        // );
-
-        let mut parser = CommandParser {
-            key_commands,
-            mod_commands,
-            buffer: "".to_string(),
+    /// Insert a single *default* binding unless its exact pattern is already
+    /// claimed (by a user binding, a user command, or an earlier default);
+    /// a claimed pattern is reported in `dropped` instead. Uses the same
+    /// [`route`] as [`Self::insert`], so the two cannot diverge.
+    fn insert_default(&mut self, binding: &str, cmd: &Command, dropped: &mut Vec<DroppedDefault>) {
+        let conflict = |kept: &Command| DroppedDefault {
+            command: cmd.to_string(),
+            binding: binding.to_string(),
+            kept: kept.to_string(),
         };
-        parser.insert_jump_marks(
-            vec![DEFAULT_SET_MARK_PREFIX.to_string()],
-            vec![DEFAULT_JUMP_MARK_PREFIX.to_string()],
-        );
-        parser
+        match route(binding) {
+            Some(Route::Event(event)) => {
+                if let Some(kept) = self.mod_commands.get(&event) {
+                    dropped.push(conflict(kept));
+                } else {
+                    self.mod_commands.insert(event, cmd.clone());
+                }
+            }
+            Some(Route::Pattern(pattern)) => {
+                if let Some(kept) = self.key_commands.get(&pattern) {
+                    dropped.push(conflict(kept));
+                } else {
+                    self.key_commands.insert(pattern, cmd.clone());
+                }
+            }
+            None => {}
+        }
     }
 
     pub fn buffer(&self) -> String {
@@ -888,6 +782,20 @@ impl CommandParser {
     }
 }
 
+/// Test helper: the all-`Some` defaults instance parsed from the embedded
+/// default-config.toml (completeness guaranteed by `assert_complete`).
+#[cfg(test)]
+fn defaults() -> KeyConfig {
+    let config: crate::config::Config = crate::config::default_tree().try_into().unwrap();
+    config.keys
+}
+
+/// Test helper: a parser built purely from the defaults (no user overlay).
+#[cfg(test)]
+fn default_parser() -> CommandParser {
+    CommandParser::build(&defaults(), &KeyConfig::default(), &Default::default()).0
+}
+
 #[cfg(test)]
 mod jump_mark_tests {
     use super::*;
@@ -899,21 +807,21 @@ mod jump_mark_tests {
 
     #[test]
     fn m_then_letter_sets_mark() {
-        let mut p = CommandParser::default_bindings();
+        let mut p = default_parser();
         assert!(matches!(p.add_event(key('m')), Command::None)); // waits
         assert!(matches!(p.add_event(key('a')), Command::SetJumpMark('a')));
     }
 
     #[test]
     fn apostrophe_then_letter_jumps_to_mark() {
-        let mut p = CommandParser::default_bindings();
+        let mut p = default_parser();
         assert!(matches!(p.add_event(key('\'')), Command::None)); // waits
         assert!(matches!(p.add_event(key('a')), Command::JumpToMark('a')));
     }
 
     #[test]
     fn double_apostrophe_still_jumps_previous() {
-        let mut p = CommandParser::default_bindings();
+        let mut p = default_parser();
         assert!(matches!(p.add_event(key('\'')), Command::None));
         assert!(matches!(
             p.add_event(key('\'')),
@@ -923,7 +831,7 @@ mod jump_mark_tests {
 
     #[test]
     fn longer_binding_wins_over_mark_chord() {
-        let mut p = CommandParser::default_bindings();
+        let mut p = default_parser();
         // "mkdir" shares the "mk" prefix with the auto-generated
         // SetJumpMark('k') chord; the explicit binding must win.
         assert!(matches!(p.add_event(key('m')), Command::None));
@@ -935,7 +843,7 @@ mod jump_mark_tests {
 
     #[test]
     fn deferred_mark_chord_does_not_fire_on_mismatch() {
-        let mut p = CommandParser::default_bindings();
+        let mut p = default_parser();
         assert!(matches!(p.add_event(key('m')), Command::None));
         assert!(matches!(p.add_event(key('k')), Command::None)); // deferred
         assert!(matches!(p.add_event(key('x')), Command::None)); // buffer cleared, no mark
@@ -943,8 +851,8 @@ mod jump_mark_tests {
     }
 
     #[test]
-    fn unshadowed_mark_chord_still_fires_from_default_bindings() {
-        let mut p = CommandParser::default_bindings();
+    fn unshadowed_mark_chord_still_fires_from_defaults() {
+        let mut p = default_parser();
         // No default binding starts with "ma", so the chord fires normally.
         assert!(matches!(p.add_event(key('m')), Command::None));
         assert!(matches!(p.add_event(key('a')), Command::SetJumpMark('a')));
@@ -990,7 +898,7 @@ tar = ["tar"]
 extract = ["extract"]
 "#;
         let cfg: KeyConfig = toml::from_str(toml).expect("parse keys.toml");
-        let mut p = CommandParser::from_config(cfg);
+        let mut p = CommandParser::build(&defaults(), &cfg, &Default::default()).0;
         // "ma" is an explicit jump_to binding; the auto-generated
         // SetJumpMark('a') chord must not overwrite it.
         assert!(matches!(p.add_event(key('m')), Command::None));
@@ -1002,7 +910,7 @@ extract = ["extract"]
 
     #[test]
     fn shadowed_mark_chord_hidden_from_matching_commands() {
-        let mut p = CommandParser::default_bindings();
+        let mut p = default_parser();
         p.add_event(key('m'));
         let keys: Vec<String> = p.matching_commands().into_iter().map(|(k, _)| k).collect();
         assert!(keys.iter().any(|k| k == "mkdir"));
@@ -1012,14 +920,14 @@ extract = ["extract"]
 
     #[test]
     fn m_then_unbound_key_is_noop() {
-        let mut p = CommandParser::default_bindings();
+        let mut p = default_parser();
         assert!(matches!(p.add_event(key('m')), Command::None));
         assert!(matches!(p.add_event(key('1')), Command::None)); // buffer cleared
         assert!(matches!(p.add_event(key('j')), Command::Move(Move::Down)));
     }
 
     #[test]
-    fn from_config_without_jump_marks_section_defaults_to_m_and_apostrophe() {
+    fn user_config_without_jump_marks_section_defaults_to_m_and_apostrophe() {
         let toml = r#"
 [general]
 search = ["/"]
@@ -1058,7 +966,7 @@ tar = ["tar"]
 extract = ["extract"]
 "#;
         let cfg: KeyConfig = toml::from_str(toml).expect("parse keys.toml");
-        let mut p = CommandParser::from_config(cfg);
+        let mut p = CommandParser::build(&defaults(), &cfg, &Default::default()).0;
         assert!(matches!(p.add_event(key('m')), Command::None));
         assert!(matches!(p.add_event(key('a')), Command::SetJumpMark('a')));
         assert!(matches!(p.add_event(key('\'')), Command::None));
@@ -1070,7 +978,7 @@ extract = ["extract"]
     /// for `close_tab`, and `Tab` routed through the oneshot `mod_commands`
     /// map via the `named_key()` path.
     #[test]
-    fn from_config_tabs_section_wires_focus_close_and_named_tab_key() {
+    fn tabs_section_wires_focus_close_and_named_tab_key() {
         let toml = r#"
 [general]
 search = ["/"]
@@ -1115,7 +1023,7 @@ close_tab = ["q", "ctrl-w"]
 focus_tab_1 = ["1"]
 "#;
         let cfg: KeyConfig = toml::from_str(toml).expect("parse keys.toml");
-        let mut p = CommandParser::from_config(cfg);
+        let mut p = CommandParser::build(&defaults(), &cfg, &Default::default()).0;
 
         // focus_tab_1 = ["1"] -> FocusTab(1)
         assert!(matches!(p.add_event(key('1')), Command::FocusTab(1)));
@@ -1150,5 +1058,79 @@ focus_tab_1 = ["1"]
         assert_eq!(partial.movement.up, Some(vec!["k".into()]));
         assert_eq!(partial.manipulation.undo, Some(vec![]));
         assert!(partial.movement.down.is_none());
+    }
+}
+
+#[cfg(test)]
+mod builder_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    fn press(p: &mut CommandParser, c: char) -> Command {
+        p.add_event(key(c))
+    }
+
+    fn press2(p: &mut CommandParser, a: char, b: char) -> Command {
+        p.add_event(key(a));
+        p.add_event(key(b))
+    }
+
+    #[test]
+    fn empty_user_config_gets_all_defaults() {
+        let (mut p, dropped) =
+            CommandParser::build(&defaults(), &KeyConfig::default(), &Default::default());
+        assert!(dropped.is_empty());
+        assert!(matches!(press(&mut p, 'u'), Command::Undo)); // new-feature default
+        assert!(matches!(press(&mut p, '!'), Command::ToggleSplit)); // opt-in no more
+    }
+
+    #[test]
+    fn user_binding_wins_default_dropped_and_reported() {
+        // old-school config: q means quit
+        let user: KeyConfig = toml::from_str("[general]\nquit = [\"q\", \"exit\"]").unwrap();
+        let (mut p, dropped) = CommandParser::build(&defaults(), &user, &Default::default());
+        assert!(matches!(press(&mut p, 'q'), Command::Quit)); // user wins
+        assert!(dropped
+            .iter()
+            .any(|d| d.binding == "q" && d.command.contains("close")));
+        // the non-conflicting half of the default survives:
+        assert!(p
+            .mod_commands
+            .contains_key(&KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL)));
+    }
+
+    #[test]
+    fn explicit_empty_list_unbinds_and_blocks_default() {
+        let user: KeyConfig = toml::from_str("[manipulation]\nundo = []").unwrap();
+        let (mut p, dropped) = CommandParser::build(&defaults(), &user, &Default::default());
+        assert!(matches!(press(&mut p, 'u'), Command::None));
+        assert!(dropped.is_empty()); // an unbind is not a conflict
+    }
+
+    #[test]
+    fn user_command_keys_claim_before_defaults() {
+        let mut cmds = crate::command_queue::CommandsConfig::default();
+        cmds.insert(
+            "mine".into(),
+            toml::from_str("keys = [\"u\"]\ncmd = \"true\"").unwrap(),
+        );
+        let (mut p, dropped) = CommandParser::build(&defaults(), &KeyConfig::default(), &cmds);
+        assert!(matches!(press(&mut p, 'u'), Command::UserCommand { .. }));
+        assert!(dropped.iter().any(|d| d.binding == "u"));
+    }
+
+    #[test]
+    fn user_jump_to_replaces_whole_default_list() {
+        let user: KeyConfig = toml::from_str("[movement]\njump_to = [[\"gz\", \"/tmp\"]]").unwrap();
+        let (mut p, _) = CommandParser::build(&defaults(), &user, &Default::default());
+        assert!(matches!(
+            press2(&mut p, 'g', 'z'),
+            Command::Move(Move::JumpTo(_))
+        ));
+        assert!(matches!(press2(&mut p, 'g', 'h'), Command::None)); // default list gone
     }
 }

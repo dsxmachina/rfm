@@ -11,7 +11,7 @@ use crossterm::{
     QueueableCommand,
 };
 use engine::{
-    commands::{CloseCmd, CommandParser},
+    commands::{CloseCmd, CommandParser, KeyConfig},
     OpenEngine, StyleEngine,
 };
 use log::{error, info, warn};
@@ -206,15 +206,21 @@ async fn main() -> anyhow::Result<()> {
         file.write_all(&default.data)?;
     }
 
-    let mut parser = if let Ok(content) = std::fs::read_to_string(&key_config_file) {
+    // Interim wiring (replaced by the unified load pipeline in the next
+    // task): the embedded defaults are always the base; keys.toml is a
+    // sparse user overlay on top.
+    let default_config: config::Config = config::default_tree()
+        .try_into()
+        .expect("embedded default-config.toml must deserialize");
+    let user_keys: KeyConfig = if let Ok(content) = std::fs::read_to_string(&key_config_file) {
         match toml::from_str(&content) {
             Ok(key_config) => {
                 info!("Using keyboard config: {}", key_config_file.display());
-                CommandParser::from_config(key_config)
+                key_config
             }
             Err(e) => {
                 warn!("Configuration error: {e}. Using default keyboard bindings");
-                CommandParser::default_bindings()
+                KeyConfig::default()
             }
         }
     } else {
@@ -222,11 +228,15 @@ async fn main() -> anyhow::Result<()> {
             "Cannot find keyboard config '{}'. Using default keyboard bindings",
             key_config_file.display()
         );
-        CommandParser::default_bindings()
+        KeyConfig::default()
     };
-
-    // Add user-defined commands from config
-    parser.add_user_commands(&user_commands);
+    let (parser, dropped) = CommandParser::build(&default_config.keys, &user_keys, &user_commands);
+    for d in &dropped {
+        warn!(
+            "default `{}` → {} skipped: bound to {} in your config",
+            d.binding, d.command, d.kept
+        );
+    }
 
     // --- Opener configuration
     let open_config_file = config_dir.join("open.toml");
