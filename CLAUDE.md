@@ -154,6 +154,29 @@ in the sequence; no flag plumbing.
 Log lines shown in the widget expire after DISPLAY_TTL (logger.rs, 10s);
 the 1 s task wakes the UI only when a line actually expires.
 
+## Architecture: thumbnail cache
+
+Persistent image/video preview thumbnails in
+`$XDG_CACHE_HOME/rfm/thumbnails` (fallback `~/.cache`). The filename is
+the entire metadata — `<seahash(path):016x>-<mtime>.jpg` — no index, no
+locks: a changed source means a new name, and the old entry is just a
+stale sibling. Writes are atomic (same-dir `.part`/`.part.jpg` +
+rename); every store sweeps stale siblings of the same path-hash;
+startup prunes 30-day/256-MiB overflows via `spawn_blocking`. Corrupt
+entries self-heal: lookups decode-check, delete on failure, and the
+caller regenerates. `preview_cache` (config, default true) gates it:
+off → previews are in-memory only and video thumbs fall back to
+`temp_dir()/rfm-thumbnails` with a 7-day prune (the pre-cache scheme).
+
+Module `src/panel/thumb_cache.rs`: pure core
+(`entry_name`/`lookup_in`/`store_in`/`cleanup_stale`/`prune_dir`,
+explicit dir params, unit-tested without the global state) under thin
+OnceCell wrappers (`init`/`dir`/`lookup`/`store`/`prune`). Consumers in
+preview.rs: `cached_image_preview` (image path) and `ffmpeg_thumbnail`
+(video path). Test interactively by pointing `XDG_CACHE_HOME` at a
+scratch dir in the tmux pane before launching rfm; the debug-socket
+`log` shows "thumbnail cache hit" lines.
+
 ## Architecture: undo/redo
 
 In-session, in-memory only (`src/undo/`, terminal-free + unit-tested).

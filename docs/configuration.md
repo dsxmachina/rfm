@@ -23,6 +23,11 @@ rfm at a different config directory with `--config <dir>`.
 [general]
 use_trash = true       # delete to the freedesktop trash (undoable) instead of
                        # deleting permanently. See usage.md#trash and usage.md#undo--redo.
+preview_cache = true   # persist image/video preview thumbnails in
+                       # $XDG_CACHE_HOME/rfm/thumbnails (usually ~/.cache/rfm/thumbnails)
+                       # so they survive restarts. Pruned automatically at startup
+                       # (entries older than 30 days, capped at 256 MiB).
+                       # When disabled, previews are cached in memory only.
 fancy_icons = false    # use Nerd Font icons (needs a Nerd Font in your terminal)
 ```
 
