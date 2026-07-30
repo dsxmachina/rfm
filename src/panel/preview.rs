@@ -224,7 +224,7 @@ impl FilePreview {
 
         let preview = match (mime.type_().as_str(), mime.subtype().as_str()) {
             ("image", _) => image_preview(&path, mediainfo(&path).unwrap_or_default()),
-            ("audio", _) => cmd_to_preview("mediainfo", mediainfo(&path)),
+            ("audio", _) => audio_preview(&path),
             ("video", _) => video_preview(&path, modified),
             ("application", "x-x509-ca-cert") => cert_preview(&path),
             ("application", "gzip") => gz_preview(&path),
@@ -645,6 +645,56 @@ fn zip_preview(path: &Path) -> Preview {
                     .output()
                     .and_then(|o| o.stdout.lines().take(128).collect()),
             )
+        }
+    }
+}
+
+/// Curated audio block via lofty: format/duration/bitrate + common
+/// tags. Note the `primary_tag().or_else(first_tag)` - WAV's *primary*
+/// tag type is ID3v2, so `primary_tag()` alone misses RIFF-INFO tags.
+fn native_audio_lines(path: &Path) -> anyhow::Result<Vec<String>> {
+    use lofty::prelude::*;
+    let tagged = lofty::read_from_path(path)?;
+    let props = tagged.properties();
+    let secs = props.duration().as_secs();
+    let mut lines = vec![
+        format!("Format:      {:?}", tagged.file_type()),
+        format!("Duration:    {}:{:02}", secs / 60, secs % 60),
+    ];
+    if let Some(bitrate) = props.audio_bitrate() {
+        lines.push(format!("Bitrate:     {bitrate} kbps"));
+    }
+    if let Some(rate) = props.sample_rate() {
+        lines.push(format!("Sample rate: {rate} Hz"));
+    }
+    if let Some(channels) = props.channels() {
+        lines.push(format!("Channels:    {channels}"));
+    }
+    if let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) {
+        lines.push(String::new());
+        if let Some(title) = tag.title() {
+            lines.push(format!("Title:       {title}"));
+        }
+        if let Some(artist) = tag.artist() {
+            lines.push(format!("Artist:      {artist}"));
+        }
+        if let Some(album) = tag.album() {
+            lines.push(format!("Album:       {album}"));
+        }
+        if let Some(year) = tag.year() {
+            lines.push(format!("Year:        {year}"));
+        }
+    }
+    Ok(lines)
+}
+
+/// Native-first audio arm; mediainfo stays as the shell-out fallback.
+fn audio_preview(path: &Path) -> Preview {
+    match native_audio_lines(path) {
+        Ok(lines) => Preview::Text { lines },
+        Err(e) => {
+            log::debug!("native audio metadata failed, trying mediainfo: {e}");
+            cmd_to_preview("mediainfo", mediainfo(path))
         }
     }
 }
@@ -1133,6 +1183,70 @@ Q7ZNh7owTFb+WgkD0bBFJFVxePwzS/hyUAb6w+9Vufg=
     fn native_cert_lines_on_garbage_are_an_error() {
         // Err is what routes cert_preview to the openssl/bat fallback.
         assert!(native_cert_lines(b"not a certificate").is_err());
+    }
+
+    /// Minimal PCM WAV (1 s of silence, 8 kHz mono 8-bit), tagged via
+    /// lofty itself - no committed binary, no external tool.
+    fn make_tagged_wav(dir: &Path) -> PathBuf {
+        use lofty::prelude::*;
+        use lofty::tag::{Tag, TagType};
+        let path = dir.join("tone.wav");
+        let data_len: u32 = 8000;
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+        wav.extend_from_slice(&8000u32.to_le_bytes()); // sample rate
+        wav.extend_from_slice(&8000u32.to_le_bytes()); // byte rate
+        wav.extend_from_slice(&1u16.to_le_bytes()); // block align
+        wav.extend_from_slice(&8u16.to_le_bytes()); // bits per sample
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        wav.extend_from_slice(&vec![128u8; data_len as usize]);
+        std::fs::write(&path, wav).unwrap();
+        let mut tag = Tag::new(TagType::RiffInfo);
+        tag.set_title("Test Title".to_string());
+        tag.set_artist("Test Artist".to_string());
+        tag.save_to_path(&path, lofty::config::WriteOptions::default())
+            .unwrap();
+        path
+    }
+
+    #[test]
+    fn native_audio_lines_include_title_and_duration() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wav = make_tagged_wav(tmp.path());
+        let lines = native_audio_lines(&wav).unwrap();
+        let joined = lines.join("\n");
+        assert!(joined.contains("Test Title"), "{joined}");
+        assert!(joined.contains("Test Artist"), "{joined}");
+        assert!(joined.contains("Duration"), "{joined}");
+        assert!(joined.contains("8000"), "sample rate expected: {joined}");
+    }
+
+    #[test]
+    fn native_audio_lines_on_garbage_are_an_error() {
+        // Err is what routes audio_preview to the mediainfo fallback.
+        let tmp = tempfile::tempdir().unwrap();
+        let bogus = tmp.path().join("noise.mp3");
+        std::fs::write(&bogus, b"not audio at all").unwrap();
+        assert!(native_audio_lines(&bogus).is_err());
+    }
+
+    #[test]
+    fn audio_preview_of_garbage_degrades_to_a_text_preview() {
+        // Native path errors, the mediainfo fallback runs (and may
+        // error too) - the result must still be text lines.
+        let tmp = tempfile::tempdir().unwrap();
+        let bogus = tmp.path().join("noise.flac");
+        std::fs::write(&bogus, vec![0u8; 32]).unwrap();
+        match audio_preview(&bogus) {
+            Preview::Text { lines } => assert!(!lines.is_empty()),
+            _ => panic!("expected a text preview"),
+        }
     }
 
     #[test]
