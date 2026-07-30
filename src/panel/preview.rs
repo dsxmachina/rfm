@@ -5,7 +5,7 @@ use std::{
     ops::Range,
     path::{Path, PathBuf},
     process::Stdio,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use crate::{
@@ -350,7 +350,9 @@ fn video_preview(path: impl AsRef<Path>, modified: SystemTime) -> Preview {
     match ffmpeg_thumbnail(&path, modified) {
         Ok(preview) => preview,
         Err(e) => {
-            log::error!("failed to execute ffmpeg: {e}");
+            // Expected e.g. for videos shorter than the 10s thumbnail
+            // seek - not worth an on-screen error on every visit.
+            log::debug!("no ffmpeg thumbnail, falling back to mediainfo: {e}");
             cmd_to_preview(
                 "mediainfo",
                 std::process::Command::new("mediainfo")
@@ -367,7 +369,17 @@ fn ffmpeg_thumbnail(path: impl AsRef<Path>, modified: u64) -> anyhow::Result<Pre
     let full_path = path.as_ref().as_os_str();
     let path_hash = seahash::hash(full_path.as_encoded_bytes());
     let identifier = format!("{path_hash}{modified}.jpg");
-    let thumbnail = THUMBNAIL_DIR.get_or_init(temp_dir).join(identifier);
+    let thumbnail = THUMBNAIL_DIR
+        .get_or_init(|| {
+            let dir = temp_dir().join("rfm-thumbnails");
+            let _ = std::fs::create_dir_all(&dir);
+            // One-time housekeeping: a thumbnail is never referenced
+            // again once its video changed, so drop everything older
+            // than a week instead of littering the temp-dir forever.
+            prune_older_than(&dir, Duration::from_secs(7 * 24 * 60 * 60));
+            dir
+        })
+        .join(identifier);
     if thumbnail.exists() {
         log::debug!("using existing thumbnail {}", thumbnail.display());
         Ok(image_preview(
@@ -390,13 +402,52 @@ fn ffmpeg_thumbnail(path: impl AsRef<Path>, modified: u64) -> anyhow::Result<Pre
             .arg("scale=120:-1")
             .arg(&thumbnail);
         cmd.stdin(Stdio::null());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-        let _out = cmd.spawn()?.wait()?;
+        let out = cmd.output()?;
+        // ffmpeg fails without writing the thumbnail e.g. for videos
+        // shorter than the 10s seek; report that instead of building a
+        // preview from a file that was never written (the caller falls
+        // back to mediainfo on Err).
+        if !out.status.success() || !thumbnail.exists() {
+            // A failed run may still have created a partial file; drop
+            // it, or the exists()-fast-path above would serve the
+            // broken thumbnail on every later visit.
+            let _ = std::fs::remove_file(&thumbnail);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let tail: Vec<&str> = stderr.lines().rev().take(3).collect();
+            anyhow::bail!(
+                "ffmpeg did not produce a thumbnail ({}): {}",
+                out.status,
+                tail.into_iter().rev().collect::<Vec<_>>().join(" | ")
+            );
+        }
         Ok(image_preview(
             thumbnail,
             mediainfo(path).unwrap_or_default(),
         ))
+    }
+}
+
+/// Best-effort cleanup for the thumbnail-dir: removes regular files in
+/// `dir` that were modified more than `max_age` ago. Every error is
+/// ignored - a stale thumbnail is never worth failing a preview over.
+fn prune_older_than(dir: &Path, max_age: Duration) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let stale = entry
+            .metadata()
+            .ok()
+            .filter(|meta| meta.is_file())
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|modified| now.duration_since(modified).ok())
+            .map(|age| age > max_age)
+            .unwrap_or(false);
+        if stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
     }
 }
 
@@ -493,22 +544,35 @@ fn cmd_to_preview(cmd_name: &'static str, result: std::io::Result<Vec<String>>) 
 
 // Helper function to generate a preview from tar output
 fn tar_list(path: &Path) -> std::io::Result<Vec<String>> {
-    let tar = std::process::Command::new("tar")
+    let mut tar = std::process::Command::new("tar")
         .arg("--list")
         .arg("-f")
         .arg(path)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
+        .stderr(Stdio::null())
         .spawn()?;
-    match tar.stdout {
-        Some(tar_stdout) => {
-            let output = std::process::Command::new("head")
-                .arg("-64")
-                .stdin(Stdio::from(tar_stdout))
-                .output()?;
-            Ok(output.stdout.lines().take(64).flatten().collect())
-        }
-        None => Ok(vec![format!("Failed to fetch stdout from 'tar --list'")]),
+    let lines: Vec<String> = match tar.stdout.take() {
+        Some(tar_stdout) => io::BufReader::new(tar_stdout)
+            .lines()
+            .take(64)
+            .flatten()
+            .collect(),
+        None => Vec::new(),
+    };
+    // Kill before reaping, so wait() cannot block on a tar that is
+    // still streaming a huge archive; both are best-effort (kill fails
+    // harmlessly if tar already exited), but without the wait() every
+    // archive preview would leak a zombie process.
+    let _ = tar.kill();
+    let status = tar.wait();
+    if lines.is_empty() && !status.map(|s| s.success()).unwrap_or(false) {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "tar --list failed and produced no output",
+        ));
     }
+    Ok(lines)
 }
 
 impl PanelContent for FilePreview {
@@ -646,6 +710,123 @@ impl PreviewPanel {
             log::debug!("preview-panel: selecting {}", selection.display());
             panel.select_path(selection, None);
         }
+    }
+}
+
+#[cfg(test)]
+mod external_cmd_tests {
+    use super::*;
+
+    /// Creates `files` in `dir` and packs them into `dir/archive.tar`
+    /// via the real tar binary (the same one `tar_list` shells out to).
+    fn make_tar(dir: &Path, files: &[String]) -> PathBuf {
+        for name in files {
+            std::fs::write(dir.join(name), b"content").unwrap();
+        }
+        let archive = dir.join("archive.tar");
+        let status = std::process::Command::new("tar")
+            .arg("-cf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(dir)
+            .args(files)
+            .status()
+            .unwrap();
+        assert!(status.success(), "building the fixture archive failed");
+        archive
+    }
+
+    #[test]
+    fn tar_list_returns_all_names_of_a_small_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let files: Vec<String> = ["a.txt", "b.txt", "c.txt"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let archive = make_tar(tmp.path(), &files);
+        let lines = tar_list(&archive).unwrap();
+        assert_eq!(lines, files);
+    }
+
+    #[test]
+    fn tar_list_caps_the_listing_at_64_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let files: Vec<String> = (0..70).map(|i| format!("file-{i:03}.txt")).collect();
+        let archive = make_tar(tmp.path(), &files);
+        let lines = tar_list(&archive).unwrap();
+        assert_eq!(lines.len(), 64);
+    }
+
+    #[test]
+    fn tar_list_on_a_missing_archive_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = tar_list(&tmp.path().join("missing.tar"));
+        // tar exits non-zero and prints nothing to stdout; that must
+        // surface as Err so cmd_to_preview() shows its error text
+        // instead of a blank preview.
+        assert!(result.is_err());
+    }
+
+    /// Generates a tiny test video of `seconds` length with ffmpeg.
+    fn make_video(dir: &Path, name: &str, seconds: u32) -> PathBuf {
+        let video = dir.join(name);
+        let status = std::process::Command::new("ffmpeg")
+            .arg("-y")
+            .arg("-f")
+            .arg("lavfi")
+            .arg("-i")
+            .arg(format!("testsrc=duration={seconds}:size=64x64:rate=10"))
+            .arg(&video)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "building the fixture video failed");
+        video
+    }
+
+    #[test]
+    fn ffmpeg_thumbnail_of_a_too_short_video_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let video = make_video(tmp.path(), "short.mp4", 1);
+        // The hardcoded 10s seek is past the end of this clip, so
+        // ffmpeg fails and writes no thumbnail - that must surface as
+        // Err (the caller then falls back to mediainfo) instead of a
+        // phantom image preview.
+        assert!(ffmpeg_thumbnail(&video, 0).is_err());
+    }
+
+    #[test]
+    fn ffmpeg_thumbnail_of_a_long_video_lands_in_the_thumbnail_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let video = make_video(tmp.path(), "long.mp4", 15);
+        ffmpeg_thumbnail(&video, 1).unwrap();
+        let path_hash = seahash::hash(video.as_os_str().as_encoded_bytes());
+        let thumbnail = temp_dir()
+            .join("rfm-thumbnails")
+            .join(format!("{path_hash}1.jpg"));
+        assert!(thumbnail.is_file());
+        let _ = std::fs::remove_file(thumbnail);
+    }
+
+    #[test]
+    fn prune_older_than_removes_only_stale_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("old.jpg");
+        let fresh = tmp.path().join("fresh.jpg");
+        std::fs::write(&old, b"old").unwrap();
+        std::fs::write(&fresh, b"fresh").unwrap();
+        let status = std::process::Command::new("touch")
+            .arg("-d")
+            .arg("10 days ago")
+            .arg(&old)
+            .status()
+            .unwrap();
+        assert!(status.success(), "backdating the fixture file failed");
+        prune_older_than(tmp.path(), Duration::from_secs(7 * 24 * 60 * 60));
+        assert!(!old.exists(), "the stale file must be pruned");
+        assert!(fresh.exists(), "the fresh file must survive");
     }
 }
 
