@@ -1,7 +1,7 @@
 use std::{
     env::temp_dir,
     fs::File,
-    io::{self, BufRead, Stdout},
+    io::{self, BufRead, Read, Stdout},
     ops::Range,
     path::{Path, PathBuf},
     process::Stdio,
@@ -227,7 +227,7 @@ impl FilePreview {
             ("audio", _) => cmd_to_preview("mediainfo", mediainfo(&path)),
             ("video", _) => video_preview(&path, modified),
             ("application", "x-x509-ca-cert") => cert_preview(&path),
-            ("application", "gzip") => cmd_to_preview("tar", tar_list(&path)),
+            ("application", "gzip") => gz_preview(&path),
             ("application", "x-tar") => tar_preview(&path),
             ("application", "zip") => zip_preview(&path),
             // Text based application/* types
@@ -512,6 +512,53 @@ fn native_tar_list<R: io::Read>(reader: R) -> anyhow::Result<Vec<String>> {
         ));
     }
     Ok(lines)
+}
+
+/// gzip arm: tar.gz gets a member listing, a gzipped non-tar file gets
+/// its decompressed head as text. Falls back to the tar binary only
+/// when the gzip stream itself is unreadable.
+fn gz_preview(path: &Path) -> Preview {
+    match native_gz_preview(path) {
+        Ok(preview) => preview,
+        Err(e) => {
+            log::debug!("native gzip preview failed, trying tar: {e}");
+            cmd_to_preview("tar", tar_list(path))
+        }
+    }
+}
+
+/// Decompress the head, sniff the tar magic (`ustar` at offset 257 -
+/// covers both POSIX `ustar\0` and GNU `ustar  `), then either chain
+/// head+rest into `native_tar_list` or show the decompressed head as
+/// text (bounded 64 KiB read, lossy UTF-8, 128 lines, `\r` scrubbed
+/// like `bat_preview`).
+fn native_gz_preview(path: &Path) -> anyhow::Result<Preview> {
+    let mut decoder = flate2::read::GzDecoder::new(File::open(path)?);
+    // Read up to one tar block; a short read just means a small file.
+    let mut head = [0u8; 512];
+    let mut filled = 0;
+    while filled < head.len() {
+        let n = decoder.read(&mut head[filled..])?;
+        if n == 0 {
+            break;
+        }
+        filled += n;
+    }
+    let rest = io::Cursor::new(head[..filled].to_vec()).chain(decoder);
+    if filled >= 262 && &head[257..262] == b"ustar" {
+        return Ok(Preview::Text {
+            lines: native_tar_list(rest)?,
+        });
+    }
+    // Not a tar: show the decompressed head as text (bounded).
+    let mut buf = Vec::with_capacity(64 * 1024);
+    rest.take(64 * 1024).read_to_end(&mut buf)?;
+    let lines = String::from_utf8_lossy(&buf)
+        .lines()
+        .take(128)
+        .map(|l| l.replace('\r', ""))
+        .collect();
+    Ok(Preview::Text { lines })
 }
 
 /// Native-first x-tar arm; the tar binary stays as the fallback (the
@@ -898,6 +945,84 @@ mod native_backend_tests {
         let bogus = tmp.path().join("corrupt.zip");
         std::fs::write(&bogus, b"definitely not a zip").unwrap();
         match zip_preview(&bogus) {
+            Preview::Text { lines } => assert!(!lines.is_empty()),
+            _ => panic!("expected a text preview"),
+        }
+    }
+
+    /// Builds `dir/archive.tar.gz` via tar::Builder into a GzEncoder.
+    fn make_native_tar_gz(dir: &Path, files: &[String]) -> PathBuf {
+        let archive = dir.join("archive.tar.gz");
+        let encoder = flate2::write::GzEncoder::new(
+            std::fs::File::create(&archive).unwrap(),
+            flate2::Compression::default(),
+        );
+        let mut builder = tar::Builder::new(encoder);
+        for name in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(7);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, name.as_str(), &b"content"[..])
+                .unwrap();
+        }
+        builder.into_inner().unwrap().finish().unwrap();
+        archive
+    }
+
+    #[test]
+    fn native_gz_preview_lists_the_members_of_a_tar_gz() {
+        let tmp = tempfile::tempdir().unwrap();
+        let files: Vec<String> = ["a.txt", "b.txt"].iter().map(|s| s.to_string()).collect();
+        let archive = make_native_tar_gz(tmp.path(), &files);
+        match gz_preview(&archive) {
+            Preview::Text { lines } => {
+                assert!(lines.iter().any(|l| l.contains("a.txt")), "{lines:?}");
+                assert!(lines.iter().any(|l| l.contains("b.txt")), "{lines:?}");
+            }
+            _ => panic!("expected a text preview"),
+        }
+    }
+
+    #[test]
+    fn gz_of_a_non_tar_file_previews_the_decompressed_text() {
+        // The old dispatch sent every application/gzip to `tar --list`,
+        // so a plain foo.txt.gz produced an error instead of its content.
+        let tmp = tempfile::tempdir().unwrap();
+        let gz = tmp.path().join("foo.txt.gz");
+        use std::io::Write;
+        let mut enc = flate2::write::GzEncoder::new(
+            std::fs::File::create(&gz).unwrap(),
+            flate2::Compression::default(),
+        );
+        enc.write_all(b"hello from a gzipped text file\r\nsecond line\n")
+            .unwrap();
+        enc.finish().unwrap();
+        match gz_preview(&gz) {
+            Preview::Text { lines } => {
+                assert!(
+                    lines[0].contains("hello from a gzipped text file"),
+                    "{lines:?}"
+                );
+                assert!(
+                    !lines[0].contains('\r'),
+                    "carriage returns must be scrubbed: {lines:?}"
+                );
+            }
+            _ => panic!("expected a text preview"),
+        }
+    }
+
+    #[test]
+    fn gz_preview_of_garbage_degrades_to_a_text_preview() {
+        // Not gzip at all: the native path errors, the tar-binary
+        // fallback runs (and errors too) - the result must still be
+        // text lines, never a panic or a blank preview.
+        let tmp = tempfile::tempdir().unwrap();
+        let bogus = tmp.path().join("corrupt.tar.gz");
+        std::fs::write(&bogus, vec![0xffu8; 64]).unwrap();
+        match gz_preview(&bogus) {
             Preview::Text { lines } => assert!(!lines.is_empty()),
             _ => panic!("expected a text preview"),
         }
