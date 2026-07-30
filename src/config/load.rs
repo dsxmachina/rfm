@@ -47,7 +47,7 @@ pub fn load(config_dir: &Path) -> LoadedConfig {
                 Ok(tree) => tree,
                 Err(e) => {
                     warnings.push(format!(
-                        "cannot parse {}: {e} — using the built-in defaults",
+                        "cannot parse {}: {e} — ignoring it",
                         config_file.display()
                     ));
                     Value::Table(toml::map::Map::new())
@@ -55,7 +55,7 @@ pub fn load(config_dir: &Path) -> LoadedConfig {
             },
             Err(e) => {
                 warnings.push(format!(
-                    "cannot read {}: {e} — using the built-in defaults",
+                    "cannot read {}: {e} — ignoring it",
                     config_file.display()
                 ));
                 Value::Table(toml::map::Map::new())
@@ -133,8 +133,10 @@ pub fn load(config_dir: &Path) -> LoadedConfig {
 
     // --- 5. Merge over the defaults and deserialize. On a typed error, drop
     // the offending user section (precise path in the warning) and retry from
-    // a fresh defaults tree; bounded by the number of top-level user keys.
-    let max_attempts = user_tree.as_table().map_or(0, |t| t.len()) + 1;
+    // a fresh defaults tree. Every retry strictly shrinks the user tree (a
+    // drop removes a node; an unattributable error breaks out), so the loop
+    // terminates on its own — the node-count cap is purely defensive.
+    let max_attempts = count_nodes(&user_tree) + 1;
     let mut typed = None;
     for _ in 0..max_attempts {
         let mut merged = defaults.clone();
@@ -202,8 +204,19 @@ pub fn load(config_dir: &Path) -> LoadedConfig {
     }
 }
 
+/// Total number of table keys in the tree, at every nesting level (the
+/// defensive retry cap in step 5: one retry drops at most one node).
+fn count_nodes(tree: &Value) -> usize {
+    match tree.as_table() {
+        Some(t) => t.len() + t.values().map(count_nodes).sum::<usize>(),
+        None => 0,
+    }
+}
+
 /// Nearest sibling of `dotted`'s last segment in the SAME defaults section,
 /// within edit distance ≤ 2 (typo suggestions for unknown-key warnings).
+/// Callers pass paths from `unknown_keys`, whose parent chain exists in the
+/// defaults by construction; a missing parent just yields `None`.
 fn suggest(defaults: &Value, dotted: &str) -> Option<String> {
     let mut segments: Vec<&str> = dotted.split('.').collect();
     let last = segments.pop()?;
@@ -301,7 +314,42 @@ mod tests {
         .unwrap(); // colors broken
         let loaded = load(dir.path());
         assert!(loaded.config.general.fancy_icons); // survived
-        assert!(loaded.warnings.iter().any(|w| w.contains("colors"))); // reported
+        assert!(loaded
+            .warnings
+            .iter()
+            .any(|w| w.contains("ignoring your [colors]"))); // drop, not typo, wording
+    }
+
+    // More broken [keys.*] subsections than top-level tables: each drop
+    // consumes a retry while shrinking only a sub-key, so a counted bound
+    // of "top-level keys + 1" exhausts before the salvage completes.
+    #[test]
+    fn multiple_broken_keys_subsections_salvage_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[general]\nfancy_icons = true\n\
+             [keys.movement]\nup = 5\n\
+             [keys.manipulation]\nrename = 5\n\
+             [keys.jump_marks]\nset = 5\n\
+             [keys.general]\nquit = [\"q\"]",
+        )
+        .unwrap();
+        let loaded = load(dir.path());
+        assert!(loaded.config.general.fancy_icons); // salvaged
+        for section in ["keys.movement", "keys.manipulation", "keys.jump_marks"] {
+            assert!(
+                loaded
+                    .warnings
+                    .iter()
+                    .any(|w| w.contains(&format!("ignoring your [{section}]"))),
+                "missing drop warning for [{section}]"
+            );
+        }
+        assert!(!loaded
+            .warnings
+            .iter()
+            .any(|w| w.contains("built-in defaults"))); // no full fallback
     }
 
     #[test]
@@ -310,6 +358,18 @@ mod tests {
         std::fs::write(dir.path().join("config.toml"), "[general]\nuse_trsah = false").unwrap();
         let loaded = load(dir.path());
         assert!(loaded.config.general.use_trash); // typo ≠ applied
-        assert!(loaded.warnings.iter().any(|w| w.contains("use_trsah")));
+        assert!(loaded
+            .warnings
+            .iter()
+            .any(|w| w.contains("use_trsah")
+                && w.contains("did you mean")
+                && w.contains("`use_trash`")));
+    }
+
+    #[test]
+    fn edit_distance_basics() {
+        assert_eq!(edit_distance("use_trash", "use_trash"), 0); // identity
+        assert_eq!(edit_distance("use_trsah", "use_trash"), 2); // transposition
+        assert!(edit_distance("xyz", "use_trash") > 2); // over threshold
     }
 }
