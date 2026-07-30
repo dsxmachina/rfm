@@ -371,6 +371,24 @@ fn test_rename_safe() {
     assert!(file3.exists());
 }
 
+#[test]
+fn xdg_cache_home_prefers_env_then_home() {
+    use std::ffi::OsString;
+    assert_eq!(
+        xdg_cache_home_from(
+            Some(OsString::from("/xdg/cache")),
+            Some(OsString::from("/home/u"))
+        )
+        .unwrap(),
+        PathBuf::from("/xdg/cache")
+    );
+    assert_eq!(
+        xdg_cache_home_from(None, Some(OsString::from("/home/u"))).unwrap(),
+        PathBuf::from("/home/u/.cache")
+    );
+    assert!(xdg_cache_home_from(None, None).is_err());
+}
+
 /// Query the XDG Config Home (usually ~/.config) according to
 /// https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
 pub fn xdg_config_home() -> anyhow::Result<PathBuf> {
@@ -382,6 +400,29 @@ pub fn xdg_config_home() -> anyhow::Result<PathBuf> {
                 "Neither the XDG_CONFIG_HOME nor the HOME environment variable was set."
             ))?,
         },
+    }
+}
+
+/// Query the XDG Cache Home (usually ~/.cache) according to
+/// https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
+// TODO(thumbnail-cache Task 6): remove the allow once the cache consumer lands.
+#[allow(dead_code)]
+pub fn xdg_cache_home() -> anyhow::Result<PathBuf> {
+    xdg_cache_home_from(std::env::var_os("XDG_CACHE_HOME"), std::env::var_os("HOME"))
+}
+
+/// $XDG_CACHE_HOME, else $HOME/.cache — pure variant of [`xdg_cache_home`]
+/// taking the environment as parameters so tests stay free of `set_var`.
+fn xdg_cache_home_from(
+    xdg_cache: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> anyhow::Result<PathBuf> {
+    match (xdg_cache, home) {
+        (Some(cache), _) => Ok(PathBuf::from(cache)),
+        (None, Some(home)) => Ok(PathBuf::from(home).join(".cache")),
+        (None, None) => Err(anyhow!(
+            "Neither the XDG_CACHE_HOME nor the HOME environment variable was set."
+        )),
     }
 }
 
