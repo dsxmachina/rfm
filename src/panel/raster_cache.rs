@@ -157,6 +157,14 @@ pub fn store(src: &Path, mtime_secs: u64, kind: &str, img: &DynamicImage) {
     }
 }
 
+/// Startup eviction for the session cache dir; intended for a
+/// fire-and-forget `spawn_blocking` at startup. No-op when disabled.
+pub fn prune() {
+    if let Some(dir) = dir() {
+        prune_dir(dir, MAX_AGE, MAX_TOTAL_BYTES, std::time::SystemTime::now());
+    }
+}
+
 /// Startup prune: entries untouched for this long are dropped.
 const MAX_AGE: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 3600);
 /// Startup prune: after the age pass, evict oldest-first down to this
