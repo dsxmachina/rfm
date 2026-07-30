@@ -26,6 +26,7 @@ mod input;
 pub mod manager;
 pub mod mode;
 mod preview;
+pub mod raster_cache;
 
 pub use directory::{DirElem, DirPanel};
 pub use preview::{FilePreview, PreviewPanel};
