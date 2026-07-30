@@ -55,6 +55,9 @@ struct Args {
     /// line of JSON. Example: echo state | socat - UNIX-CONNECT:<path>
     #[arg(long)]
     debug_socket: Option<PathBuf>,
+    /// Print the complete annotated default configuration and exit
+    #[arg(long)]
+    dump_config: bool,
     /// Path to open (defaults to ".")
     path: Option<PathBuf>,
 }
@@ -73,6 +76,13 @@ const ERROR_MSG: &str = "\
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
+
+    if args.dump_config {
+        print!("{}", config::default_config_str());
+        return Ok(());
+    }
+
     // Check if we run from a terminal
     let mut stdout = stdout();
     if !stdout.is_terminal() {
@@ -81,8 +91,6 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("Please note: The output of rfm can be neither piped nor redirected.");
         std::process::exit(1);
     }
-
-    let args = Args::parse();
 
     std::panic::set_hook(Box::new(|panic_info| {
         if undo::is_guarding_trash() {
