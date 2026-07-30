@@ -407,12 +407,16 @@ fn ffmpeg_thumbnail(path: impl AsRef<Path>, modified: u64) -> anyhow::Result<Pre
     });
     let name = thumb_cache::entry_name(path.as_ref(), modified);
     let thumbnail = dir.join(&name);
-    if thumbnail.exists() {
+    // Decode-checked hit: a corrupt entry is deleted and regenerated
+    // below instead of being served as a blank preview forever. Unlike
+    // store_in's skip path this deliberately skips the stale-sibling
+    // sweep — hot path; prune/the next store cover it.
+    if let Some(img) = thumb_cache::lookup_in(dir, path.as_ref(), modified) {
         log::debug!("thumbnail cache hit for {}", path.as_ref().display());
-        return Ok(image_preview(
-            thumbnail,
-            mediainfo(path).unwrap_or_default(),
-        ));
+        return Ok(Preview::Image {
+            img: Some(img),
+            info: mediainfo(path.as_ref()).unwrap_or_default(),
+        });
     }
     log::debug!("generating thumbnail {}", thumbnail.display());
     // Atomic store: ffmpeg targets a same-dir temp name that only a
@@ -449,7 +453,10 @@ fn ffmpeg_thumbnail(path: impl AsRef<Path>, modified: u64) -> anyhow::Result<Pre
             tail.into_iter().rev().collect::<Vec<_>>().join(" | ")
         );
     }
-    std::fs::rename(&part, &thumbnail)?;
+    if let Err(e) = std::fs::rename(&part, &thumbnail) {
+        let _ = std::fs::remove_file(&part);
+        return Err(e.into());
+    }
     thumb_cache::cleanup_stale(dir, path.as_ref(), &name);
     Ok(image_preview(
         thumbnail,
@@ -861,6 +868,27 @@ mod external_cmd_tests {
         assert!(dir.join(&name).is_file());
         // Exactly the final entry for this source - no `.part` leftovers.
         assert_eq!(entries_for(&dir, &name), vec![name.clone()]);
+        let _ = std::fs::remove_file(dir.join(name));
+    }
+
+    #[test]
+    fn ffmpeg_thumbnail_heals_a_corrupt_cache_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let video = make_video(tmp.path(), "corrupt.mp4", 15);
+        let dir = temp_dir().join("rfm-thumbnails");
+        std::fs::create_dir_all(&dir).unwrap();
+        let name = thumb_cache::entry_name(&video, 2);
+        // A corrupt persistent entry must not be served as a blank
+        // preview forever: the hit path decode-checks, deletes it and
+        // regenerates.
+        std::fs::write(dir.join(&name), b"not a jpeg").unwrap();
+        let preview = ffmpeg_thumbnail(&video, 2).unwrap();
+        let Preview::Image { img: Some(_), .. } = preview else {
+            panic!("expected a decoded image preview after healing");
+        };
+        // The entry itself was regenerated with decodable content.
+        let healed = image::io::Reader::open(dir.join(&name)).unwrap().decode();
+        assert!(healed.is_ok(), "healed entry must decode");
         let _ = std::fs::remove_file(dir.join(name));
     }
 

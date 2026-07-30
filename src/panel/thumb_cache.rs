@@ -2,8 +2,9 @@
 //!
 //! The filename is the entire metadata:
 //! `<seahash(abs path):016x>-<mtime_secs>.jpg`. Writes are atomic
-//! (same-dir `.part` + rename); every store cleans stale siblings of the
-//! same path-hash. See docs/plans/2026-07-30-thumbnail-cache-design.md.
+//! (same-dir part-file + rename; `.part` here, `.part.jpg` on the ffmpeg
+//! path); every store cleans stale siblings of the same path-hash. See
+//! docs/plans/2026-07-30-thumbnail-cache-design.md.
 use crate::util::xdg_cache_home;
 use image::codecs::jpeg::JpegEncoder;
 use image::DynamicImage;
@@ -86,8 +87,9 @@ fn hash_prefix(path: &Path) -> String {
 }
 
 /// Decode the cache entry for (`src_path`, `mtime_secs`), if present.
-/// A corrupt entry is deleted and treated as a miss.
-fn lookup_in(dir: &Path, src_path: &Path, mtime_secs: u64) -> Option<DynamicImage> {
+/// A corrupt entry is deleted and treated as a miss. Also the video hit
+/// path's decode check (`ffmpeg_thumbnail`), which supplies its own dir.
+pub(crate) fn lookup_in(dir: &Path, src_path: &Path, mtime_secs: u64) -> Option<DynamicImage> {
     let entry = dir.join(entry_name(src_path, mtime_secs));
     match image::io::Reader::open(&entry).ok()?.decode() {
         Ok(img) => Some(img),
@@ -102,7 +104,7 @@ fn lookup_in(dir: &Path, src_path: &Path, mtime_secs: u64) -> Option<DynamicImag
 /// Encode `img` as JPEG into the cache, atomically: write a same-dir
 /// `.part` file, then rename. Never leaves a partial final entry, and
 /// never rewrites an existing one. Cleans stale siblings (old mtimes,
-/// orphaned `.part`s) of the same source path after a successful store —
+/// orphaned part-files) of the same source path after a successful store —
 /// and likewise on the skip path when the entry already exists.
 /// Same-process concurrent stores are safe: both write equivalent bytes
 /// for the same (path, mtime), and any corrupt outcome self-heals via
@@ -142,7 +144,8 @@ fn store_in(
 }
 
 /// Remove every entry sharing `src_path`'s hash prefix except `keep`.
-/// Also catches orphaned `.part` files of that prefix. Errors ignored:
+/// Also catches orphaned part-files (`.part`/`.part.jpg`) of that
+/// prefix — the prefix match covers both. Errors ignored:
 /// a racing instance may have removed the file already. Called from
 /// `store_in` and directly by the ffmpeg path (`ffmpeg_thumbnail`).
 pub(crate) fn cleanup_stale(dir: &Path, src_path: &Path, keep: &str) {
@@ -160,8 +163,8 @@ pub(crate) fn cleanup_stale(dir: &Path, src_path: &Path, keep: &str) {
 }
 
 /// Delete entries older than `max_age`, then oldest-first until the
-/// directory is under `max_total_bytes`. Also reaps orphaned `.part`
-/// files (they age out like everything else). Races with other
+/// directory is under `max_total_bytes`. Also reaps orphaned part-files
+/// (`.part`/`.part.jpg` age out like everything else). Races with other
 /// instances are benign — all errors are ignored.
 fn prune_dir(dir: &Path, max_age: Duration, max_total_bytes: u64, now: SystemTime) {
     let Ok(entries) = std::fs::read_dir(dir) else {
