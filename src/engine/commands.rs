@@ -5,7 +5,7 @@ use std::{
 };
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use log::trace;
+use log::{trace, warn};
 use patricia_tree::StringPatriciaMap;
 use serde::Deserialize;
 
@@ -55,15 +55,26 @@ fn route(b: &str) -> Option<Route> {
 }
 
 /// A default binding that was skipped because its exact pattern was already
-/// claimed by the user (a user binding or a user-defined command).
+/// claimed (by a user binding, a user-defined command, or an earlier default).
 #[derive(Debug)]
 pub struct DroppedDefault {
     /// Display of the default command that lost.
     pub command: String,
     /// The colliding binding pattern.
     pub binding: String,
-    /// Display of the user command that claimed it.
+    /// Display of the command that claimed it.
     pub kept: String,
+    /// True when the claiming binding came from the user (a binding or a
+    /// user-defined command), false when an earlier DEFAULT claimed it.
+    pub from_user: bool,
+}
+
+/// Snapshot of the key space claimed by pass 1 (user bindings + user
+/// commands), taken before defaults are inserted — lets `insert_default`
+/// tell a user conflict from a default-vs-default one.
+struct UserClaims {
+    events: std::collections::HashSet<KeyEvent>,
+    patterns: std::collections::HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -551,12 +562,20 @@ impl CommandParser {
         }
         parser.add_user_commands(user_commands);
 
+        // Everything claimed so far came from the user (the arrow-key
+        // built-ins from `new()` are unreachable via `route`, so they can
+        // never collide with a default binding string).
+        let user_claims = UserClaims {
+            events: parser.mod_commands.keys().copied().collect(),
+            patterns: parser.key_commands.keys().collect(),
+        };
+
         // --- Pass 2: defaults for everything the user did not mention. An
         // exact pattern collision with a claimed key drops the default.
         for (user_field, default_field, cmd) in &table {
             if user_field.is_none() {
                 for b in default_field.iter().flatten() {
-                    parser.insert_default(b, cmd, &mut dropped);
+                    parser.insert_default(b, cmd, &user_claims, &mut dropped);
                 }
             }
         }
@@ -565,7 +584,12 @@ impl CommandParser {
         // chord does not take the rest of the defaults down with it.
         if user.movement.jump_to.is_none() {
             for (keys, path) in defaults.movement.jump_to.iter().flatten() {
-                parser.insert_default(keys, &Command::Move(Move::JumpTo(path.into())), &mut dropped);
+                parser.insert_default(
+                    keys,
+                    &Command::Move(Move::JumpTo(path.into())),
+                    &user_claims,
+                    &mut dropped,
+                );
             }
         }
 
@@ -667,7 +691,9 @@ impl CommandParser {
                 Some(Route::Pattern(pattern)) => {
                     self.key_commands.insert(pattern, cmd.clone());
                 }
-                None => {}
+                // route() only rejects non-empty strings (a bare modifier
+                // prefix like "ctrl-"); silence would hide the user's typo.
+                None => warn!("ignoring malformed keybinding '{b}'"),
             }
         }
     }
@@ -676,28 +702,35 @@ impl CommandParser {
     /// claimed (by a user binding, a user command, or an earlier default);
     /// a claimed pattern is reported in `dropped` instead. Uses the same
     /// [`route`] as [`Self::insert`], so the two cannot diverge.
-    fn insert_default(&mut self, binding: &str, cmd: &Command, dropped: &mut Vec<DroppedDefault>) {
-        let conflict = |kept: &Command| DroppedDefault {
+    fn insert_default(
+        &mut self,
+        binding: &str,
+        cmd: &Command,
+        user_claims: &UserClaims,
+        dropped: &mut Vec<DroppedDefault>,
+    ) {
+        let conflict = |kept: &Command, from_user: bool| DroppedDefault {
             command: cmd.to_string(),
             binding: binding.to_string(),
             kept: kept.to_string(),
+            from_user,
         };
         match route(binding) {
             Some(Route::Event(event)) => {
                 if let Some(kept) = self.mod_commands.get(&event) {
-                    dropped.push(conflict(kept));
+                    dropped.push(conflict(kept, user_claims.events.contains(&event)));
                 } else {
                     self.mod_commands.insert(event, cmd.clone());
                 }
             }
             Some(Route::Pattern(pattern)) => {
                 if let Some(kept) = self.key_commands.get(&pattern) {
-                    dropped.push(conflict(kept));
+                    dropped.push(conflict(kept, user_claims.patterns.contains(&pattern)));
                 } else {
                     self.key_commands.insert(pattern, cmd.clone());
                 }
             }
-            None => {}
+            None => warn!("ignoring malformed keybinding '{binding}'"),
         }
     }
 
@@ -1045,20 +1078,6 @@ focus_tab_1 = ["1"]
         assert!(matches!(p.add_event(key('n')), Command::NewTab));
     }
 
-    #[test]
-    fn key_config_parses_from_empty_and_partial_toml() {
-        // empty: every field None
-        let empty: KeyConfig = toml::from_str("").unwrap();
-        assert!(empty.movement.up.is_none());
-        assert!(empty.manipulation.undo.is_none());
-
-        // partial: only what is written is Some; [] stays Some(empty)
-        let partial: KeyConfig =
-            toml::from_str("[manipulation]\nundo = []\n[movement]\nup = [\"k\"]").unwrap();
-        assert_eq!(partial.movement.up, Some(vec!["k".into()]));
-        assert_eq!(partial.manipulation.undo, Some(vec![]));
-        assert!(partial.movement.down.is_none());
-    }
 }
 
 #[cfg(test)]
@@ -1096,7 +1115,7 @@ mod builder_tests {
         assert!(matches!(press(&mut p, 'q'), Command::Quit)); // user wins
         assert!(dropped
             .iter()
-            .any(|d| d.binding == "q" && d.command.contains("close")));
+            .any(|d| d.binding == "q" && d.command.contains("close") && d.from_user));
         // the non-conflicting half of the default survives:
         assert!(p
             .mod_commands
@@ -1120,7 +1139,22 @@ mod builder_tests {
         );
         let (mut p, dropped) = CommandParser::build(&defaults(), &KeyConfig::default(), &cmds);
         assert!(matches!(press(&mut p, 'u'), Command::UserCommand { .. }));
-        assert!(dropped.iter().any(|d| d.binding == "u"));
+        assert!(dropped.iter().any(|d| d.binding == "u" && d.from_user));
+    }
+
+    #[test]
+    fn key_config_parses_from_empty_and_partial_toml() {
+        // empty: every field None
+        let empty: KeyConfig = toml::from_str("").unwrap();
+        assert!(empty.movement.up.is_none());
+        assert!(empty.manipulation.undo.is_none());
+
+        // partial: only what is written is Some; [] stays Some(empty)
+        let partial: KeyConfig =
+            toml::from_str("[manipulation]\nundo = []\n[movement]\nup = [\"k\"]").unwrap();
+        assert_eq!(partial.movement.up, Some(vec!["k".into()]));
+        assert_eq!(partial.manipulation.undo, Some(vec![]));
+        assert!(partial.movement.down.is_none());
     }
 
     #[test]

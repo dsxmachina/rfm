@@ -1,3 +1,4 @@
+pub mod load;
 pub mod merge;
 
 use serde::Deserialize;
