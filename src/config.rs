@@ -27,6 +27,10 @@ pub struct GeneralConfig {
     /// deleting permanently. Defaults to `true`.
     #[serde(default = "default_true")]
     pub use_trash: bool,
+    /// Persist image/video preview thumbnails in $XDG_CACHE_HOME/rfm so
+    /// they survive restarts. Defaults to `true`.
+    #[serde(default = "default_true")]
+    pub preview_cache: bool,
     /// Rate limit interval for preview updates in milliseconds
     #[serde(default = "default_rate_limit_interval")]
     pub rate_limit_interval_ms: u64,

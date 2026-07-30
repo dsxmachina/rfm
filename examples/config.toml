@@ -20,6 +20,12 @@
 #
 use_trash = true
 
+# Persist image/video preview thumbnails in $XDG_CACHE_HOME/rfm (usually
+# ~/.cache/rfm) so they survive restarts. Set to false to keep previews
+# in-memory only (no thumbnails of your files are written to disk).
+# "rm -rf ~/.cache/rfm" is always safe.
+# preview_cache = true
+
 # Use Nerd Font icons for file types.
 #
 # When enabled, rfm will use icons from the Nerd Fonts project (like yazi does).

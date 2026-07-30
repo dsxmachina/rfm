@@ -167,6 +167,7 @@ async fn main() -> anyhow::Result<()> {
     // Weather or not we activate the trash (default on; freedesktop trash is
     // cheap per-device and deletes are undoable)
     let mut use_trash = true;
+    let mut preview_cache = true;
     let mut rate_limit_interval_ms = DEFAULT_RATE_LIMIT_INTERVAL_MS;
     let mut style_config = None;
     let mut fancy_icons = false;
@@ -178,6 +179,7 @@ async fn main() -> anyhow::Result<()> {
                 info!("Using general config: {}", general_config_file.display());
                 colors_from_config(config.colors)?;
                 use_trash = config.general.use_trash;
+                preview_cache = config.general.preview_cache;
                 rate_limit_interval_ms = config.general.rate_limit_interval_ms;
                 fancy_icons = config.general.fancy_icons;
                 info!("Using rate-limit of {rate_limit_interval_ms}ms");
@@ -199,6 +201,11 @@ async fn main() -> anyhow::Result<()> {
         info!("Using default color config");
         colors_from_default();
     }
+
+    // Persistent thumbnail cache: resolve/create the dir once, then prune
+    // old entries off the hot path.
+    panel::thumb_cache::init(preview_cache);
+    tokio::task::spawn_blocking(panel::thumb_cache::prune);
 
     // --- Keyboard configuration
     let key_config_file = config_dir.join("keys.toml");

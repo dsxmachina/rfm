@@ -4,18 +4,75 @@
 //! `<seahash(abs path):016x>-<mtime_secs>.jpg`. Writes are atomic
 //! (same-dir `.part` + rename); every store cleans stale siblings of the
 //! same path-hash. See docs/plans/2026-07-30-thumbnail-cache-design.md.
+use crate::util::xdg_cache_home;
 use image::codecs::jpeg::JpegEncoder;
 use image::DynamicImage;
+use once_cell::sync::OnceCell;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 const JPEG_QUALITY: u8 = 85;
-// TODO(thumbnail-cache Task 6): consumed by the public `prune()` wrapper.
-#[allow(dead_code)]
 const MAX_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
-#[allow(dead_code)]
 const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+
+/// `Some(dir)` when the persistent cache is enabled and usable,
+/// `None` when disabled by config or unavailable. Set once at startup.
+static THUMB_CACHE_DIR: OnceCell<Option<PathBuf>> = OnceCell::new();
+
+/// Resolve and create the cache dir. Failures disable persistence for
+/// the session (warn once) — never fatal.
+pub fn init(enabled: bool) {
+    let dir = if enabled { resolve_dir() } else { None };
+    let _ = THUMB_CACHE_DIR.set(dir);
+}
+
+fn resolve_dir() -> Option<PathBuf> {
+    let dir = match xdg_cache_home() {
+        Ok(cache) => cache.join("rfm").join("thumbnails"),
+        Err(e) => {
+            log::warn!("thumbnail cache disabled: {e}");
+            return None;
+        }
+    };
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        log::warn!(
+            "thumbnail cache disabled: cannot create {}: {e}",
+            dir.display()
+        );
+        return None;
+    }
+    Some(dir)
+}
+
+/// The active cache directory, if persistence is enabled.
+pub fn dir() -> Option<&'static Path> {
+    THUMB_CACHE_DIR.get().and_then(|d| d.as_deref())
+}
+
+// TODO(thumbnail-cache Task 7): called from the preview path.
+#[allow(dead_code)]
+pub fn lookup(src_path: &Path, mtime_secs: u64) -> Option<DynamicImage> {
+    lookup_in(dir()?, src_path, mtime_secs)
+}
+
+/// Best-effort: a failed store only costs a future regeneration.
+// TODO(thumbnail-cache Task 7): called from the preview path.
+#[allow(dead_code)]
+pub fn store(src_path: &Path, mtime_secs: u64, img: &DynamicImage) {
+    if let Some(dir) = dir() {
+        if let Err(e) = store_in(dir, src_path, mtime_secs, img) {
+            log::debug!("thumbnail store failed for {}: {e}", src_path.display());
+        }
+    }
+}
+
+/// Run from `spawn_blocking` at startup; off the hot path.
+pub fn prune() {
+    if let Some(dir) = dir() {
+        prune_dir(dir, MAX_AGE, MAX_TOTAL_BYTES, SystemTime::now());
+    }
+}
 
 /// Cache filename for `path` at `mtime_secs`. Fixed-width hex hash +
 /// `-` separator keeps entries for one source file prefix-scannable.
@@ -32,8 +89,6 @@ fn hash_prefix(path: &Path) -> String {
 
 /// Decode the cache entry for (`src_path`, `mtime_secs`), if present.
 /// A corrupt entry is deleted and treated as a miss.
-// TODO(thumbnail-cache Task 6): consumed by the public cache-dir wrappers.
-#[allow(dead_code)]
 fn lookup_in(dir: &Path, src_path: &Path, mtime_secs: u64) -> Option<DynamicImage> {
     let entry = dir.join(entry_name(src_path, mtime_secs));
     match image::io::Reader::open(&entry).ok()?.decode() {
@@ -49,14 +104,13 @@ fn lookup_in(dir: &Path, src_path: &Path, mtime_secs: u64) -> Option<DynamicImag
 /// Encode `img` as JPEG into the cache, atomically: write a same-dir
 /// `.part` file, then rename. Never leaves a partial final entry, and
 /// never rewrites an existing one. Cleans stale siblings (old mtimes,
-/// orphaned `.part`s) of the same source path after a successful store.
+/// orphaned `.part`s) of the same source path after a successful store —
+/// and likewise on the skip path when the entry already exists.
 /// Same-process concurrent stores are safe: both write equivalent bytes
 /// for the same (path, mtime), and any corrupt outcome self-heals via
 /// `lookup_in`'s delete-on-decode-failure. Cross-instance races cost at
 /// most a regeneration: one instance's entry or in-flight `.part` may be
 /// deleted by another's cleanup, and the next miss simply re-stores.
-// TODO(thumbnail-cache Task 6): consumed by the public cache-dir wrappers.
-#[allow(dead_code)]
 fn store_in(
     dir: &Path,
     src_path: &Path,
@@ -111,8 +165,6 @@ pub(crate) fn cleanup_stale(dir: &Path, src_path: &Path, keep: &str) {
 /// directory is under `max_total_bytes`. Also reaps orphaned `.part`
 /// files (they age out like everything else). Races with other
 /// instances are benign — all errors are ignored.
-// TODO(thumbnail-cache Task 6): consumed by the public `prune()` wrapper.
-#[allow(dead_code)]
 fn prune_dir(dir: &Path, max_age: Duration, max_total_bytes: u64, now: SystemTime) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;

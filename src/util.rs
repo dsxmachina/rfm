@@ -405,8 +405,6 @@ pub fn xdg_config_home() -> anyhow::Result<PathBuf> {
 
 /// Query the XDG Cache Home (usually ~/.cache) according to
 /// https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
-// TODO(thumbnail-cache Task 6): remove the allow once the cache consumer lands.
-#[allow(dead_code)]
 pub fn xdg_cache_home() -> anyhow::Result<PathBuf> {
     xdg_cache_home_from(std::env::var_os("XDG_CACHE_HOME"), std::env::var_os("HOME"))
 }
