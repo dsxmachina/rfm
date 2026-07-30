@@ -58,7 +58,7 @@ const JPEG_QUALITY: u8 = 85;
 /// Look a raster up in `dir`. Open failure (no entry) is a plain miss; a
 /// successful open with a failed decode is a corrupt entry — delete it and
 /// miss (design §error handling). Never deletes on mere absence.
-fn lookup_in(dir: &Path, src: &Path, mtime_secs: u64, kind: &str) -> Option<DynamicImage> {
+pub(crate) fn lookup_in(dir: &Path, src: &Path, mtime_secs: u64, kind: &str) -> Option<DynamicImage> {
     let entry = dir.join(entry_name(src, mtime_secs, kind));
     match image::io::Reader::open(&entry).ok()?.decode() {
         Ok(img) => Some(img),
@@ -73,7 +73,7 @@ fn lookup_in(dir: &Path, src: &Path, mtime_secs: u64, kind: &str) -> Option<Dyna
 /// Store a raster in `dir` as JPEG (quality 85), atomically: write to a
 /// same-dir `.part` temp name, then rename to the final name. The final
 /// name never exists with partial content.
-fn store_in(
+pub(crate) fn store_in(
     dir: &Path,
     src: &Path,
     mtime_secs: u64,

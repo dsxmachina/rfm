@@ -14,7 +14,7 @@ use crate::{
     util::{truncate_with_color_codes, ExactWidth},
 };
 
-use super::{BasePanel, DirPanel, Draw, PanelContent};
+use super::{raster_cache, BasePanel, DirPanel, Draw, PanelContent};
 use crossterm::{
     cursor, queue,
     style::{self, Colors, Print, ResetColor, SetColors},
@@ -223,7 +223,7 @@ impl FilePreview {
         let mime = get_mime_type(&path);
 
         let preview = match (mime.type_().as_str(), mime.subtype().as_str()) {
-            ("image", _) => native_image_preview(&path, &mime),
+            ("image", _) => cached_image_preview(&path, modified, &mime),
             ("audio", _) => audio_preview(&path),
             ("video", _) => video_preview(&path, modified),
             ("application", "x-x509-ca-cert") => cert_preview(&path),
@@ -296,10 +296,20 @@ impl FilePreview {
     }
 }
 
-/// Info footer for an image preview, built from the decoded image and
-/// file metadata instead of a mediainfo shell-out.
+/// Seconds since the epoch for a file mtime — the cache-key clock.
+fn mtime_secs(modified: SystemTime) -> u64 {
+    modified
+        .duration_since(UNIX_EPOCH)
+        .map(|t| t.as_secs())
+        .unwrap_or_default()
+}
+
+/// Info footer for an image preview, built from the decode and file
+/// metadata instead of a mediainfo shell-out.
 fn image_info_lines(
-    img: &DynamicImage,
+    width: u32,
+    height: u32,
+    color: image::ColorType,
     byte_size: u64,
     modified: SystemTime,
     subtype: &str,
@@ -307,7 +317,7 @@ fn image_info_lines(
     use time::OffsetDateTime;
     let t = OffsetDateTime::from(modified);
     vec![
-        format!("{} × {}  {:?}", img.width(), img.height(), img.color()),
+        format!("{width} × {height}  {color:?}"),
         format!("{subtype} · {}", crate::util::file_size_str(byte_size)),
         format!(
             "{}-{:02}-{:02} {:02}:{:02}:{:02}",
@@ -335,7 +345,14 @@ fn native_image_preview(path: &Path, mime: &mime::Mime) -> Preview {
         .and_then(|r| r.decode().ok())
     {
         Some(img) => {
-            let info = image_info_lines(&img, byte_size, modified, mime.subtype().as_str());
+            let info = image_info_lines(
+                img.width(),
+                img.height(),
+                img.color(),
+                byte_size,
+                modified,
+                mime.subtype().as_str(),
+            );
             Preview::Image {
                 img: Some(img.thumbnail(960, 540)),
                 info,
@@ -352,6 +369,61 @@ fn native_image_preview(path: &Path, mime: &mime::Mime) -> Preview {
             cmd_to_preview("mediainfo", mediainfo(path))
         }
     }
+}
+
+/// Image arm via the persistent raster cache: a hit decodes only the
+/// small cached JPEG; a miss decodes the original via
+/// `native_image_preview` and stores the thumbnail for next time.
+fn cached_image_preview(path: &Path, modified: SystemTime, mime: &mime::Mime) -> Preview {
+    cached_image_preview_in(raster_cache::dir(), path, modified, mime)
+}
+
+/// Dir-parameterized core of [`cached_image_preview`]; `None` (cache
+/// disabled) degrades to exactly `native_image_preview`.
+fn cached_image_preview_in(
+    cache_dir: Option<&Path>,
+    path: &Path,
+    modified: SystemTime,
+    mime: &mime::Mime,
+) -> Preview {
+    let mtime = mtime_secs(modified);
+    if let Some(dir) = cache_dir {
+        if let Some(img) = raster_cache::lookup_in(dir, path, mtime, raster_cache::KIND_IMAGE) {
+            log::debug!("raster cache hit for {}", path.display());
+            let info = cached_image_info(path, &img, mime.subtype().as_str());
+            return Preview::Image {
+                img: Some(img),
+                info,
+            };
+        }
+    }
+    let preview = native_image_preview(path, mime);
+    if let Some(dir) = cache_dir {
+        if let Preview::Image { img: Some(img), .. } = &preview {
+            if let Err(e) = raster_cache::store_in(dir, path, mtime, raster_cache::KIND_IMAGE, img)
+            {
+                log::debug!("raster cache store failed for {}: {e}", path.display());
+            }
+        }
+    }
+    preview
+}
+
+/// Info lines for a cache hit, without the full decode: original
+/// dimensions via a header-only read (falling back to the cached
+/// thumbnail's), color from the cached thumbnail (always Rgb8 after the
+/// JPEG round-trip — accepted display drift), size/mtime from metadata.
+fn cached_image_info(path: &Path, cached: &DynamicImage, subtype: &str) -> Vec<String> {
+    let (width, height) = image::io::Reader::open(path)
+        .ok()
+        .and_then(|r| r.into_dimensions().ok())
+        .unwrap_or_else(|| (cached.width(), cached.height()));
+    let meta = path.metadata().ok();
+    let byte_size = meta.as_ref().map(|m| m.len()).unwrap_or_default();
+    let modified = meta
+        .and_then(|m| m.modified().ok())
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    image_info_lines(width, height, cached.color(), byte_size, modified, subtype)
 }
 
 fn image_preview(path: impl AsRef<Path>, info: Vec<String>) -> Preview {
@@ -393,10 +465,7 @@ fn video_preview(path: impl AsRef<Path>, modified: SystemTime) -> Preview {
                 .and_then(|o| o.stdout.lines().take(128).collect()),
         );
     }
-    let modified = modified
-        .duration_since(UNIX_EPOCH)
-        .map(|t| t.as_secs())
-        .unwrap_or_default();
+    let modified = mtime_secs(modified);
 
     // Use ffmpeg
     match ffmpeg_thumbnail(&path, modified) {
@@ -1056,8 +1125,14 @@ mod native_backend_tests {
 
     #[test]
     fn image_info_lines_contain_dimensions_format_and_size() {
-        let img = DynamicImage::ImageRgb8(image::RgbImage::new(64, 48));
-        let lines = image_info_lines(&img, 1234, SystemTime::UNIX_EPOCH, "png");
+        let lines = image_info_lines(
+            64,
+            48,
+            image::ColorType::Rgb8,
+            1234,
+            SystemTime::UNIX_EPOCH,
+            "png",
+        );
         let joined = lines.join("\n");
         assert!(joined.contains("64 × 48"), "{joined}");
         assert!(joined.contains("Rgb8"), "{joined}");
@@ -1093,6 +1168,83 @@ mod native_backend_tests {
             Preview::Text { lines } => assert!(!lines.is_empty(), "{lines:?}"),
             _ => panic!("expected the mediainfo text fallback"),
         }
+    }
+
+    #[test]
+    fn cached_image_preview_stores_on_miss_and_hits_without_full_decode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("tiny.png");
+        image::RgbImage::new(8, 8).save(&path).unwrap();
+        let mime: mime::Mime = "image/png".parse().unwrap();
+        let modified = path.metadata().unwrap().modified().unwrap();
+
+        // miss: decode + store
+        match cached_image_preview_in(Some(cache.path()), &path, modified, &mime) {
+            Preview::Image { img, .. } => assert!(img.is_some()),
+            _ => panic!("expected an image preview"),
+        }
+        let entry = cache.path().join(raster_cache::entry_name(
+            &path,
+            mtime_secs(modified),
+            raster_cache::KIND_IMAGE,
+        ));
+        assert!(entry.is_file(), "miss must store the thumbnail");
+
+        // Delete the SOURCE: a second call with the same mtime must still
+        // yield pixels — proof they came from the cache, not a re-decode.
+        std::fs::remove_file(&path).unwrap();
+        match cached_image_preview_in(Some(cache.path()), &path, modified, &mime) {
+            Preview::Image { img, .. } => assert!(img.is_some(), "hit must serve cached pixels"),
+            _ => panic!("expected an image preview from the cache"),
+        }
+    }
+
+    #[test]
+    fn cached_image_preview_hit_reports_original_dimensions() {
+        // Larger than the 960×540 thumbnail bound: the hit's info lines
+        // must show the ORIGINAL dimensions (header read), not the
+        // thumbnail's.
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("big.png");
+        image::RgbImage::new(1200, 800).save(&path).unwrap();
+        let mime: mime::Mime = "image/png".parse().unwrap();
+        let modified = path.metadata().unwrap().modified().unwrap();
+
+        cached_image_preview_in(Some(cache.path()), &path, modified, &mime);
+        match cached_image_preview_in(Some(cache.path()), &path, modified, &mime) {
+            Preview::Image { img, info } => {
+                let img = img.unwrap();
+                assert!(img.width() < 1200, "cache holds the thumbnail");
+                assert!(
+                    info.iter().any(|l| l.contains("1200 × 800")),
+                    "hit must report original dimensions: {info:?}"
+                );
+            }
+            _ => panic!("expected an image preview"),
+        }
+    }
+
+    #[test]
+    fn cached_image_preview_of_an_undecodable_image_falls_back_to_text() {
+        // The mediainfo fallback survives the caching front-end, and a
+        // failed decode never writes a cache entry.
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("photo.heic");
+        std::fs::write(&path, b"not an image").unwrap();
+        let mime: mime::Mime = "image/heic".parse().unwrap();
+        let modified = path.metadata().unwrap().modified().unwrap();
+        match cached_image_preview_in(Some(cache.path()), &path, modified, &mime) {
+            Preview::Text { lines } => assert!(!lines.is_empty(), "{lines:?}"),
+            _ => panic!("expected the mediainfo text fallback"),
+        }
+        assert_eq!(
+            std::fs::read_dir(cache.path()).unwrap().count(),
+            0,
+            "no cache entry for an undecodable image"
+        );
     }
 
     /// Builds `dir/archive.zip` containing `files` via the zip crate.
