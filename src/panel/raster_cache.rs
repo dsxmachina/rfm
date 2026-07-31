@@ -90,7 +90,7 @@ pub(crate) fn lookup_in(
     kind: &str,
 ) -> Option<DynamicImage> {
     let entry = dir.join(entry_name(src, mtime_secs, kind));
-    match image::io::Reader::open(&entry).ok()?.decode() {
+    match image::ImageReader::open(&entry).ok()?.decode() {
         Ok(img) => Some(img),
         Err(e) => {
             log::debug!("removing corrupt cache entry {}: {e}", entry.display());
@@ -118,7 +118,7 @@ pub(crate) fn store_in(
     let part = dir.join(part_name(&name));
     let write = || -> anyhow::Result<()> {
         let mut out = BufWriter::new(File::create(&part)?);
-        // to_rgb8() is load-bearing: JPEG in image 0.24 rejects RGBA input.
+        // to_rgb8() is load-bearing: JPEG in image 0.24/0.25 rejects RGBA input.
         JpegEncoder::new_with_quality(&mut out, JPEG_QUALITY).encode_image(&img.to_rgb8())?;
         out.flush()?;
         Ok(())

@@ -538,7 +538,7 @@ fn native_image_preview(path: &Path, mime: &mime::Mime) -> Preview {
     let modified = meta
         .and_then(|m| m.modified().ok())
         .unwrap_or(SystemTime::UNIX_EPOCH);
-    match image::io::Reader::open(path)
+    match image::ImageReader::open(path)
         .ok()
         .and_then(|r| r.decode().ok())
     {
@@ -621,7 +621,7 @@ fn cached_image_preview_in(
 /// thumbnail's), color from the cached thumbnail (always Rgb8 after the
 /// JPEG round-trip — accepted display drift), size/mtime from metadata.
 fn cached_image_info(path: &Path, cached: &DynamicImage, subtype: &str) -> Vec<String> {
-    let (width, height) = image::io::Reader::open(path)
+    let (width, height) = image::ImageReader::open(path)
         .ok()
         .and_then(|r| r.into_dimensions().ok())
         .unwrap_or_else(|| (cached.width(), cached.height()));
@@ -2289,7 +2289,7 @@ fn pdf_render_first_page_in(
             tail.into_iter().rev().collect::<Vec<_>>().join(" | ")
         );
     }
-    let decoded = image::io::Reader::open(&part)
+    let decoded = image::ImageReader::open(&part)
         .map_err(anyhow::Error::from)
         .and_then(|r| Ok(r.with_guessed_format()?.decode()?));
     let _ = std::fs::remove_file(&part);

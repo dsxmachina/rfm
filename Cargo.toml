@@ -26,7 +26,17 @@ seahash = "4.1.0"
 flate2 = "1"
 fs_extra = "1.3.0"
 futures = "0.3.31"
-image = "0.24.9"
+# 0.25.8+ need cargo >=1.85 (moxcms/ravif/tiff edition2024); 0.25.5 is the
+# floor for jxl-oxide's `image` integration. default-features off drops
+# `rayon`, which must stay OFF: image 0.25's rayon feature references
+# `ravif?/threading`, and on cargo 1.83 that weak-dep mention alone pulls
+# an edition2024 avif-serialize into resolution (manifest parse failure).
+# Feature list = default-formats minus avif (decode is dav1d, a system C
+# library; the avif feature itself is encode-only anyway).
+image = { version = ">=0.25.5, <0.25.7", default-features = false, features = [
+    "jpeg", "png", "gif", "webp", "bmp", "ico", "tiff", "pnm", "tga",
+    "qoi", "hdr", "exr", "ff", "dds",
+] }
 # content sniffing (magic numbers) for get_mime_type; its cfb dep pulls
 # uuid, whose newest versions need rustc >=1.85 - pinned to 1.12.1 in
 # Cargo.lock.
