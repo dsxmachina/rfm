@@ -20,6 +20,8 @@ use parking_lot::Mutex;
 
 use crate::config::ImageProtocolChoice;
 
+mod sixel;
+
 /// Wall-clock budget for the whole startup probe (D1).
 const PROBE_BUDGET: Duration = Duration::from_millis(250);
 
@@ -374,6 +376,51 @@ pub fn emit_kitty(
     *LIVE.lock() = Some(LiveImage {
         key: key.clone(),
         id: Some(id),
+        region,
+    });
+    *CLAIMED.lock() = Some(key);
+    Ok(Emitted::Transmitted)
+}
+
+/// Transmit `rgb` as a sixel raster, gated on `key` exactly like
+/// [`emit_kitty`]:
+/// - live key equals `key` → write nothing, claim the frame, `Gated`;
+/// - otherwise erase the previous placement, blank the target region,
+///   place the cursor at the origin and write the encoded raster.
+///
+/// Sixel pixels are ordinary cell content: the placement is recorded
+/// id-less, and every erase (predecessor, [`end_frame`] reconcile,
+/// [`erase_live`]) is a space-overwrite of the recorded cell region. The
+/// caller pre-sizes the raster to the pane pixel box and the encoder
+/// truncates to whole 6-row bands, so the raster cannot overflow into
+/// neighbouring panels (D7).
+#[allow(dead_code)] // draw-path integration (step 6)
+pub fn emit_sixel(
+    w: &mut impl Write,
+    key: EmitKey,
+    rgb: &image::RgbImage,
+    cols: u16,
+    rows: u16,
+) -> io::Result<Emitted> {
+    if LIVE.lock().as_ref().map_or(false, |l| l.key == key) {
+        *CLAIMED.lock() = Some(key);
+        log::trace!("graphics: gated (unchanged)");
+        return Ok(Emitted::Gated);
+    }
+    if let Some(old) = LIVE.lock().take() {
+        delete_placement(w, &old)?;
+    }
+    let region = (
+        key.origin_cell.0..key.origin_cell.0.saturating_add(cols),
+        key.origin_cell.1..key.origin_cell.1.saturating_add(rows),
+    );
+    blank_region(w, &region)?;
+    move_to(w, key.origin_cell)?;
+    w.write_all(&sixel::sixel_encode(rgb))?;
+    log::trace!("graphics: sixel emit {}x{}", rgb.width(), rgb.height());
+    *LIVE.lock() = Some(LiveImage {
+        key: key.clone(),
+        id: None,
         region,
     });
     *CLAIMED.lock() = Some(key);
@@ -1411,6 +1458,96 @@ mod tests {
         assert!(!frame_allows_image());
         begin_frame(true);
         assert!(frame_allows_image());
+    }
+
+    // --- sixel emitter (step 5)
+
+    #[test]
+    fn emit_sixel_gates_and_erases_like_kitty() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(4, 6, Rgb([255, 0, 0]));
+        let key = test_key("s.png", 32, 16);
+
+        // First emit transmits: cursor to the origin (10,2) -> CSI 3;11H,
+        // then the DCS raster, and the live state records an id-less
+        // placement (sixel has no delete command).
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_sixel(&mut sink, key.clone(), &rgb, 2, 1).unwrap(),
+            Emitted::Transmitted
+        );
+        let s = String::from_utf8_lossy(&sink);
+        assert!(s.contains("\x1b[3;11H\x1bP0;1;0q"), "origin + DCS: {s:?}");
+        assert!(s.ends_with("\x1b\\"), "unterminated DCS: {s:?}");
+        let (live_key, id) = live_snapshot_for_test().expect("live after emit");
+        assert_eq!(live_key, key);
+        assert_eq!(id, None, "sixel placements are id-less");
+
+        // Unrelated repaint: same key -> zero bytes.
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_sixel(&mut sink, key.clone(), &rgb, 2, 1).unwrap(),
+            Emitted::Gated
+        );
+        assert!(sink.is_empty(), "gated emit wrote bytes: {sink:?}");
+
+        // Erase discipline: no kitty delete-by-id — the recorded 2x1 cell
+        // region at (10,2) is overwritten with default-colored spaces.
+        let mut sink = Vec::new();
+        erase_live(&mut sink).unwrap();
+        let s = String::from_utf8_lossy(&sink);
+        assert!(!s.contains("\x1b_G"), "no APC for sixel erase: {s:?}");
+        assert!(s.contains("\x1b[3;11H  "), "space overwrite missing: {s:?}");
+        assert!(live_snapshot_for_test().is_none(), "live state must clear");
+    }
+
+    #[test]
+    fn emit_sixel_end_frame_reconciles_like_kitty() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(4, 6, Rgb([255, 0, 0]));
+        let key = test_key("t.png", 32, 16);
+        let mut sink = Vec::new();
+        emit_sixel(&mut sink, key.clone(), &rgb, 2, 1).unwrap();
+
+        // A gated emit claims the frame: end_frame keeps the placement.
+        begin_frame(true);
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_sixel(&mut sink, key, &rgb, 2, 1).unwrap(),
+            Emitted::Gated
+        );
+        let mut sink = Vec::new();
+        end_frame(&mut sink).unwrap();
+        assert!(sink.is_empty(), "claimed sixel must survive end_frame");
+        assert!(live_snapshot_for_test().is_some());
+
+        // Unclaimed frame (selection moved away): the stale sixel cells are
+        // blanked and the live state cleared.
+        begin_frame(true);
+        let mut sink = Vec::new();
+        end_frame(&mut sink).unwrap();
+        let s = String::from_utf8_lossy(&sink);
+        assert!(s.contains("\x1b[3;11H  "), "stale sixel not blanked: {s:?}");
+        assert!(live_snapshot_for_test().is_none());
+    }
+
+    #[test]
+    fn emit_sixel_new_key_blanks_predecessor() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(4, 6, Rgb([255, 0, 0]));
+        let mut sink = Vec::new();
+        emit_sixel(&mut sink, test_key("old.png", 32, 16), &rgb, 2, 1).unwrap();
+
+        // New selection: the old placement's cells are overwritten before
+        // the new raster is transmitted.
+        let mut key = test_key("new.png", 32, 16);
+        key.origin_cell = (0, 0);
+        let mut sink = Vec::new();
+        emit_sixel(&mut sink, key, &rgb, 2, 1).unwrap();
+        let s = String::from_utf8_lossy(&sink);
+        let old_blank = s.find("\x1b[3;11H").expect("old region blanked");
+        let dcs = s.find("\x1bP").expect("new raster transmitted");
+        assert!(old_blank < dcs, "erase must precede the new raster: {s:?}");
     }
 
     #[test]
