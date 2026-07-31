@@ -246,6 +246,29 @@ impl FilePreview {
             ("application", "gzip") => gz_preview(&path),
             ("application", "x-tar") => tar_preview(&path),
             ("application", "zip") => zip_preview(&path),
+            // Zip-container documents: extensions resolve via
+            // mime_guess, extensionless files via infer's zip-content
+            // discrimination — both land here. A container infer can
+            // only see as generic zip takes the plain zip arm above
+            // (an acceptable listing, never empty). NOTE: mime 0.3
+            // splits "epub+zip" into subtype "epub" + suffix "zip"
+            // (the svg+xml trap), while the vnd.* subtypes carry no
+            // suffix and match whole.
+            ("application", "vnd.openxmlformats-officedocument.wordprocessingml.document") => {
+                doc_preview(&path, DocKind::Docx)
+            }
+            ("application", "vnd.openxmlformats-officedocument.spreadsheetml.sheet") => {
+                doc_preview(&path, DocKind::Xlsx)
+            }
+            ("application", "vnd.openxmlformats-officedocument.presentationml.presentation") => {
+                doc_preview(&path, DocKind::Pptx)
+            }
+            ("application", "vnd.oasis.opendocument.text")
+            | ("application", "vnd.oasis.opendocument.spreadsheet")
+            | ("application", "vnd.oasis.opendocument.presentation") => {
+                doc_preview(&path, DocKind::Odt)
+            }
+            ("application", "epub") => doc_preview(&path, DocKind::Epub),
             // Text based application/* types
             ("application", "x-sh")
             | ("application", "json")
@@ -1099,6 +1122,243 @@ fn zip_preview(path: &Path) -> Preview {
                     .output()
                     .and_then(|o| o.stdout.lines().take(128).collect()),
             )
+        }
+    }
+}
+
+/// Which primary part(s) of a zip-container document carry the text.
+#[derive(Debug, Clone, Copy)]
+enum DocKind {
+    Docx,
+    /// Also covers ods/odp — all OpenDocument flavors keep their body
+    /// in `content.xml` with `text:p` paragraphs.
+    Odt,
+    Xlsx,
+    Pptx,
+    Epub,
+}
+
+/// Streaming tag-strip of one XML document: text nodes accumulate and
+/// flush as one line per closing paragraph tag (`p` covers `w:p`,
+/// `text:p`, DrawingML `a:p` and XHTML `p` via the local name; `t`
+/// gives xlsx one shared string per line). Text inside `style`/`script`
+/// is skipped (epub XHTML heads). Appends to `lines`, stopping at the
+/// 128-line cap; every line goes through `scrub_line` — document text
+/// is attacker-controlled.
+fn xml_text_lines<R: BufRead>(
+    reader: R,
+    paragraph_tags: &[&[u8]],
+    lines: &mut Vec<String>,
+) -> anyhow::Result<()> {
+    use quick_xml::events::Event;
+    let mut xml = quick_xml::Reader::from_reader(reader);
+    let mut buf = Vec::new();
+    let mut current = String::new();
+    let mut skip_depth = 0usize;
+    while lines.len() < 128 {
+        match xml.read_event_into(&mut buf)? {
+            Event::Eof => break,
+            Event::Start(e) => {
+                if matches!(e.local_name().as_ref(), b"style" | b"script") {
+                    skip_depth += 1;
+                }
+            }
+            Event::Text(t) if skip_depth == 0 => current.push_str(&t.decode()?),
+            // quick-xml 0.38 reports `&…;` separately: resolve char
+            // refs and the predefined entities, drop unknown ones.
+            Event::GeneralRef(r) if skip_depth == 0 => {
+                if let Ok(Some(c)) = r.resolve_char_ref() {
+                    current.push(c);
+                } else {
+                    match r.decode()?.as_ref() {
+                        "amp" => current.push('&'),
+                        "lt" => current.push('<'),
+                        "gt" => current.push('>'),
+                        "quot" => current.push('"'),
+                        "apos" => current.push('\''),
+                        _ => {}
+                    }
+                }
+            }
+            Event::End(e) => {
+                let local = e.local_name();
+                if matches!(local.as_ref(), b"style" | b"script") {
+                    skip_depth = skip_depth.saturating_sub(1);
+                } else if paragraph_tags.contains(&local.as_ref()) {
+                    let line = scrub_line(std::mem::take(&mut current));
+                    if !line.trim().is_empty() {
+                        lines.push(line);
+                    }
+                }
+            }
+            _ => {}
+        }
+        buf.clear();
+    }
+    Ok(())
+}
+
+/// Tag-strip one archive member into `lines`. The decompressed member
+/// read is bounded (512 KiB) so a zip bomb cannot exhaust memory.
+fn member_text_lines(
+    archive: &mut zip::ZipArchive<File>,
+    name: &str,
+    paragraph_tags: &[&[u8]],
+    lines: &mut Vec<String>,
+) -> anyhow::Result<()> {
+    let member = archive.by_name(name)?;
+    xml_text_lines(
+        io::BufReader::new(member.take(512 * 1024)),
+        paragraph_tags,
+        lines,
+    )
+}
+
+/// First attribute value of `attr` on any `tag` element in the stream —
+/// enough XML to follow epub's container.xml (`rootfile`/`full-path`).
+fn xml_first_attr<R: BufRead>(reader: R, tag: &[u8], attr: &[u8]) -> anyhow::Result<String> {
+    use quick_xml::events::Event;
+    let mut xml = quick_xml::Reader::from_reader(reader);
+    let mut buf = Vec::new();
+    loop {
+        match xml.read_event_into(&mut buf)? {
+            Event::Eof => anyhow::bail!(
+                "no {} attribute on any {} element",
+                String::from_utf8_lossy(attr),
+                String::from_utf8_lossy(tag)
+            ),
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == tag => {
+                for a in e.attributes() {
+                    let a = a?;
+                    if a.key.local_name().as_ref() == attr {
+                        return Ok(a.unescape_value()?.into_owned());
+                    }
+                }
+            }
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
+/// The spine reading order of an epub: parse the OPF's manifest
+/// (id → href) and spine (idref order), resolve hrefs against the OPF's
+/// directory. Any missing piece is an `Err` (→ zip-listing fallback).
+fn epub_spine_docs(
+    archive: &mut zip::ZipArchive<File>,
+    opf_path: &str,
+) -> anyhow::Result<Vec<String>> {
+    use quick_xml::events::Event;
+    let opf_dir = match opf_path.rfind('/') {
+        Some(idx) => &opf_path[..=idx],
+        None => "",
+    };
+    let opf = archive.by_name(opf_path)?;
+    let mut xml = quick_xml::Reader::from_reader(io::BufReader::new(opf.take(512 * 1024)));
+    let mut buf = Vec::new();
+    let mut manifest: Vec<(String, String)> = Vec::new(); // id → href
+    let mut spine: Vec<String> = Vec::new(); // idrefs in order
+    loop {
+        match xml.read_event_into(&mut buf)? {
+            Event::Eof => break,
+            Event::Start(e) | Event::Empty(e) => match e.local_name().as_ref() {
+                b"item" => {
+                    let mut id = None;
+                    let mut href = None;
+                    for a in e.attributes() {
+                        let a = a?;
+                        match a.key.local_name().as_ref() {
+                            b"id" => id = Some(a.unescape_value()?.into_owned()),
+                            b"href" => href = Some(a.unescape_value()?.into_owned()),
+                            _ => {}
+                        }
+                    }
+                    if let (Some(id), Some(href)) = (id, href) {
+                        manifest.push((id, href));
+                    }
+                }
+                b"itemref" => {
+                    for a in e.attributes() {
+                        let a = a?;
+                        if a.key.local_name().as_ref() == b"idref" {
+                            spine.push(a.unescape_value()?.into_owned());
+                        }
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        buf.clear();
+    }
+    let docs: Vec<String> = spine
+        .iter()
+        .filter_map(|idref| manifest.iter().find(|(id, _)| id == idref))
+        .map(|(_, href)| format!("{opf_dir}{href}"))
+        .collect();
+    anyhow::ensure!(!docs.is_empty(), "empty spine in {opf_path}");
+    Ok(docs)
+}
+
+/// Extract the text lines of a zip-container document (the plan's C2
+/// group). Any missing/corrupt piece is an `Err` — the caller then
+/// treats the file as a plain zip so the preview is never empty.
+fn native_doc_lines(path: &Path, kind: DocKind) -> anyhow::Result<Vec<String>> {
+    let mut archive = zip::ZipArchive::new(File::open(path)?)?;
+    let mut lines = Vec::new();
+    match kind {
+        DocKind::Docx => member_text_lines(&mut archive, "word/document.xml", &[b"p"], &mut lines)?,
+        DocKind::Odt => member_text_lines(&mut archive, "content.xml", &[b"p"], &mut lines)?,
+        DocKind::Xlsx => {
+            member_text_lines(&mut archive, "xl/sharedStrings.xml", &[b"t"], &mut lines)?
+        }
+        DocKind::Pptx => {
+            let mut slides: Vec<String> = archive
+                .file_names()
+                .filter(|n| n.starts_with("ppt/slides/slide") && n.ends_with(".xml"))
+                .map(str::to_owned)
+                .collect();
+            // Ascending slide number: (len, lexicographic) sorts
+            // slide2.xml before slide10.xml without parsing the N.
+            slides.sort_by_key(|n| (n.len(), n.clone()));
+            anyhow::ensure!(!slides.is_empty(), "no slides in the container");
+            for name in slides {
+                if lines.len() >= 128 {
+                    break;
+                }
+                member_text_lines(&mut archive, &name, &[b"p"], &mut lines)?;
+            }
+        }
+        DocKind::Epub => {
+            let container = archive.by_name("META-INF/container.xml")?;
+            let opf_path = xml_first_attr(
+                io::BufReader::new(container.take(512 * 1024)),
+                b"rootfile",
+                b"full-path",
+            )?;
+            for doc in epub_spine_docs(&mut archive, &opf_path)? {
+                if lines.len() >= 128 {
+                    break;
+                }
+                member_text_lines(&mut archive, &doc, &[b"p"], &mut lines)?;
+            }
+        }
+    }
+    Ok(lines)
+}
+
+/// Office/OpenDocument/epub arm: extracted text, else the file is
+/// treated as the plain zip it physically is (whose arm already chains
+/// into the unzip/error-text fallback) — the preview is never empty.
+fn doc_preview(path: &Path, kind: DocKind) -> Preview {
+    match native_doc_lines(path, kind) {
+        Ok(lines) => Preview::Text { lines },
+        Err(e) => {
+            log::debug!(
+                "{kind:?} text extraction failed, falling back to zip listing: {}: {e}",
+                path.display()
+            );
+            zip_preview(path)
         }
     }
 }
@@ -2386,6 +2646,226 @@ mod new_type_tests {
                 ("font", _) | ("application", "font-sfnt") | ("application", "font-woff")
             );
             assert!(routed, ".{ext} resolved to {mime}, missing the font arm");
+        }
+    }
+
+    /// Builds `dir/<file_name>` as a zip container with real member
+    /// bodies — the docx/odt/xlsx/epub fixtures are all just zips.
+    fn make_container(dir: &Path, file_name: &str, members: &[(&str, &str)]) -> PathBuf {
+        use std::io::Write;
+        let container = dir.join(file_name);
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&container).unwrap());
+        let options: zip::write::FileOptions<'_, ()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        for (name, content) in members {
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(content.as_bytes()).unwrap();
+        }
+        writer.finish().unwrap();
+        container
+    }
+
+    #[test]
+    fn docx_preview_shows_body_text_with_tags_stripped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let docx = make_container(
+            tmp.path(),
+            "report.docx",
+            &[(
+                "word/document.xml",
+                "<w:document><w:body><w:p><w:r><w:t>Hello</w:t></w:r><w:t> World</w:t></w:p></w:body></w:document>",
+            )],
+        );
+        match doc_preview(&docx, DocKind::Docx) {
+            Preview::Text { lines } => {
+                assert!(lines.iter().any(|l| l.contains("Hello World")), "{lines:?}");
+                assert!(
+                    lines.iter().all(|l| !l.contains('<')),
+                    "tags must be stripped: {lines:?}"
+                );
+            }
+            _ => panic!("expected a text preview"),
+        }
+    }
+
+    #[test]
+    fn odt_preview_reads_content_xml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let odt = make_container(
+            tmp.path(),
+            "notes.odt",
+            &[(
+                "content.xml",
+                "<office:document-content><office:body><office:text><text:p>An OpenDocument paragraph.</text:p></office:text></office:body></office:document-content>",
+            )],
+        );
+        match doc_preview(&odt, DocKind::Odt) {
+            Preview::Text { lines } => assert!(
+                lines
+                    .iter()
+                    .any(|l| l.contains("An OpenDocument paragraph.")),
+                "{lines:?}"
+            ),
+            _ => panic!("expected a text preview"),
+        }
+    }
+
+    #[test]
+    fn xlsx_preview_lists_shared_strings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let xlsx = make_container(
+            tmp.path(),
+            "table.xlsx",
+            &[(
+                "xl/sharedStrings.xml",
+                "<sst><si><t>Alpha</t></si><si><t>Beta</t></si></sst>",
+            )],
+        );
+        match doc_preview(&xlsx, DocKind::Xlsx) {
+            Preview::Text { lines } => {
+                // one shared string per line
+                assert!(lines.iter().any(|l| l == "Alpha"), "{lines:?}");
+                assert!(lines.iter().any(|l| l == "Beta"), "{lines:?}");
+            }
+            _ => panic!("expected a text preview"),
+        }
+    }
+
+    #[test]
+    fn epub_preview_follows_container_and_spine() {
+        let tmp = tempfile::tempdir().unwrap();
+        let epub = make_container(
+            tmp.path(),
+            "novel.epub",
+            &[
+                (
+                    "META-INF/container.xml",
+                    r#"<container><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#,
+                ),
+                (
+                    "OEBPS/content.opf",
+                    r#"<package><manifest><item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="ch1"/></spine></package>"#,
+                ),
+                (
+                    "OEBPS/ch1.xhtml",
+                    "<html><head><style>p { color: red }</style></head><body><p>It was a dark and stormy night.</p></body></html>",
+                ),
+            ],
+        );
+        match doc_preview(&epub, DocKind::Epub) {
+            Preview::Text { lines } => {
+                assert!(
+                    lines
+                        .iter()
+                        .any(|l| l.contains("It was a dark and stormy night.")),
+                    "{lines:?}"
+                );
+                assert!(
+                    lines.iter().all(|l| !l.contains("color")),
+                    "style content must be skipped: {lines:?}"
+                );
+            }
+            _ => panic!("expected a text preview"),
+        }
+    }
+
+    #[test]
+    fn office_text_is_capped_at_128_lines_and_scrubbed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut body = String::from("<w:document><w:body>");
+        // First paragraph carries \r\n inside its text node — it must
+        // stay ONE line (the scrub convention), not smear across two.
+        body.push_str("<w:p><w:t>evil\r\nline</w:t></w:p>");
+        for i in 0..129 {
+            body.push_str(&format!("<w:p><w:t>paragraph {i}</w:t></w:p>"));
+        }
+        body.push_str("</w:body></w:document>");
+        let docx = make_container(tmp.path(), "long.docx", &[("word/document.xml", &body)]);
+        match doc_preview(&docx, DocKind::Docx) {
+            Preview::Text { lines } => {
+                assert_eq!(lines.len(), 128, "the 128-line cap applies");
+                assert!(
+                    lines[0].contains("evilline") && !lines[0].contains(['\r', '\n']),
+                    "newlines must be scrubbed: {:?}",
+                    lines[0]
+                );
+            }
+            _ => panic!("expected a text preview"),
+        }
+    }
+
+    #[test]
+    fn corrupt_container_falls_back_to_zip_listing() {
+        // A docx-named file that IS a valid zip but lacks the primary
+        // part: treated as a plain zip so the preview is never empty.
+        let tmp = tempfile::tempdir().unwrap();
+        let hollow = make_container(
+            tmp.path(),
+            "hollow.docx",
+            &[("word/nothing-here.xml", "<w:document/>")],
+        );
+        match doc_preview(&hollow, DocKind::Docx) {
+            Preview::Text { lines } => assert!(
+                lines.iter().any(|l| l.contains("word/nothing-here.xml")),
+                "expected the zip listing: {lines:?}"
+            ),
+            _ => panic!("expected a text preview"),
+        }
+        // Total garbage: the zip fallback errors too — still text
+        // (the unzip-fallback error block), never empty, never a panic.
+        let bogus = tmp.path().join("garbage.docx");
+        std::fs::write(&bogus, b"definitely not a zip").unwrap();
+        match doc_preview(&bogus, DocKind::Docx) {
+            Preview::Text { lines } => assert!(!lines.is_empty()),
+            _ => panic!("expected a text preview"),
+        }
+    }
+
+    #[test]
+    fn office_extensions_route_to_the_doc_arms() {
+        // Pins the dispatch spelling: mime 0.3 splits "epub+zip" into
+        // subtype "epub" + suffix "zip" (same trap as image/svg+xml),
+        // while the vnd.* types carry no suffix. Nonexistent paths
+        // prove the resolution never reads content.
+        for ext in ["docx", "xlsx", "pptx", "odt", "ods", "odp", "epub"] {
+            let path = PathBuf::from(format!("/nonexistent/file.{ext}"));
+            let mime = get_mime_type(&path);
+            let routed = matches!(
+                (mime.type_().as_str(), mime.subtype().as_str()),
+                (
+                    "application",
+                    "vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        | "vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        | "vnd.openxmlformats-officedocument.presentationml.presentation"
+                        | "vnd.oasis.opendocument.text"
+                        | "vnd.oasis.opendocument.spreadsheet"
+                        | "vnd.oasis.opendocument.presentation"
+                        | "epub"
+                )
+            );
+            assert!(routed, ".{ext} resolved to {mime}, missing the doc arms");
+        }
+    }
+
+    #[test]
+    fn docx_dispatch_reaches_the_doc_arm() {
+        // End-to-end: FilePreview::new on a real .docx must produce the
+        // extracted body text, not the generic stat block.
+        let tmp = tempfile::tempdir().unwrap();
+        let docx = make_container(
+            tmp.path(),
+            "report.docx",
+            &[(
+                "word/document.xml",
+                "<w:document><w:body><w:p><w:t>Dispatched body text</w:t></w:p></w:body></w:document>",
+            )],
+        );
+        match FilePreview::new(docx).preview {
+            Preview::Text { lines } => assert!(
+                lines.iter().any(|l| l.contains("Dispatched body text")),
+                "{lines:?}"
+            ),
+            _ => panic!("expected a text preview"),
         }
     }
 
