@@ -33,7 +33,10 @@ pub(crate) fn entry_name(path: &Path, mtime_secs: u64, kind: &str) -> String {
 
 /// `<hash>-` — everything ever cached for this source path.
 fn hash_prefix(path: &Path) -> String {
-    format!("{:016x}-", seahash::hash(path.as_os_str().as_encoded_bytes()))
+    format!(
+        "{:016x}-",
+        seahash::hash(path.as_os_str().as_encoded_bytes())
+    )
 }
 
 /// `<hash>-<mtime>-` — the *keep scope* of the stale-sibling sweep:
@@ -42,11 +45,24 @@ fn keep_prefix(path: &Path, mtime_secs: u64) -> String {
     format!("{}{mtime_secs}-", hash_prefix(path))
 }
 
-/// Same-directory temp name for the atomic write: `<final>.<pid>.part`.
-/// The pid keeps concurrent rfm instances from clobbering each other's
-/// in-flight writes; last rename wins, both wrote equivalent content.
+/// Process-unique token for same-directory temp names: `<pid>-<seq>`.
+/// The pid keeps concurrent rfm *instances* from clobbering each other's
+/// in-flight writes; the per-process counter keeps concurrent stores
+/// *within* one instance apart (the directory preloader and the
+/// on-demand preview task can build the same entry at the same time).
+/// Last rename wins, all writers wrote equivalent content.
+pub(crate) fn part_token() -> String {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!(
+        "{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
+/// Same-directory temp name for the atomic write: `<final>.<token>.part`.
 fn part_name(final_name: &str) -> String {
-    format!("{final_name}.{}.part", std::process::id())
+    format!("{final_name}.{}.part", part_token())
 }
 
 const JPEG_QUALITY: u8 = 85;
@@ -54,7 +70,12 @@ const JPEG_QUALITY: u8 = 85;
 /// Look a raster up in `dir`. Open failure (no entry) is a plain miss; a
 /// successful open with a failed decode is a corrupt entry — delete it and
 /// miss (design §error handling). Never deletes on mere absence.
-pub(crate) fn lookup_in(dir: &Path, src: &Path, mtime_secs: u64, kind: &str) -> Option<DynamicImage> {
+pub(crate) fn lookup_in(
+    dir: &Path,
+    src: &Path,
+    mtime_secs: u64,
+    kind: &str,
+) -> Option<DynamicImage> {
     let entry = dir.join(entry_name(src, mtime_secs, kind));
     match image::io::Reader::open(&entry).ok()?.decode() {
         Ok(img) => Some(img),
@@ -78,7 +99,7 @@ pub(crate) fn store_in(
 ) -> anyhow::Result<()> {
     let name = entry_name(src, mtime_secs, kind);
     let entry = dir.join(&name);
-    if entry.exists() {
+    if entry.is_file() {
         return Ok(());
     }
     let part = dir.join(part_name(&name));
@@ -93,15 +114,37 @@ pub(crate) fn store_in(
         let _ = std::fs::remove_file(&part);
         return Err(e);
     }
-    std::fs::rename(&part, &entry)?;
+    if let Err(e) = std::fs::rename(&part, &entry) {
+        // A failed rename must not leave the .part lingering until the
+        // 30-day prune (its current-mtime name sits in the keep scope).
+        let _ = std::fs::remove_file(&part);
+        return Err(e.into());
+    }
     cleanup_stale(dir, src, mtime_secs);
     Ok(())
 }
 
-/// The session-wide cache directory: `None` = persistence disabled (by
-/// config, or because the dir could not be resolved/created). Set once by
-/// [`init`] at startup; unset (e.g. in unit tests) behaves as disabled.
-static RASTER_CACHE_DIR: OnceCell<Option<PathBuf>> = OnceCell::new();
+/// The session-wide cache state, set once by [`init`] at startup:
+/// `(config_enabled, resolved dir)`. The dir is `None` when persistence
+/// is off — by config, or because the dir could not be resolved/created
+/// (the flag tells those apart, see [`persistence_enabled`]). Unset
+/// (e.g. in unit tests) behaves as disabled.
+static RASTER_CACHE: OnceCell<(bool, Option<PathBuf>)> = OnceCell::new();
+
+/// `create_dir_all` with mode 0700 on every directory it creates (the
+/// XDG basedir spec's required mode for missing base directories):
+/// cached thumbnails of the user's media must not become world-readable
+/// just because rfm had to create the chain itself.
+pub(crate) fn create_dir_all_private(dir: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir)
+}
 
 /// Resolve-and-create core of [`init`]: `<cache_home>/rfm/thumbnails`.
 /// Any failure disables persistence for the session (warn once, never
@@ -117,7 +160,7 @@ fn resolve_dir(enabled: bool, cache_home: anyhow::Result<PathBuf>) -> Option<Pat
             return None;
         }
     };
-    if let Err(e) = std::fs::create_dir_all(&dir) {
+    if let Err(e) = create_dir_all_private(&dir) {
         log::warn!(
             "preview raster cache disabled: cannot create {}: {e}",
             dir.display()
@@ -131,12 +174,21 @@ fn resolve_dir(enabled: bool, cache_home: anyhow::Result<PathBuf>) -> Option<Pat
 /// the `preview_cache` config switch; resolution/creation failure runs the
 /// session with persistence off.
 pub fn init(enabled: bool) {
-    let _ = RASTER_CACHE_DIR.set(resolve_dir(enabled, crate::util::xdg_cache_home()));
+    let _ = RASTER_CACHE.set((enabled, resolve_dir(enabled, crate::util::xdg_cache_home())));
 }
 
 /// The cache directory, or `None` when persistence is disabled/unavailable.
 pub fn dir() -> Option<&'static Path> {
-    RASTER_CACHE_DIR.get()?.as_deref()
+    RASTER_CACHE.get()?.1.as_deref()
+}
+
+/// `false` iff the user opted out via `preview_cache = false` (or the
+/// cache was never initialized, as in unit tests). Distinct from
+/// [`dir`] returning `None`: enabled-but-unavailable still allows the
+/// video producer's temp-dir fallback, while an explicit opt-out
+/// promises that nothing about the user's files is written to disk.
+pub fn persistence_enabled() -> bool {
+    RASTER_CACHE.get().is_some_and(|(enabled, _)| *enabled)
 }
 
 /// Startup eviction for the session cache dir; intended for a
@@ -254,7 +306,10 @@ mod tests {
         assert!(lookup_in(dir.path(), src, 101, KIND_IMAGE).is_none());
         assert!(lookup_in(dir.path(), src, 100, KIND_VIDEO).is_none());
         // directory contains ONLY the final name — no .part leftovers
-        assert_eq!(dir_files(dir.path()), vec![entry_name(src, 100, KIND_IMAGE)]);
+        assert_eq!(
+            dir_files(dir.path()),
+            vec![entry_name(src, 100, KIND_IMAGE)]
+        );
     }
 
     #[test]
@@ -351,6 +406,52 @@ mod tests {
     }
 
     #[test]
+    fn part_names_are_unique_per_call() {
+        // Two tasks INSIDE one process (directory preloader + on-demand
+        // preview) can store the same entry concurrently; a pid-only
+        // discriminator would make them share one temp file.
+        assert_ne!(part_name("x.jpg"), part_name("x.jpg"));
+    }
+
+    #[test]
+    fn store_removes_its_part_when_the_final_rename_fails() {
+        // A directory squatting on the final name makes the rename fail;
+        // the .part must not linger until the 30-day prune.
+        let dir = tempfile::tempdir().unwrap();
+        let src = Path::new("/some/pic.png");
+        let entry = dir.path().join(entry_name(src, 100, KIND_IMAGE));
+        std::fs::create_dir(&entry).unwrap();
+        assert!(store_in(dir.path(), src, 100, KIND_IMAGE, &test_img()).is_err());
+        assert!(
+            !dir_files(dir.path()).iter().any(|n| n.ends_with(".part")),
+            "no .part litter after a failed rename"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_dir_creates_the_chain_with_mode_0700() {
+        // XDG basedir spec: missing base dirs are created 0700 — cached
+        // thumbnails of the user's media must not be world-readable.
+        use std::os::unix::fs::PermissionsExt;
+        let base = tempfile::tempdir().unwrap();
+        let home = base.path().join("cache-home");
+        let dir = resolve_dir(true, Ok(home.clone())).unwrap();
+        for d in [home.as_path(), &home.join("rfm"), dir.as_path()] {
+            let mode = d.metadata().unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "{} must be 0700", d.display());
+        }
+    }
+
+    #[test]
+    fn uninitialized_cache_counts_as_opted_out() {
+        // Unit tests never call init(): both accessors must behave as
+        // "persistence off" (the privacy-safe default).
+        assert!(dir().is_none());
+        assert!(!persistence_enabled());
+    }
+
+    #[test]
     fn store_writes_via_part_temp_name_in_same_dir() {
         // Atomicity contract: the temp name lives in the SAME directory
         // (rename must not cross filesystems) and never collides with the
@@ -391,8 +492,12 @@ mod tests {
         use std::time::{Duration, SystemTime};
         let dir = tempfile::tempdir().unwrap();
         let now = SystemTime::now();
-        let old = dir.path().join(entry_name(Path::new("/old.png"), 100, KIND_IMAGE));
-        let fresh = dir.path().join(entry_name(Path::new("/fresh.png"), 100, KIND_IMAGE));
+        let old = dir
+            .path()
+            .join(entry_name(Path::new("/old.png"), 100, KIND_IMAGE));
+        let fresh = dir
+            .path()
+            .join(entry_name(Path::new("/fresh.png"), 100, KIND_IMAGE));
         std::fs::write(&old, vec![0u8; 10]).unwrap();
         std::fs::write(&fresh, vec![0u8; 10]).unwrap();
         backdate(&old, now, Duration::from_secs(31 * 24 * 3600));
@@ -409,9 +514,15 @@ mod tests {
         let now = SystemTime::now();
         // Mix kinds in the names: one shared budget across producers
         // (extension design requirement).
-        let oldest = dir.path().join(entry_name(Path::new("/a.mp4"), 100, KIND_VIDEO));
-        let mid = dir.path().join(entry_name(Path::new("/b.png"), 100, KIND_IMAGE));
-        let newest = dir.path().join(entry_name(Path::new("/c.png"), 100, KIND_IMAGE));
+        let oldest = dir
+            .path()
+            .join(entry_name(Path::new("/a.mp4"), 100, KIND_VIDEO));
+        let mid = dir
+            .path()
+            .join(entry_name(Path::new("/b.png"), 100, KIND_IMAGE));
+        let newest = dir
+            .path()
+            .join(entry_name(Path::new("/c.png"), 100, KIND_IMAGE));
         for (path, days) in [(&oldest, 3u64), (&mid, 2), (&newest, 1)] {
             std::fs::write(path, vec![0u8; 1000]).unwrap();
             backdate(path, now, Duration::from_secs(days * 24 * 3600));
