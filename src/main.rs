@@ -171,6 +171,9 @@ async fn main() -> anyhow::Result<()> {
     // `preview_cache`; the local avoids colliding with the in-memory
     // PanelCache below, also named preview_cache)
     let mut persist_previews = true;
+    // Whether the external pdf image tier (pdftoppm/mutool) may run
+    // (config key `pdf_render`; default OFF — opt-in).
+    let mut pdf_render = false;
     let mut rate_limit_interval_ms = DEFAULT_RATE_LIMIT_INTERVAL_MS;
     let mut style_config = None;
     let mut fancy_icons = false;
@@ -183,6 +186,7 @@ async fn main() -> anyhow::Result<()> {
                 colors_from_config(config.colors)?;
                 use_trash = config.general.use_trash;
                 persist_previews = config.general.preview_cache;
+                pdf_render = config.general.pdf_render;
                 rate_limit_interval_ms = config.general.rate_limit_interval_ms;
                 fancy_icons = config.general.fancy_icons;
                 info!("Using rate-limit of {rate_limit_interval_ms}ms");
@@ -208,6 +212,7 @@ async fn main() -> anyhow::Result<()> {
     // Persistent preview raster cache: resolve/create the dir once, then
     // evict stale entries in the background (fire-and-forget).
     panel::raster_cache::init(persist_previews);
+    panel::set_pdf_render(pdf_render);
     tokio::task::spawn_blocking(panel::raster_cache::prune);
 
     // --- Keyboard configuration

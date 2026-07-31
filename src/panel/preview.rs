@@ -1650,6 +1650,57 @@ fn sqlite_preview(path: &Path, mime: &mime::Mime) -> Preview {
     }
 }
 
+/// The `pdf_render` config switch, set once at startup (like
+/// `raster_cache::init`). Unset — e.g. in unit tests — counts as
+/// opted out, keeping every test hermetic.
+static PDF_RENDER: OnceCell<bool> = OnceCell::new();
+
+/// Wire the `pdf_render` config switch (called once from main).
+pub fn set_pdf_render(enabled: bool) {
+    let _ = PDF_RENDER.set(enabled);
+}
+
+fn pdf_render_enabled() -> bool {
+    PDF_RENDER.get().copied().unwrap_or(false)
+}
+
+/// The external PDF renderer for the optional image tier.
+#[derive(Clone, Copy, Debug)]
+enum PdfRenderer {
+    Pdftoppm,
+    Mutool,
+}
+
+/// OnceCell probe, ffmpeg-style but two candidates: `pdftoppm -v`,
+/// else `mutool -v`. Present = spawned AND (exit success OR output
+/// contains "version") — the -v exit codes are not uniform across
+/// packagings. Only consulted when pdf_render_enabled(), so the base
+/// install never spawns probes.
+fn pdf_renderer() -> Option<PdfRenderer> {
+    static RENDERER: OnceCell<Option<PdfRenderer>> = OnceCell::new();
+    *RENDERER.get_or_init(|| {
+        let present = |bin: &str| {
+            std::process::Command::new(bin)
+                .arg("-v")
+                .stdin(Stdio::null())
+                .output()
+                .map(|out| {
+                    out.status.success()
+                        || String::from_utf8_lossy(&out.stdout).contains("version")
+                        || String::from_utf8_lossy(&out.stderr).contains("version")
+                })
+                .unwrap_or(false)
+        };
+        if present("pdftoppm") {
+            Some(PdfRenderer::Pdftoppm)
+        } else if present("mutool") {
+            Some(PdfRenderer::Mutool)
+        } else {
+            None
+        }
+    })
+}
+
 thread_local! {
     /// Remaining decompression budget for the load_filtered call on
     /// this thread (the FilterFunc is a plain fn pointer, so the
@@ -4164,6 +4215,14 @@ mod pdf_tests {
         );
         // The metadata header survives the dropped body.
         assert!(joined.contains("PDF · 1 page"), "{joined}");
+    }
+
+    #[test]
+    fn pdf_render_defaults_off_when_uninitialized() {
+        // The raster-cache convention: uninitialized == opted out.
+        // Unit tests never call set_pdf_render, so every other test
+        // stays hermetic (no probe spawns, no external renders).
+        assert!(!pdf_render_enabled());
     }
 
     #[test]

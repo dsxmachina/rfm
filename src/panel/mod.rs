@@ -29,7 +29,7 @@ mod preview;
 pub mod raster_cache;
 
 pub use directory::{DirElem, DirPanel};
-pub use preview::{FilePreview, PreviewPanel};
+pub use preview::{set_pdf_render, FilePreview, PreviewPanel};
 
 pub type MillerPanels = (
     ManagedPanel<DirPanel>,
