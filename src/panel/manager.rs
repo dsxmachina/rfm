@@ -1770,6 +1770,11 @@ impl PanelManager {
                 self.mode = Mode::Modal(Box::new(view));
                 self.reload_all();
             }
+            ModeOp::FlowResolved { .. } | ModeOp::FlowAborted { .. } => {
+                // Placeholder: per-kind result dispatch lands with the first
+                // flow consumer; for now the flow just closes.
+                self.mode = Mode::Normal;
+            }
             ModeOp::Exit { cleanup } => {
                 self.apply_cleanup(cleanup);
                 self.mode = Mode::Normal;

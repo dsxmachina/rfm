@@ -21,10 +21,12 @@ use super::Draw;
 
 mod console;
 mod create_item;
+pub mod decision_flow;
 mod rename;
 mod search;
 mod trash_view;
 pub use console::{DirConsole, Zoxide};
+pub use decision_flow::FlowKind;
 pub use create_item::CreateItemMode;
 pub use rename::RenameMode;
 pub use search::SearchMode;
@@ -78,6 +80,10 @@ pub enum ModeOp {
         items: Vec<trash::TrashItem>,
         cursor: usize,
     },
+    /// A decision flow answered every item; the manager dispatches on `kind`.
+    FlowResolved { kind: FlowKind, answers: Vec<usize> },
+    /// A decision flow was abandoned with unanswerable items pending.
+    FlowAborted { kind: FlowKind },
     /// Leave the mode without a concluding action; cleanup says what to undo
     Exit { cleanup: Cleanup },
 }
