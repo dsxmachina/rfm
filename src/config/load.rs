@@ -232,22 +232,7 @@ pub fn load(config_dir: &Path) -> LoadedConfig {
         }
     }
 
-    // --- 4. The user overlay for the parser: only what the user wrote under
-    // [keys] (extracted BEFORE merging, so defaults don't bleed into it).
-    let parser_input = match user_tree.get("keys") {
-        Some(keys) => match keys.clone().try_into::<KeyConfig>() {
-            Ok(k) => k,
-            Err(e) => {
-                warnings.push(format!(
-                    "cannot parse the [keys] section: {e} — using the default keybindings"
-                ));
-                KeyConfig::default()
-            }
-        },
-        None => KeyConfig::default(),
-    };
-
-    // --- 5. Merge over the defaults and deserialize. On a typed error, drop
+    // --- 4. Merge over the defaults and deserialize. On a typed error, drop
     // the offending user section (precise path in the warning) and retry from
     // a fresh defaults tree. Every retry strictly shrinks the user tree (a
     // drop removes a node; an unattributable error breaks out), so the loop
@@ -311,6 +296,26 @@ pub fn load(config_dir: &Path) -> LoadedConfig {
             .try_into()
             .expect("embedded default-config.toml must deserialize")
     });
+
+    // --- 5. The user overlay for the parser: only what the user wrote under
+    // [keys], taken from the SURVIVING user tree (never the merged one, so
+    // defaults don't bleed into it). The retry loop above has already pruned
+    // broken [keys.*] subsections — a broken sibling section therefore costs
+    // only itself, not the rest of the user's bindings. A whole degenerate
+    // `keys` value (e.g. `keys = 5`) is pruned entirely by the loop and lands
+    // in the `None` arm; the `Err` arm is purely defensive.
+    let parser_input = match user_tree.get("keys") {
+        Some(keys) => match keys.clone().try_into::<KeyConfig>() {
+            Ok(k) => k,
+            Err(e) => {
+                warnings.push(format!(
+                    "cannot parse the surviving [keys] section: {e} — using the default keybindings"
+                ));
+                KeyConfig::default()
+            }
+        },
+        None => KeyConfig::default(),
+    };
 
     // The pure defaults' keybindings — the first pass of CommandParser::build.
     let default_keys: KeyConfig = defaults
@@ -475,6 +480,24 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w.contains("built-in defaults"))); // no full fallback
+    }
+
+    #[test]
+    fn broken_keys_subsection_keeps_sibling_user_bindings() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[keys.movement]\nup = 5\n[keys.general]\nsearch = [\"zz\"]",
+        )
+        .unwrap();
+        let loaded = load(dir.path());
+        assert_eq!(loaded.parser_input.general.search, Some(vec!["zz".into()])); // survived!
+        assert!(loaded.parser_input.movement.up.is_none()); // dropped subsection
+        assert!(loaded.warnings.iter().any(|w| w.contains("keys.movement")));
+        assert!(!loaded
+            .warnings
+            .iter()
+            .any(|w| w.contains("default keybindings"))); // no whole-overlay fallback
     }
 
     #[test]

@@ -69,10 +69,9 @@ The semantics:
   to change; everything else — including bindings for features added in
   future versions — keeps working with its default keys.
 - **Your bindings win.** If a default binding (of any command you did not
-  mention) collides exactly with a key sequence you bound yourself, the
-  default is dropped and a notice is logged at startup. (Mere prefix
-  overlaps are fine — the key matcher waits for the longer chord, as it
-  always has.) Example:
+  mention) collides with a key sequence you bound yourself — exactly or as a
+  prefix (in either direction) — the default is dropped and a notice is
+  logged at startup. Example:
   if your config binds `quit = ["q"]`, the default `close_tab = ["q",
   "ctrl-w"]` loses `q` and keeps `ctrl-w`.
 - **`cmd = []` unbinds.** To remove a default binding without replacing it,

@@ -17,8 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Defaults-on keybindings with user-wins conflicts** — every feature's
   default keys (tabs, undo/redo, jump-marks, trash view, …) are now active
   for everyone, no longer opt-in. A default that collides with one of your
-  own bindings is dropped with a logged notice; `cmd = []`
-  explicitly unbinds a command.
+  own bindings (exactly or as a prefix, in either direction) is dropped with
+  a logged notice; `cmd = []` explicitly unbinds a command.
 - **`rfm --dump-config`** — prints the complete annotated default
   configuration (the reference to copy override lines from).
 - **`rfm --migrate-config`** — explicit, opt-in migration: writes your

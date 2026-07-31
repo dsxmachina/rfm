@@ -14,6 +14,9 @@ pub struct Config {
     pub styles: StyleConfig,
     #[serde(default)]
     pub commands: CommandsConfig,
+    // deserialize target for per-section [keys.*] error handling; the parser
+    // reads the overlay + defaults instead
+    #[allow(dead_code)]
     #[serde(default)]
     pub keys: crate::engine::commands::KeyConfig,
     #[serde(default)]
@@ -23,11 +26,11 @@ pub struct Config {
 /// The embedded `examples/` directory — shipped default/example config files.
 #[derive(rust_embed::Embed)]
 #[folder = "examples/"]
-pub struct Examples;
+struct Examples;
 
 /// The single source of truth for rfm's defaults: the complete, annotated
 /// default configuration file embedded at compile time.
-pub const DEFAULT_CONFIG_FILE: &str = "default-config.toml";
+const DEFAULT_CONFIG_FILE: &str = "default-config.toml";
 
 static DEFAULT_CONFIG: once_cell::sync::Lazy<String> = once_cell::sync::Lazy::new(|| {
     let file = Examples::get(DEFAULT_CONFIG_FILE).expect("embedded default-config.toml");

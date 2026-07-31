@@ -450,9 +450,10 @@ pub struct CommandParser {
 impl CommandParser {
     /// Pass 1: user bindings + user-defined commands (they claim key space).
     /// Pass 2: defaults for every field the user did not mention; a default
-    /// binding whose exact pattern is already claimed is dropped + reported.
-    /// Prefix overlaps are NOT conflicts — the patricia matcher already
-    /// defers on longer candidates (see `longer_binding_wins_over_mark_chord`).
+    /// binding is dropped + reported when its pattern collides with a user
+    /// claim exactly or as a strict prefix (in either direction) — see
+    /// [`Self::insert_default`]. Prefix overlaps among the defaults
+    /// themselves are fine (chord deferral, only for the jump-mark chords).
     pub fn build(
         defaults: &KeyConfig,
         user: &KeyConfig,
@@ -698,10 +699,15 @@ impl CommandParser {
         }
     }
 
-    /// Insert a single *default* binding unless its exact pattern is already
-    /// claimed (by a user binding, a user command, or an earlier default);
-    /// a claimed pattern is reported in `dropped` instead. Uses the same
-    /// [`route`] as [`Self::insert`], so the two cannot diverge.
+    /// Insert a single *default* binding unless it collides with a claimed
+    /// pattern: exactly (against a user binding, a user command, or an
+    /// earlier default), or as a strict prefix in either direction against a
+    /// USER claim — the matcher fires exact matches immediately, so either
+    /// prefix relation would make one of the two bindings unreachable, and
+    /// the user's must win. Default-vs-default prefix overlaps are left
+    /// alone (the shipped defaults rely on chord deferral, e.g. `''`/`'a`).
+    /// A collision is reported in `dropped` instead. Uses the same [`route`]
+    /// as [`Self::insert`], so the two cannot diverge.
     fn insert_default(
         &mut self,
         binding: &str,
@@ -726,6 +732,19 @@ impl CommandParser {
             Some(Route::Pattern(pattern)) => {
                 if let Some(kept) = self.key_commands.get(&pattern) {
                     dropped.push(conflict(kept, user_claims.patterns.contains(&pattern)));
+                } else if let Some(kept) = user_claims
+                    .patterns
+                    .iter()
+                    .find(|claim| {
+                        claim.as_str() != pattern
+                            && (claim.starts_with(&pattern) || pattern.starts_with(claim.as_str()))
+                    })
+                    .and_then(|claim| self.key_commands.get(claim))
+                {
+                    // Strict-prefix collision with a user claim: whichever
+                    // pattern is shorter would fire first and make the other
+                    // unreachable — drop the default either way.
+                    dropped.push(conflict(kept, true));
                 } else {
                     self.key_commands.insert(pattern, cmd.clone());
                 }
@@ -1155,6 +1174,37 @@ mod builder_tests {
         assert_eq!(partial.movement.up, Some(vec!["k".into()]));
         assert_eq!(partial.manipulation.undo, Some(vec![]));
         assert!(partial.movement.down.is_none());
+    }
+
+    #[test]
+    fn default_prefix_of_user_chord_is_dropped() {
+        // user binds "ff"; default search has "f" (a strict prefix) → dropped + reported
+        let mut cmds = crate::command_queue::CommandsConfig::default();
+        cmds.insert(
+            "mine".into(),
+            toml::from_str("keys = [\"ff\"]\ncmd = \"true\"").unwrap(),
+        );
+        let (mut p, dropped) = CommandParser::build(&defaults(), &KeyConfig::default(), &cmds);
+        assert!(dropped.iter().any(|d| d.binding == "f" && d.from_user));
+        assert!(matches!(press2(&mut p, 'f', 'f'), Command::UserCommand { .. })); // chord reachable now
+        // "/" and "search" (other search defaults, no prefix relation) must survive:
+        assert!(matches!(press(&mut p, '/'), Command::Search));
+    }
+
+    #[test]
+    fn user_pattern_prefix_of_default_drops_the_default() {
+        // user binds bare "c"; defaults "cut"/"copy"/"cd" become unreachable → dropped
+        let mut cmds = crate::command_queue::CommandsConfig::default();
+        cmds.insert(
+            "mine".into(),
+            toml::from_str("keys = [\"c\"]\ncmd = \"true\"").unwrap(),
+        );
+        let (mut p, dropped) = CommandParser::build(&defaults(), &KeyConfig::default(), &cmds);
+        assert!(matches!(press(&mut p, 'c'), Command::UserCommand { .. }));
+        assert!(dropped.iter().any(|d| d.binding == "cut"));
+        assert!(dropped.iter().any(|d| d.binding == "cd"));
+        // unrelated defaults survive:
+        assert!(matches!(press(&mut p, 'u'), Command::Undo));
     }
 
     #[test]
