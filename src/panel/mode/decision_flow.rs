@@ -11,10 +11,18 @@ use std::io::Stdout;
 use std::ops::Range;
 
 use crossterm::event::{KeyCode, KeyEvent};
-use crossterm::Result;
+use crossterm::style::PrintStyledContent;
+use crossterm::terminal::{Clear, ClearType};
+use crossterm::{cursor, queue, style::Stylize, Result};
+use unicode_display_width::width as unicode_width;
 
 use super::{ModalInput, ModalRegion, ModeOp};
+use crate::config::color::{
+    color_highlight, color_main, color_marked, print_horizontal_bar, print_horz_bot,
+    print_horz_top,
+};
 use crate::panel::Draw;
+use crate::util::ExactWidth;
 
 /// Which consumer launched the flow; the manager dispatches results on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,9 +114,8 @@ impl DecisionFlow {
         &mut self.items
     }
 
-    /// Record `choice` for the current item, then advance to the next
-    /// unanswered item (wrapping search from cursor+1); when none remain
-    /// the flow resolves.
+    /// Record `choice` for the current item, then hand over to
+    /// [`Self::advance_or_resolve`].
     fn answer(&mut self, choice: usize) -> ModeOp {
         self.answers[self.cursor] = Some(choice);
         self.advance_or_resolve()
@@ -162,15 +169,225 @@ fn same_choice_set(a: &[Choice], b: &[Choice]) -> bool {
     a == b
 }
 
+/// Truncate to `w` columns (`~`-marked, via [`ExactWidth`]) only when the
+/// text is wider; unlike `exact_width` it never pads shorter text.
+fn fit(s: &str, w: usize) -> String {
+    if unicode_width(s) as usize > w {
+        s.exact_width(w)
+    } else {
+        s.to_string()
+    }
+}
+
+/// One display row of the flattened item list: every item contributes its
+/// prompt row; the cursor item additionally expands into its detail lines
+/// and a choices row.
+enum Row<'a> {
+    Prompt(usize),
+    Detail(&'a str),
+    Choices,
+}
+
 impl Draw for DecisionFlow {
     fn draw(
         &mut self,
-        _stdout: &mut Stdout,
-        _x_range: Range<u16>,
-        _y_range: Range<u16>,
+        stdout: &mut Stdout,
+        x_range: Range<u16>,
+        y_range: Range<u16>,
     ) -> Result<()> {
-        // Rendering lands in a follow-up task; drawing nothing is safe.
-        let _ = &self.title;
+        let x0 = x_range.start;
+        let x_end = x_range.end;
+        let width = x_end.saturating_sub(x0);
+        let avail_h = y_range.end.saturating_sub(y_range.start) as usize;
+
+        // Content geometry within a small horizontal padding.
+        const PAD: u16 = 2;
+        const INDENT: u16 = 4;
+        let content_x = x0 + PAD;
+        let content_w = width.saturating_sub(PAD * 2) as usize;
+
+        // Flatten the items into display rows and remember where the cursor
+        // item's expanded block starts and ends (for the scroll window).
+        let mut rows: Vec<Row> = Vec::new();
+        let mut cursor_first = 0;
+        let mut cursor_last = 0;
+        for (i, item) in self.items.iter().enumerate() {
+            if i == self.cursor {
+                cursor_first = rows.len();
+            }
+            rows.push(Row::Prompt(i));
+            if i == self.cursor {
+                for d in &item.detail {
+                    rows.push(Row::Detail(d));
+                }
+                rows.push(Row::Choices);
+                cursor_last = rows.len() - 1;
+            }
+        }
+
+        // Vertically centered band: hint + top bar + title + rows + bottom bar.
+        let cap = avail_h.saturating_sub(7).max(1);
+        let visible = rows.len().min(cap);
+        let band = visible + 4;
+        let band_top = y_range.start + (avail_h.saturating_sub(band) as u16) / 2;
+        let hint_y = band_top;
+        let top_bar_y = band_top + 1;
+        let title_y = band_top + 2;
+        let list_y0 = band_top + 3;
+        let bottom_bar_y = list_y0 + visible as u16;
+        // Degenerate terminals: the band may not fit at all — clamp every
+        // write into the given range instead of drawing outside it.
+        let in_range = |y: u16| y < y_range.end;
+
+        // Window offset: keep the cursor's expanded block fully visible;
+        // when the block alone overflows the window, its prompt row wins.
+        let offset = cursor_last
+            .saturating_sub(visible.saturating_sub(1))
+            .min(cursor_first)
+            .min(rows.len() - visible);
+
+        // Divider x-positions (match the miller columns / cd overlay).
+        let div_center = x0 + width / 8;
+        let div_right = x0 + width / 2;
+
+        queue!(stdout, cursor::Hide)?;
+
+        // 1. Keybinding hint on its own row, above the frame; the answer
+        // keys are the CURRENT item's choice keys.
+        if in_range(hint_y) {
+            let keys = self.items[self.cursor]
+                .choices
+                .iter()
+                .map(|c| c.key.to_string())
+                .collect::<Vec<_>>()
+                .join("/");
+            let hint = fit(
+                &format!("j/k move · {keys} answer · A all · Enter default · Esc done"),
+                content_w,
+            );
+            let hint_x = x0 + width.saturating_sub(unicode_width(&hint) as u16) / 2;
+            queue!(
+                stdout,
+                cursor::MoveTo(x0, hint_y),
+                Clear(ClearType::CurrentLine),
+                cursor::MoveTo(hint_x, hint_y),
+                PrintStyledContent(hint.bold().with(color_main())),
+            )?;
+        }
+
+        // 2. Top and bottom bars with junctions at the dividers.
+        for x in x0..x_end {
+            let junction = x == x0 || x == div_center || x == div_right;
+            let (top, bot) = if junction {
+                (print_horz_top(), print_horz_bot())
+            } else {
+                (print_horizontal_bar(), print_horizontal_bar())
+            };
+            if in_range(top_bar_y) {
+                queue!(stdout, cursor::MoveTo(x, top_bar_y), top)?;
+            }
+            if in_range(bottom_bar_y) {
+                queue!(stdout, cursor::MoveTo(x, bottom_bar_y), bot)?;
+            }
+        }
+
+        // 3. Title line.
+        if in_range(title_y) {
+            let title = fit(&self.title, content_w);
+            queue!(
+                stdout,
+                cursor::MoveTo(x0, title_y),
+                Clear(ClearType::CurrentLine),
+                cursor::MoveTo(content_x, title_y),
+                PrintStyledContent(title.bold().with(color_main())),
+            )?;
+        }
+
+        // 4. Item rows, windowed around the cursor block.
+        for (row_i, row) in rows.iter().enumerate().skip(offset).take(visible) {
+            let y = list_y0 + (row_i - offset) as u16;
+            if !in_range(y) {
+                break;
+            }
+            queue!(stdout, cursor::MoveTo(x0, y), Clear(ClearType::CurrentLine))?;
+            match row {
+                Row::Prompt(i) if *i == self.cursor => {
+                    // Highlight bar across the content, prompt overprinted.
+                    let prompt = fit(&self.items[*i].prompt, content_w);
+                    queue!(
+                        stdout,
+                        cursor::MoveTo(content_x, y),
+                        PrintStyledContent(" ".repeat(content_w).with(color_main()).reverse()),
+                        cursor::MoveTo(content_x, y),
+                        PrintStyledContent(prompt.with(color_main()).reverse()),
+                    )?;
+                }
+                Row::Prompt(i) => {
+                    // Answered items carry a right-aligned `✓ <label>` badge;
+                    // the prompt yields it the room.
+                    let badge = self.answers[*i]
+                        .map(|c| format!("✓ {}", self.items[*i].choices[c].label));
+                    let badge_w = badge.as_deref().map_or(0, |b| unicode_width(b) as usize);
+                    let prompt_w = if badge_w > 0 {
+                        content_w.saturating_sub(badge_w + 2)
+                    } else {
+                        content_w
+                    };
+                    let prompt = fit(&self.items[*i].prompt, prompt_w);
+                    queue!(
+                        stdout,
+                        cursor::MoveTo(content_x, y),
+                        PrintStyledContent(prompt.grey()),
+                    )?;
+                    if let Some(badge) = badge {
+                        if badge_w <= content_w {
+                            let bx = content_x + (content_w - badge_w) as u16;
+                            queue!(
+                                stdout,
+                                cursor::MoveTo(bx, y),
+                                PrintStyledContent(badge.with(color_marked())),
+                            )?;
+                        }
+                    }
+                }
+                Row::Detail(d) => {
+                    let text = fit(d, content_w.saturating_sub(INDENT as usize));
+                    queue!(
+                        stdout,
+                        cursor::MoveTo(content_x + INDENT, y),
+                        PrintStyledContent(text.dark_grey()),
+                    )?;
+                }
+                Row::Choices => {
+                    // `[k] keep yours   [a] adopt new` — the chosen (or, while
+                    // unanswered, the default) choice highlighted.
+                    let item = &self.items[self.cursor];
+                    let chosen = self.answers[self.cursor].or(item.default);
+                    let mut cx = content_x + INDENT;
+                    let end_x = content_x + content_w as u16;
+                    for (ci, choice) in item.choices.iter().enumerate() {
+                        let remaining = end_x.saturating_sub(cx) as usize;
+                        if remaining == 0 {
+                            break;
+                        }
+                        let text = format!("[{}] {}", choice.key, choice.label);
+                        let truncated = unicode_width(&text) as usize > remaining;
+                        let text = fit(&text, remaining);
+                        let shown_w = unicode_width(&text) as u16;
+                        let styled = if Some(ci) == chosen {
+                            text.with(color_highlight()).bold()
+                        } else {
+                            text.grey()
+                        };
+                        queue!(stdout, cursor::MoveTo(cx, y), PrintStyledContent(styled))?;
+                        if truncated {
+                            break;
+                        }
+                        cx += shown_w + 3;
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -243,6 +460,20 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    /// The keep/adopt choice pair shared across the fixtures.
+    fn keep_adopt() -> Vec<Choice> {
+        vec![
+            Choice {
+                key: 'k',
+                label: "keep".into(),
+            },
+            Choice {
+                key: 'a',
+                label: "adopt".into(),
+            },
+        ]
+    }
+
     fn two_items() -> DecisionFlow {
         DecisionFlow::new(
             FlowKind::UpgradeNotice,
@@ -251,16 +482,7 @@ mod tests {
                 DecisionItem {
                     prompt: "first".into(),
                     detail: vec![],
-                    choices: vec![
-                        Choice {
-                            key: 'k',
-                            label: "keep".into(),
-                        },
-                        Choice {
-                            key: 'a',
-                            label: "adopt".into(),
-                        },
-                    ],
+                    choices: keep_adopt(),
                     default: Some(0),
                 },
                 DecisionItem {
@@ -409,16 +631,7 @@ mod tests {
                 DecisionItem {
                     prompt: "first".into(),
                     detail: vec![],
-                    choices: vec![
-                        Choice {
-                            key: 'k',
-                            label: "keep".into(),
-                        },
-                        Choice {
-                            key: 'a',
-                            label: "adopt".into(),
-                        },
-                    ],
+                    choices: keep_adopt(),
                     default: Some(0),
                 },
                 DecisionItem {
@@ -439,16 +652,7 @@ mod tests {
                 DecisionItem {
                     prompt: "third".into(),
                     detail: vec![],
-                    choices: vec![
-                        Choice {
-                            key: 'k',
-                            label: "keep".into(),
-                        },
-                        Choice {
-                            key: 'a',
-                            label: "adopt".into(),
-                        },
-                    ],
+                    choices: keep_adopt(),
                     default: Some(0),
                 },
             ],
@@ -457,16 +661,6 @@ mod tests {
 
     /// Three items all sharing one keep/adopt choice set.
     fn three_items_same_kind() -> DecisionFlow {
-        let shared = vec![
-            Choice {
-                key: 'k',
-                label: "keep".into(),
-            },
-            Choice {
-                key: 'a',
-                label: "adopt".into(),
-            },
-        ];
         DecisionFlow::new(
             FlowKind::UpgradeNotice,
             "test".into(),
@@ -475,7 +669,7 @@ mod tests {
                 .map(|p| DecisionItem {
                     prompt: p.into(),
                     detail: vec![],
-                    choices: shared.clone(),
+                    choices: keep_adopt(),
                     default: Some(0),
                 })
                 .collect(),
@@ -492,6 +686,7 @@ mod tests {
         assert_eq!(f.answers()[2], Some(1)); // same-set item answered
         assert_eq!(f.answers()[1], None); // different set untouched
         assert!(matches!(op, ModeOp::None)); // #1 still unanswered
+        assert_eq!(f.cursor(), 1); // advanced onto the remaining open item
     }
 
     #[test]
