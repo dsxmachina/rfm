@@ -173,16 +173,24 @@ is gated: a module-global `EmitKey` (path, mtime, pixel box, origin) —
 unchanged key = zero bytes written on repaint. Stale placements are
 handled by frame reconcile, not per-panel plumbing: `begin_frame`
 (manager `draw()`, allowed only in single view without a console
-overlay) → the image draw claims its key → `end_frame` erases any
-unclaimed live placement. Erase discipline: kitty deletes by id
-(`a=d,d=I` — pixels float above cells, never stamp spaces over live
-cells); sixel pixels ARE cell content, so its erase is a space-overwrite
-of the recorded cell region. The sixel raster is pre-fitted to the pane
-pixel box and truncated to whole 6-row bands, so it cannot overflow
-neighbouring panels. Emit errors fall back to the half-block loop for
-that frame. Caveat: tmux/screen swallow both protocols without
-passthrough — auto always resolves to half-block there, and even the
-explicit config override only helps users who configured passthrough.
+overlay) → the image draw claims its key → `end_frame` drops any
+unclaimed live placement. Erase discipline: the reconcile runs AFTER the
+draw pass, so it must never write cell content — kitty deletes by id
+(`a=d,d=I`; pixels float above cells), sixel needs nothing at all
+(sixel pixels ARE cell content and the frame's full repaint already
+overwrote them; a space-overwrite here would wipe the freshly drawn
+cells). The only cell writes the emitters do are for their own target
+region, right before the raster; the image draw also repaints the pane
+strip beside a narrower-than-pane raster every frame (`blank_cells`),
+keeping the full-repaint invariant. The sixel raster is pre-fitted to
+the pane pixel box and truncated to whole 6-row bands, so it cannot
+overflow neighbouring panels. Emit errors fall back to the half-block
+loop for that frame. Caveat: tmux/screen swallow both protocols — auto
+always resolves to half-block there. Explicit pins are honored but NOT
+passthrough-wrapped: pinned kitty inside tmux stays blank regardless of
+allow-passthrough, pinned sixel renders only in a sixel-enabled tmux
+build. The startup probe consumes any keystrokes typed during its
+bounded window along with the reply bytes (accepted D1 trade-off).
 
 ## Architecture: native preview backends
 

@@ -106,11 +106,12 @@ fn geometry_for(proto: GraphicsProtocol) -> Option<graphics::CellGeometry> {
 /// Draw the image via a graphics protocol (kitty or sixel). Returns the
 /// cell rows used, so the caller's info-line/blanking tail runs unchanged
 /// below the image. Any error falls back to the half-block loop for this
-/// frame.
+/// frame. Generic over the writer so the byte stream is unit-testable
+/// against a `Vec<u8>` sink.
 #[allow(clippy::too_many_arguments)]
 fn draw_graphics(
     proto: GraphicsProtocol,
-    stdout: &mut Stdout,
+    stdout: &mut impl io::Write,
     resize_cache: &mut Option<ResizeCache>,
     src: &DynamicImage,
     has_info: bool,
@@ -137,7 +138,8 @@ fn draw_graphics(
     let rgb = resized_rgb(resize_cache, src, px_w, px_h);
     // Placement in cells from the *actual* raster size (thumbnail keeps the
     // aspect ratio), clamped to the pane span for exact clipping.
-    let (cols, rows) = graphics::placement_cells(rgb.width(), rgb.height(), geo, width, rows_budget);
+    let (cols, rows) =
+        graphics::placement_cells(rgb.width(), rgb.height(), geo, width, rows_budget);
     if cols == 0 || rows == 0 {
         return Ok(0);
     }
@@ -161,6 +163,16 @@ fn draw_graphics(
             ))
         }
     };
+    // The raster covers only `cols` of the pane's `width` columns. The
+    // strip beside a narrower-than-pane image is ordinary cell content this
+    // draw owns (full-repaint invariant): paint it every frame — the emit
+    // above may be gated and write zero raster bytes, but without this the
+    // previous preview's cells would persist there indefinitely.
+    graphics::blank_cells(
+        stdout,
+        origin.0.saturating_add(cols)..x_range.end,
+        y_range.start..y_range.start.saturating_add(rows),
+    )?;
     Ok(rows)
 }
 
@@ -5002,5 +5014,68 @@ mod render_cache_tests {
         );
         assert_eq!(geometry_for(GraphicsProtocol::Sixel), None);
         assert_eq!(geometry_for(GraphicsProtocol::HalfBlock), None);
+    }
+}
+
+#[cfg(test)]
+mod graphics_draw_tests {
+    use super::*;
+    use image::{Rgb, RgbImage};
+
+    /// The image branch owns its whole pane region (full-repaint
+    /// invariant): the strip beside a narrower-than-pane raster must be
+    /// painted on EVERY frame, including gated ones that write zero raster
+    /// bytes — otherwise the previous preview's cells persist there.
+    #[test]
+    fn graphics_draw_repaints_strip_beside_narrow_image() {
+        let _g = graphics::emit_test_guard();
+        // Portrait source, much narrower than the pane: 10x100 fitted into
+        // the 39x20-cell pane (assumed 8x16 kitty cell -> 312x320 px)
+        // scales to 32x320 px -> 4 cells wide, 20 rows tall.
+        let src = DynamicImage::ImageRgb8(RgbImage::from_pixel(10, 100, Rgb([1, 2, 3])));
+        let mut cache = None;
+        let mut sink = Vec::new();
+        let rows = draw_graphics(
+            GraphicsProtocol::Kitty,
+            &mut sink,
+            &mut cache,
+            &src,
+            false,
+            &(0..40),
+            &(0..20),
+            Path::new("/strip.png"),
+            SystemTime::UNIX_EPOCH,
+        )
+        .unwrap();
+        assert_eq!(rows, 20);
+        let s = String::from_utf8_lossy(&sink);
+        assert!(s.contains("\x1b_G"), "raster not transmitted: {s:?}");
+        // Strip = columns 5..40 (0-based; CSI is 1-based) for all 20 rows.
+        let strip_first = format!("\x1b[1;6H{}", " ".repeat(35));
+        let strip_last = format!("\x1b[20;6H{}", " ".repeat(35));
+        assert!(s.contains(&strip_first), "strip row 0 not painted: {s:?}");
+        assert!(s.contains(&strip_last), "strip row 19 not painted: {s:?}");
+
+        // Gated repaint (same key): zero raster bytes, strip still painted.
+        let mut sink = Vec::new();
+        let rows = draw_graphics(
+            GraphicsProtocol::Kitty,
+            &mut sink,
+            &mut cache,
+            &src,
+            false,
+            &(0..40),
+            &(0..20),
+            Path::new("/strip.png"),
+            SystemTime::UNIX_EPOCH,
+        )
+        .unwrap();
+        assert_eq!(rows, 20);
+        let s = String::from_utf8_lossy(&sink);
+        assert!(!s.contains("\x1b_G"), "gated frame retransmitted: {s:?}");
+        assert!(
+            s.contains(&strip_first) && s.contains(&strip_last),
+            "gated frame must still repaint the strip: {s:?}"
+        );
     }
 }

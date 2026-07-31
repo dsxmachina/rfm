@@ -26,8 +26,10 @@ fn default_true() -> bool {
 /// `Auto` (the default) resolves at startup: env heuristics first, then a
 /// bounded terminal probe; on any uncertainty it falls back to `HalfBlock`,
 /// the universal cell-based renderer. Explicit values pin the protocol and
-/// skip probing (the escape hatch for terminals that misreport, and for
-/// tmux-passthrough users).
+/// skip probing — the escape hatch for terminals that misreport. (They are
+/// honored inside tmux too, but rfm emits raw sequences without tmux's
+/// passthrough wrapping, so a pinned protocol only renders there if tmux
+/// itself supports it.)
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum ImageProtocolChoice {

@@ -304,7 +304,11 @@ module statics `LIVE: Mutex<Option<LiveImage>>`,
 (parking_lot Mutex, already a dep); `NEXT_ID: AtomicU32` starting at a
 fixed base. Public seam used by the draw path in step 6:
 `begin_frame(allowed)`, `end_frame(w)`, `emit_kitty(w, key, rgb, origin,
-cols, rows) -> Result<Emitted>`, `erase_live(w)`. Trace logs per D10.
+cols, rows) -> Result<Emitted>`. Trace logs per D10. (An `erase_live(w)`
+"belt and braces" erase -- delete-by-id plus space overwrite -- was planned
+here but dropped in review: an unconditional space overwrite after the
+draw pass wipes freshly painted cells; the `end_frame` reconcile must
+never write cell content, so only the delete-by-id survives.)
 
 Verify: `cargo test graphics`.
 

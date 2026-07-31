@@ -196,7 +196,12 @@ pub struct CellGeometry {
 /// size). Returns `None` on any zero or degenerate input — `TIOCGWINSZ`
 /// commonly reports zero pixel fields over ssh/serial, and a zero must never
 /// reach a division.
-pub fn cell_geometry_from_winsize(cols: u16, rows: u16, xpx: u16, ypx: u16) -> Option<CellGeometry> {
+pub fn cell_geometry_from_winsize(
+    cols: u16,
+    rows: u16,
+    xpx: u16,
+    ypx: u16,
+) -> Option<CellGeometry> {
     if cols == 0 || rows == 0 || xpx == 0 || ypx == 0 {
         return None;
     }
@@ -263,8 +268,6 @@ struct LiveImage {
     key: EmitKey,
     /// Kitty image id; `None` for protocols without ids (sixel).
     id: Option<u32>,
-    /// Occupied cells as (columns, rows), absolute screen coordinates.
-    region: (Range<u16>, Range<u16>),
 }
 
 /// Module-global (not per-`FilePreview`): a new preview *replaces* the whole
@@ -308,30 +311,21 @@ pub fn frame_allows_image() -> bool {
 /// `EndSynchronizedUpdate`): a live placement whose key was not claimed this
 /// frame is stale — the selection moved, an overlay opened, the view split —
 /// and is erased. This one hook covers every stale-image case (D4).
+///
+/// The reconcile must never write cell content: it runs AFTER the draw pass
+/// has fully repainted the screen, so stamping spaces here would wipe the
+/// freshly drawn cells (and any overlay on top). Kitty placements float
+/// above cells and need the delete-by-id; id-less (sixel) placements *are*
+/// cell content and were already overwritten by this frame's repaint — for
+/// them the reconcile only forgets the live state.
 pub fn end_frame(w: &mut impl Write) -> io::Result<()> {
     let claimed = CLAIMED.lock().take();
     let mut live = LIVE.lock();
     if let Some(l) = live.as_ref() {
         if claimed.as_ref() != Some(&l.key) {
-            // Kitty: delete-by-id only — the cells underneath were already
-            // repainted by this frame's draw pass, stamping spaces here
-            // would destroy them (and any overlay on top). Id-less
-            // placements (sixel) *are* cells and need the overwrite.
             delete_placement(w, l)?;
             *live = None;
         }
-    }
-    Ok(())
-}
-
-/// Erase the live placement unconditionally: delete-by-id plus a
-/// space-overwrite of the recorded cell region (belt and braces — also
-/// correct on terminals that ignore the delete).
-#[allow(dead_code)] // draw-path integration (step 6)
-pub fn erase_live(w: &mut impl Write) -> io::Result<()> {
-    if let Some(live) = LIVE.lock().take() {
-        delete_placement(w, &live)?;
-        blank_region(w, &live.region)?;
     }
     Ok(())
 }
@@ -377,7 +371,6 @@ pub fn emit_kitty(
     *LIVE.lock() = Some(LiveImage {
         key: key.clone(),
         id: Some(id),
-        region,
     });
     *CLAIMED.lock() = Some(key);
     Ok(Emitted::Transmitted)
@@ -386,12 +379,15 @@ pub fn emit_kitty(
 /// Transmit `rgb` as a sixel raster, gated on `key` exactly like
 /// [`emit_kitty`]:
 /// - live key equals `key` → write nothing, claim the frame, `Gated`;
-/// - otherwise erase the previous placement, blank the target region,
-///   place the cursor at the origin and write the encoded raster.
+/// - otherwise blank the target region, place the cursor at the origin and
+///   write the encoded raster.
 ///
 /// Sixel pixels are ordinary cell content: the placement is recorded
-/// id-less, and every erase (predecessor, [`end_frame`] reconcile,
-/// [`erase_live`]) is a space-overwrite of the recorded cell region. The
+/// id-less and needs no erase sequence — a predecessor's cells are
+/// repainted by whichever draw owns them in the current full-repaint frame
+/// (blanking them here could wipe panes drawn earlier in the same frame).
+/// Only the emitter's own target region is blanked, right before the
+/// raster, to clear remnants below the band-truncated pixel rows. The
 /// caller pre-sizes the raster to the pane pixel box and the encoder
 /// truncates to whole 6-row bands, so the raster cannot overflow into
 /// neighbouring panels (D7).
@@ -407,6 +403,8 @@ pub fn emit_sixel(
         log::trace!("graphics: gated (unchanged)");
         return Ok(Emitted::Gated);
     }
+    // Forget the predecessor without touching its cells (delete_placement
+    // is a no-op for id-less placements — see its doc).
     if let Some(old) = LIVE.lock().take() {
         delete_placement(w, &old)?;
     }
@@ -421,7 +419,6 @@ pub fn emit_sixel(
     *LIVE.lock() = Some(LiveImage {
         key: key.clone(),
         id: None,
-        region,
     });
     *CLAIMED.lock() = Some(key);
     Ok(Emitted::Transmitted)
@@ -470,16 +467,24 @@ fn transmit_kitty(
 
 /// Remove a placement from the terminal. Kitty: `a=d,d=I` — capital `I`
 /// also frees the pixel data. Id-less placements (sixel) have no delete
-/// command; their pixels are ordinary cell content, overwritten with spaces.
+/// command and need none: their pixels are ordinary cell content, replaced
+/// whenever the owning cells are repainted — every draw pass is a full
+/// repaint, so writing spaces here would only destroy content drawn this
+/// frame (or, after a resize, land on unrelated cells).
 fn delete_placement(w: &mut impl Write, live: &LiveImage) -> io::Result<()> {
-    match live.id {
-        Some(id) => {
-            write!(w, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
-            log::trace!("graphics: erase id={id}");
-        }
-        None => blank_region(w, &live.region)?,
+    if let Some(id) = live.id {
+        write!(w, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
+        log::trace!("graphics: erase id={id}");
     }
     Ok(())
+}
+
+/// Overwrite a cell region with default-colored spaces. Public entry for
+/// the preview draw path: the graphics image branch owns its whole pane
+/// region and must repaint the strip beside a narrower-than-pane raster on
+/// every frame — even when the raster emit itself is gated to zero bytes.
+pub fn blank_cells(w: &mut impl Write, cols: Range<u16>, rows: Range<u16>) -> io::Result<()> {
+    blank_region(w, &(cols, rows))
 }
 
 /// Overwrite a cell region with default-colored spaces.
@@ -541,6 +546,22 @@ fn reset_emit_state_for_test() {
     *LIVE.lock() = None;
     *CLAIMED.lock() = None;
     FRAME_ALLOWED.store(false, Ordering::Relaxed);
+}
+
+/// The emitter state (LIVE/CLAIMED/FRAME_ALLOWED) is module-global by
+/// design (D5) — cargo test runs threads in parallel, so every stateful
+/// emitter test (here and in the preview draw-path tests) serializes on
+/// this lock and starts from a clean slate.
+#[cfg(test)]
+static EMIT_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// Serialize a test that touches the module-global emitter state and reset
+/// that state to a clean slate.
+#[cfg(test)]
+pub(crate) fn emit_test_guard() -> parking_lot::MutexGuard<'static, ()> {
+    let guard = EMIT_TEST_LOCK.lock();
+    reset_emit_state_for_test();
+    guard
 }
 
 // --- I/O shell: resolved protocol + geometry, startup probe, ioctl.
@@ -607,6 +628,13 @@ fn winsize_via_ioctl() -> Option<(u16, u16, u16, u16)> {
 /// `deadline` passed, then drain any late bytes with zero-timeout polls so
 /// they cannot leak into the crossterm EventStream as phantom keys (D1).
 /// The fd is a parameter so tests drive it with a socketpair instead of a tty.
+///
+/// Known trade-off of the D1 drain: keystrokes typed before/during the
+/// probe window are read into the same buffer as the replies and discarded
+/// with them — type-ahead across the (bounded, <250 ms) probe is lost.
+/// They cannot be re-injected: nothing can push bytes back into the tty
+/// input queue without TIOCSTI (root-only on modern kernels), and the
+/// crossterm EventStream that will own stdin does not exist yet.
 fn read_probe_replies(fd: RawFd, deadline: Instant) -> Vec<u8> {
     let mut buf = Vec::new();
     loop {
@@ -793,12 +821,7 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        move |key: &str| {
-            owned
-                .iter()
-                .find(|(k, _)| k == key)
-                .map(|(_, v)| v.clone())
-        }
+        move |key: &str| owned.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
     }
 
     // --- env heuristics
@@ -945,7 +968,11 @@ mod tests {
         ] {
             assert_eq!(resolve(choice, None, None), want);
             assert_eq!(
-                resolve(choice, Some(GraphicsProtocol::HalfBlock), Some(&contradicting)),
+                resolve(
+                    choice,
+                    Some(GraphicsProtocol::HalfBlock),
+                    Some(&contradicting)
+                ),
                 want
             );
         }
@@ -968,7 +995,11 @@ mod tests {
             GraphicsProtocol::HalfBlock
         );
         assert_eq!(
-            resolve(ImageProtocolChoice::Auto, Some(GraphicsProtocol::Kitty), None),
+            resolve(
+                ImageProtocolChoice::Auto,
+                Some(GraphicsProtocol::Kitty),
+                None
+            ),
             GraphicsProtocol::Kitty
         );
     }
@@ -1090,7 +1121,10 @@ mod tests {
         let elapsed = start.elapsed();
         assert!(buf.is_empty());
         assert!(elapsed >= deadline, "returned before deadline: {elapsed:?}");
-        assert!(elapsed < Duration::from_millis(400), "overslept: {elapsed:?}");
+        assert!(
+            elapsed < Duration::from_millis(400),
+            "overslept: {elapsed:?}"
+        );
     }
 
     #[test]
@@ -1214,16 +1248,7 @@ mod tests {
     use image::{Rgb, RgbImage};
     use std::path::PathBuf;
 
-    /// The emitter state (LIVE/CLAIMED/FRAME_ALLOWED) is module-global by
-    /// design (D5) — cargo test runs threads in parallel, so every stateful
-    /// emitter test serializes on this lock and starts from a clean slate.
-    static EMIT_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
-
-    fn emit_guard() -> parking_lot::MutexGuard<'static, ()> {
-        let guard = EMIT_LOCK.lock();
-        reset_emit_state_for_test();
-        guard
-    }
+    use super::emit_test_guard as emit_guard;
 
     fn test_key(name: &str, px_w: u32, px_h: u32) -> EmitKey {
         EmitKey {
@@ -1333,27 +1358,22 @@ mod tests {
     }
 
     #[test]
-    fn kitty_delete_sequence() {
-        let _g = emit_guard();
-        let rgb = RgbImage::from_pixel(2, 2, Rgb([0, 0, 0]));
+    fn blank_cells_writes_spaces_per_row() {
+        // 3 columns starting at col 5 (0-based), rows 2..4 -> two CUPs
+        // (1-based CSI) each followed by three spaces.
         let mut sink = Vec::new();
-        emit_kitty(&mut sink, test_key("c.png", 16, 32), &rgb, 2, 1).unwrap();
-        let (_, id) = live_snapshot_for_test().expect("live after emit");
-        let id = id.expect("kitty placement has an id");
-
-        let mut sink = Vec::new();
-        erase_live(&mut sink).unwrap();
+        blank_cells(&mut sink, 5..8, 2..4).unwrap();
         let s = String::from_utf8_lossy(&sink);
-        // Capital I frees the pixel data too.
-        assert!(
-            s.contains(&format!("\x1b_Ga=d,d=I,i={id},q=2\x1b\\")),
-            "delete-by-id missing: {s:?}"
-        );
-        // Belt and braces: the recorded cell region (origin (10,2), 2x1
-        // cells) is overwritten with spaces for terminals that ignore the
-        // delete. CSI H is 1-based: row 3, col 11.
-        assert!(s.contains("\x1b[3;11H  "), "space overwrite missing: {s:?}");
-        assert!(live_snapshot_for_test().is_none(), "live state must clear");
+        assert!(s.contains("\x1b[3;6H   "), "row 2 blank missing: {s:?}");
+        assert!(s.contains("\x1b[4;6H   "), "row 3 blank missing: {s:?}");
+
+        // Empty ranges write nothing at all.
+        let mut sink = Vec::new();
+        blank_cells(&mut sink, 5..5, 2..4).unwrap();
+        assert!(sink.is_empty());
+        let mut sink = Vec::new();
+        blank_cells(&mut sink, 5..8, 4..4).unwrap();
+        assert!(sink.is_empty());
     }
 
     #[test]
@@ -1411,9 +1431,17 @@ mod tests {
         let mut sink = Vec::new();
         end_frame(&mut sink).unwrap();
         let s = String::from_utf8_lossy(&sink);
+        // Capital I frees the pixel data too.
         assert!(
             s.contains(&format!("\x1b_Ga=d,d=I,i={id},q=2\x1b\\")),
             "unclaimed placement not deleted: {s:?}"
+        );
+        // Delete-by-id ONLY: end_frame runs after the draw pass has fully
+        // repainted the cells underneath — stamping spaces here would wipe
+        // the freshly drawn content (and any overlay on top).
+        assert!(
+            !s.contains("\x1b["),
+            "end_frame must not write cell content: {s:?}"
         );
         assert!(live_snapshot_for_test().is_none());
 
@@ -1463,7 +1491,7 @@ mod tests {
     // --- sixel emitter (step 5)
 
     #[test]
-    fn emit_sixel_gates_and_erases_like_kitty() {
+    fn emit_sixel_gates_like_kitty() {
         let _g = emit_guard();
         let rgb = RgbImage::from_pixel(4, 6, Rgb([255, 0, 0]));
         let key = test_key("s.png", 32, 16);
@@ -1490,19 +1518,10 @@ mod tests {
             Emitted::Gated
         );
         assert!(sink.is_empty(), "gated emit wrote bytes: {sink:?}");
-
-        // Erase discipline: no kitty delete-by-id — the recorded 2x1 cell
-        // region at (10,2) is overwritten with default-colored spaces.
-        let mut sink = Vec::new();
-        erase_live(&mut sink).unwrap();
-        let s = String::from_utf8_lossy(&sink);
-        assert!(!s.contains("\x1b_G"), "no APC for sixel erase: {s:?}");
-        assert!(s.contains("\x1b[3;11H  "), "space overwrite missing: {s:?}");
-        assert!(live_snapshot_for_test().is_none(), "live state must clear");
     }
 
     #[test]
-    fn emit_sixel_end_frame_reconciles_like_kitty() {
+    fn emit_sixel_end_frame_reconciles_without_writes() {
         let _g = emit_guard();
         let rgb = RgbImage::from_pixel(4, 6, Rgb([255, 0, 0]));
         let key = test_key("t.png", 32, 16);
@@ -1521,33 +1540,46 @@ mod tests {
         assert!(sink.is_empty(), "claimed sixel must survive end_frame");
         assert!(live_snapshot_for_test().is_some());
 
-        // Unclaimed frame (selection moved away): the stale sixel cells are
-        // blanked and the live state cleared.
+        // Unclaimed frame (selection moved away): the live state is
+        // forgotten but NOTHING is written — sixel pixels are ordinary cell
+        // content and the draw pass that just ran has already repainted the
+        // whole region; stamping spaces here would wipe that fresh content
+        // (blanked text previews, overlay hole-punch).
         begin_frame(true);
         let mut sink = Vec::new();
         end_frame(&mut sink).unwrap();
-        let s = String::from_utf8_lossy(&sink);
-        assert!(s.contains("\x1b[3;11H  "), "stale sixel not blanked: {s:?}");
+        assert!(
+            sink.is_empty(),
+            "sixel reconcile must not write: {:?}",
+            String::from_utf8_lossy(&sink)
+        );
         assert!(live_snapshot_for_test().is_none());
     }
 
     #[test]
-    fn emit_sixel_new_key_blanks_predecessor() {
+    fn emit_sixel_new_key_skips_predecessor_blank() {
         let _g = emit_guard();
         let rgb = RgbImage::from_pixel(4, 6, Rgb([255, 0, 0]));
         let mut sink = Vec::new();
         emit_sixel(&mut sink, test_key("old.png", 32, 16), &rgb, 2, 1).unwrap();
 
-        // New selection: the old placement's cells are overwritten before
-        // the new raster is transmitted.
+        // New selection at a different origin: the old placement's region
+        // must NOT be touched mid-frame — those cells belong to whichever
+        // draw owns them in this frame's full repaint (blanking them could
+        // wipe panes drawn earlier, e.g. after a resize). Only the new
+        // target region is blanked, before the raster.
         let mut key = test_key("new.png", 32, 16);
         key.origin_cell = (0, 0);
         let mut sink = Vec::new();
         emit_sixel(&mut sink, key, &rgb, 2, 1).unwrap();
         let s = String::from_utf8_lossy(&sink);
-        let old_blank = s.find("\x1b[3;11H").expect("old region blanked");
+        assert!(
+            !s.contains("\x1b[3;11H"),
+            "old region must not be blanked: {s:?}"
+        );
+        let target_blank = s.find("\x1b[1;1H").expect("target region blanked");
         let dcs = s.find("\x1bP").expect("new raster transmitted");
-        assert!(old_blank < dcs, "erase must precede the new raster: {s:?}");
+        assert!(target_blank < dcs, "blank must precede the raster: {s:?}");
     }
 
     #[test]

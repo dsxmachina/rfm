@@ -872,8 +872,10 @@ impl PanelManager {
         self.draw_panels()?;
         self.draw_console()?;
         self.draw_log()?;
-        // Reconcile: erase any graphics placement no draw claimed this
+        // Reconcile: drop any graphics placement no draw claimed this
         // frame (selection moved, overlay opened, split toggled, ...).
+        // Kitty is deleted by id; sixel cells were already repainted by
+        // this frame's full repaint — the reconcile never writes cells.
         super::graphics::end_frame(&mut self.stdout)?;
         self.stdout.execute(EndSynchronizedUpdate)?;
         self.dirty = false;

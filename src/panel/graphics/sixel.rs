@@ -34,7 +34,11 @@ pub(super) fn palette_rgb(idx: u8) -> (u8, u8, u8) {
     let g7 = (idx as u32 % 42) / 6;
     let b6 = idx as u32 % 6;
     // Levels span 0..=5 (r, b) and 0..=6 (g), stretched onto 0..=100.
-    ((r6 * 100 / 5) as u8, (g7 * 100 / 6) as u8, (b6 * 100 / 5) as u8)
+    (
+        (r6 * 100 / 5) as u8,
+        (g7 * 100 / 6) as u8,
+        (b6 * 100 / 5) as u8,
+    )
 }
 
 /// Encode `rgb` as a complete sixel sequence:
@@ -208,7 +212,10 @@ mod tests {
         let rgb = RgbImage::from_pixel(4, 8, Rgb([0, 0, 0]));
         let out = sixel_encode(&rgb);
         let s = String::from_utf8_lossy(&out);
-        assert!(s.starts_with("\x1bP0;1;0q\"1;1;4;6"), "height not clamped: {s}");
+        assert!(
+            s.starts_with("\x1bP0;1;0q\"1;1;4;6"),
+            "height not clamped: {s}"
+        );
         assert_eq!(s.matches('-').count(), 1, "exactly one band: {s}");
         // Degenerate: fewer than 6 rows encodes an empty raster, no bands.
         let tiny = sixel_encode(&RgbImage::from_pixel(4, 5, Rgb([0, 0, 0])));
