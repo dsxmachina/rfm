@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Config robustness: unknown keys warn with a "did you mean …?" suggestion;
   parse errors drop only the offending section (with its exact TOML path)
   instead of discarding the whole file.
+- **One-time upgrade notice** — the first start after an upgrade shows an
+  interactive overlay reviewing what changed for *you*: keep/adopt per
+  dropped default keybinding, plus a migrate offer when legacy files are
+  still folded in. Asked once per version; built on a generic decision-flow
+  overlay that will power future guided flows.
 
 > **Upgrading:** nothing to do. Old three-file configs keep working
 > unchanged — `keys.toml` / `open.toml` are folded in at load time, purely

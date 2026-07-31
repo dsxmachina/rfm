@@ -249,3 +249,27 @@ pre-existing `config.toml`) to `*.bak`. Comments are lost — the reference is
 exists, so re-running it can never destroy a previous run's backups. It also
 doubles as a "shrink my stale full-copy config" command: values that merely
 restate the defaults are dropped.
+
+## After an upgrade
+
+When a new rfm version changes your effective configuration, the first start
+shows a one-time interactive notice — an overlay listing everything worth
+reviewing:
+
+- **One item per dropped default**: a new default keybinding collided with
+  one of your own, so yours won. Answer `y` (keep yours — nothing happens)
+  or `a` (adopt the new default — rfm logs the exact rebinding instructions;
+  it never edits your config for you).
+- **A final migrate item** when legacy `keys.toml` / `open.toml` are still
+  being folded in: `m` runs the `--migrate-config` unification right away,
+  `n` skips it.
+
+Navigate with `j`/`k`; `A` applies the current answer to every item with the
+same choices; `Enter` accepts an item's preselected default (keep yours /
+not now). `Esc` accepts the defaults for everything still unanswered and
+closes.
+
+The notice appears **once per rfm version**: however you answer (including
+Esc), it won't ask again until the next upgrade. Answering "not now" on the
+migration simply re-offers it with the next version — or run
+`rfm --migrate-config` yourself anytime.

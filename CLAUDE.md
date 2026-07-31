@@ -86,6 +86,9 @@ Caveats:
   spaces and `&` (e.g. "a directory with spaces", "Bilder & Videos").
 - Isolate zoxide in tests with `_ZO_DATA_DIR=$(mktemp -d)` in the tmux
   pane before launching rfm; seed with `zoxide add <path>`.
+- Integration tests around the upgrade notice must export
+  `XDG_STATE_HOME=$(mktemp -d)` in the tmux pane before launching rfm —
+  the real state file records the notice as seen and suppresses it.
 
 ## Architecture: modal modes
 
@@ -94,7 +97,11 @@ consoles currently share `console.rs`; split pending). Adapters are
 pure state machines: `handle_key → ModeOp`, testable without a
 terminal. All effects and the derived redraws are applied centrally in
 `PanelManager::apply_mode_op` (manager.rs). The mode strings the debug
-socket reports come from `ModalInput::name()`.
+socket reports come from `ModalInput::name()`. `decision-flow`
+(`decision_flow.rs`) is the generic multi-item choice overlay (y/n/per-item
+keys, `A` = apply answer to all same-choice items, Esc accepts defaults);
+today it backs the one-time upgrade notice, and is the foundation for
+future guided flows.
 
 ## Architecture: configuration
 
@@ -108,7 +115,10 @@ under `[keys]`/`[open]` (never rewrites disk; `--migrate-config` →
 user over defaults (`merge.rs`: tables merge, scalars/arrays replace),
 deserializes typed with per-section error dropping + unknown-key typo
 warnings. Keybinding conflicts: `CommandParser::build(defaults, user)` is
-two-pass, user wins, dropped defaults are logged and returned.
+two-pass, user wins, dropped defaults are logged and returned. Startup shows
+a one-time upgrade notice (decision-flow overlay) when defaults were dropped
+against user bindings or legacy files were folded; the seen-version lives in
+`$XDG_STATE_HOME/rfm/state.toml`.
 
 ## Architecture: tabs & split view
 
