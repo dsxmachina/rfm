@@ -23,8 +23,10 @@ use_trash = true
 # Persist image/video preview thumbnails on disk so they survive restarts:
 #   - preview_cache = true  : persist image/video preview thumbnails in
 #     $XDG_CACHE_HOME/rfm (usually ~/.cache/rfm) so they survive restarts.
-#   - preview_cache = false : previews stay in-memory only; nothing about
-#     your files is written to disk. "rm -rf ~/.cache/rfm" is always safe.
+#   - preview_cache = false : nothing about your files is written to disk.
+#     Image previews stay in-memory; video previews show a mediainfo text
+#     block instead of a thumbnail (an ffmpeg thumbnail would be a write).
+# "rm -rf ~/.cache/rfm" is always safe, even while rfm is running.
 preview_cache = true
 
 # Use Nerd Font icons for file types.

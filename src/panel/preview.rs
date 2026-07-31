@@ -332,8 +332,7 @@ fn image_info_lines(
 }
 
 /// Image arm: decode once, derive the info lines from the decode itself
-/// (dimensions are read before the thumbnail shrink). `image_preview`
-/// stays untouched - the video path feeds it thumbnails.
+/// (dimensions are read before the thumbnail shrink).
 fn native_image_preview(path: &Path, mime: &mime::Mime) -> Preview {
     let meta = path.metadata().ok();
     let byte_size = meta.as_ref().map(|m| m.len()).unwrap_or_default();
@@ -353,8 +352,17 @@ fn native_image_preview(path: &Path, mime: &mime::Mime) -> Preview {
                 modified,
                 mime.subtype().as_str(),
             );
+            // thumbnail() UPscales smaller-than-bound sources; keep
+            // originals that already fit — no reason to hold (or
+            // persist) an inflated raster, the draw path rescales to
+            // cell dimensions anyway.
+            let img = if img.width() <= 960 && img.height() <= 540 {
+                img
+            } else {
+                img.thumbnail(960, 540)
+            };
             Preview::Image {
-                img: Some(img.thumbnail(960, 540)),
+                img: Some(img),
                 info,
             }
         }
@@ -426,21 +434,6 @@ fn cached_image_info(path: &Path, cached: &DynamicImage, subtype: &str) -> Vec<S
     image_info_lines(width, height, cached.color(), byte_size, modified, subtype)
 }
 
-fn image_preview(path: impl AsRef<Path>, info: Vec<String>) -> Preview {
-    log::debug!("--- creating image-preview for {}", path.as_ref().display());
-    if let Ok(img_bytes) = image::io::Reader::open(&path) {
-        let img = img_bytes.decode().ok().map(|img| img.thumbnail(960, 540));
-        log::debug!("--- created image-preview for {}", path.as_ref().display());
-        Preview::Image { img, info }
-    } else {
-        log::debug!(
-            "--- created empty image-preview for {}",
-            path.as_ref().display()
-        );
-        Preview::Image { img: None, info }
-    }
-}
-
 fn video_preview(path: impl AsRef<Path>, modified: SystemTime) -> Preview {
     // Check, if ffmpeg exists
     static FFMPEG_INSTALLED: OnceCell<bool> = OnceCell::new();
@@ -457,102 +450,134 @@ fn video_preview(path: impl AsRef<Path>, modified: SystemTime) -> Preview {
         success
     });
     if !FFMPEG_INSTALLED.get().unwrap() {
-        return cmd_to_preview(
-            "mediainfo",
-            std::process::Command::new("mediainfo")
-                .arg(path.as_ref())
-                .output()
-                .and_then(|o| o.stdout.lines().take(128).collect()),
-        );
+        return cmd_to_preview("mediainfo", mediainfo(path.as_ref()));
     }
     let modified = mtime_secs(modified);
 
-    // Use ffmpeg
-    match ffmpeg_thumbnail(&path, modified) {
+    // Use ffmpeg — unless the user opted out of on-disk thumbnails
+    // entirely (`preview_cache = false` promises "nothing about your
+    // files is written to disk", and an ffmpeg thumbnail IS a write).
+    let preview = video_thumbnail_dir()
+        .ok_or_else(|| anyhow::anyhow!("on-disk thumbnails disabled (preview_cache = false)"))
+        .and_then(|dir| ffmpeg_thumbnail(dir, &path, modified));
+    match preview {
         Ok(preview) => preview,
         Err(e) => {
             // Expected e.g. for videos shorter than the 10s thumbnail
             // seek - not worth an on-screen error on every visit.
             log::debug!("no ffmpeg thumbnail, falling back to mediainfo: {e}");
-            cmd_to_preview(
-                "mediainfo",
-                std::process::Command::new("mediainfo")
-                    .arg(path.as_ref())
-                    .output()
-                    .and_then(|o| o.stdout.lines().take(128).collect()),
-            )
+            cmd_to_preview("mediainfo", mediainfo(path.as_ref()))
         }
     }
 }
 
-/// Thumbnail dir when the persistent raster cache is off/unavailable:
-/// today's exact pre-cache behavior — `temp_dir()/rfm-thumbnails` with
-/// one-time 7-day housekeeping (a thumbnail is never referenced again
-/// once its video changed, so don't litter the temp-dir forever).
+/// Where video thumbnails may be written: the persistent raster cache
+/// when available, the temp-dir fallback when the cache is enabled but
+/// could not be set up, and `None` when the user opted out via
+/// `preview_cache = false` — then there is no thumbnail location at all
+/// and video previews degrade to mediainfo text.
+fn video_thumbnail_dir() -> Option<&'static Path> {
+    video_thumbnail_dir_from(
+        raster_cache::dir(),
+        raster_cache::persistence_enabled(),
+        fallback_thumbnail_dir,
+    )
+}
+
+/// Pure core of [`video_thumbnail_dir`], parameterized for tests.
+fn video_thumbnail_dir_from(
+    cache_dir: Option<&'static Path>,
+    enabled: bool,
+    fallback: fn() -> &'static Path,
+) -> Option<&'static Path> {
+    match cache_dir {
+        Some(dir) => Some(dir),
+        None if enabled => Some(fallback()),
+        None => None,
+    }
+}
+
+/// Thumbnail dir when the persistent raster cache is enabled but
+/// unavailable (could not be resolved/created): today's exact pre-cache
+/// behavior — `temp_dir()/rfm-thumbnails` with one-time 7-day
+/// housekeeping (a thumbnail is never referenced again once its video
+/// changed, so don't litter the temp-dir forever).
 fn fallback_thumbnail_dir() -> &'static Path {
     static THUMBNAIL_DIR: OnceCell<PathBuf> = OnceCell::new();
     THUMBNAIL_DIR.get_or_init(|| {
         let dir = temp_dir().join("rfm-thumbnails");
-        let _ = std::fs::create_dir_all(&dir);
+        let _ = raster_cache::create_dir_all_private(&dir);
         prune_older_than(&dir, Duration::from_secs(7 * 24 * 60 * 60));
         dir
     })
 }
 
-fn ffmpeg_thumbnail(path: impl AsRef<Path>, modified: u64) -> anyhow::Result<Preview> {
-    let dir = raster_cache::dir().unwrap_or_else(fallback_thumbnail_dir);
+/// Build (or fetch) the `vid120` thumbnail of `path` in `dir` and wrap
+/// it in an image preview. Lookups go through the cache's corrupt-entry
+/// rule: a decode failure deletes the entry and regenerates — never a
+/// blank preview served until the 30-day prune.
+fn ffmpeg_thumbnail(dir: &Path, path: impl AsRef<Path>, modified: u64) -> anyhow::Result<Preview> {
+    if let Some(img) =
+        raster_cache::lookup_in(dir, path.as_ref(), modified, raster_cache::KIND_VIDEO)
+    {
+        log::debug!("raster cache hit for {}", path.as_ref().display());
+        return Ok(Preview::Image {
+            img: Some(img),
+            info: mediainfo(path).unwrap_or_default(),
+        });
+    }
     let name = raster_cache::entry_name(path.as_ref(), modified, raster_cache::KIND_VIDEO);
     let thumbnail = dir.join(&name);
-    if thumbnail.exists() {
-        log::debug!("raster cache hit for {}", path.as_ref().display());
-        Ok(image_preview(
-            thumbnail,
-            mediainfo(path).unwrap_or_default(),
-        ))
-    } else {
-        log::debug!("generating thumbnail {}", thumbnail.display());
-        // ffmpeg writes to a same-dir temp name and the result is
-        // renamed into place, so the exists()-fast-path above can never
-        // see a partial file. The extension stays LAST so ffmpeg's
-        // container inference still works.
-        let part = dir.join(format!("{name}.{}.part.jpg", std::process::id()));
-        let mut cmd = std::process::Command::new("ffmpeg");
-        cmd.arg("-ss")
-            .arg("00:00:10")
-            .arg("-y")
-            .arg("-i")
-            .arg(path.as_ref())
-            .arg("-vframes")
-            .arg("1")
-            .arg("-q:v")
-            .arg("2")
-            .arg("-vf")
-            .arg("scale=120:-1")
-            .arg(&part);
-        cmd.stdin(Stdio::null());
-        let out = cmd.output()?;
-        // ffmpeg fails without writing the thumbnail e.g. for videos
-        // shorter than the 10s seek; report that instead of building a
-        // preview from a file that was never written (the caller falls
-        // back to mediainfo on Err).
-        if !out.status.success() || !part.exists() {
-            // A failed run may still have created a partial file; drop it.
-            let _ = std::fs::remove_file(&part);
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            let tail: Vec<&str> = stderr.lines().rev().take(3).collect();
-            anyhow::bail!(
-                "ffmpeg did not produce a thumbnail ({}): {}",
-                out.status,
-                tail.into_iter().rev().collect::<Vec<_>>().join(" | ")
-            );
-        }
-        std::fs::rename(&part, &thumbnail)?;
-        raster_cache::cleanup_stale(dir, path.as_ref(), modified);
-        Ok(image_preview(
-            thumbnail,
-            mediainfo(path).unwrap_or_default(),
-        ))
+    log::debug!("generating thumbnail {}", thumbnail.display());
+    // A mid-session `rm -rf` of the cache dir must not cost the session
+    // its video previews — recreate the dir before ffmpeg writes to it.
+    let _ = raster_cache::create_dir_all_private(dir);
+    // ffmpeg writes to a same-dir temp name and the result is renamed
+    // into place, so the lookup fast path above can never see a partial
+    // file. The extension stays LAST so ffmpeg's container inference
+    // still works.
+    let part = dir.join(format!("{name}.{}.part.jpg", raster_cache::part_token()));
+    let mut cmd = std::process::Command::new("ffmpeg");
+    cmd.arg("-ss")
+        .arg("00:00:10")
+        .arg("-y")
+        .arg("-i")
+        .arg(path.as_ref())
+        .arg("-vframes")
+        .arg("1")
+        .arg("-q:v")
+        .arg("2")
+        .arg("-vf")
+        .arg("scale=120:-1")
+        .arg(&part);
+    cmd.stdin(Stdio::null());
+    let out = cmd.output()?;
+    // ffmpeg fails without writing the thumbnail e.g. for videos
+    // shorter than the 10s seek; report that instead of building a
+    // preview from a file that was never written (the caller falls
+    // back to mediainfo on Err).
+    if !out.status.success() || !part.exists() {
+        // A failed run may still have created a partial file; drop it.
+        let _ = std::fs::remove_file(&part);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let tail: Vec<&str> = stderr.lines().rev().take(3).collect();
+        anyhow::bail!(
+            "ffmpeg did not produce a thumbnail ({}): {}",
+            out.status,
+            tail.into_iter().rev().collect::<Vec<_>>().join(" | ")
+        );
     }
+    std::fs::rename(&part, &thumbnail)?;
+    raster_cache::cleanup_stale(dir, path.as_ref(), modified);
+    // Decode via the same corrupt-entry rule: if even the fresh entry
+    // does not decode, it is deleted and the caller falls back to
+    // mediainfo instead of showing a blank image preview.
+    let img = raster_cache::lookup_in(dir, path.as_ref(), modified, raster_cache::KIND_VIDEO)
+        .ok_or_else(|| anyhow::anyhow!("freshly generated thumbnail failed to decode"))?;
+    Ok(Preview::Image {
+        img: Some(img),
+        info: mediainfo(path).unwrap_or_default(),
+    })
 }
 
 /// Best-effort cleanup for the thumbnail-dir: removes regular files in
@@ -1234,6 +1259,34 @@ mod native_backend_tests {
     }
 
     #[test]
+    fn small_images_are_previewed_and_cached_at_original_size() {
+        // image's thumbnail() UPscales sources smaller than the 960×540
+        // bound; the producer must not persist an inflated raster (a
+        // 100×80 png would balloon to 540-fit) — the draw path rescales
+        // to cell dimensions anyway.
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("small.png");
+        image::RgbImage::new(100, 80).save(&path).unwrap();
+        let mime: mime::Mime = "image/png".parse().unwrap();
+        let modified = path.metadata().unwrap().modified().unwrap();
+        match cached_image_preview_in(Some(cache.path()), &path, modified, &mime) {
+            Preview::Image { img: Some(img), .. } => {
+                assert_eq!((img.width(), img.height()), (100, 80), "no upscale");
+            }
+            _ => panic!("expected an image preview"),
+        }
+        let cached = raster_cache::lookup_in(
+            cache.path(),
+            &path,
+            mtime_secs(modified),
+            raster_cache::KIND_IMAGE,
+        )
+        .unwrap();
+        assert_eq!((cached.width(), cached.height()), (100, 80));
+    }
+
+    #[test]
     fn cached_image_preview_of_an_undecodable_image_falls_back_to_text() {
         // The mediainfo fallback survives the caching front-end, and a
         // failed decode never writes a cache entry.
@@ -1734,11 +1787,11 @@ mod external_cmd_tests {
         video
     }
 
-    /// Every file in the fallback thumbnail dir belonging to `video`
+    /// Every file in the thumbnail dir `dir` belonging to `video`
     /// (matched on the 16-hex hash prefix of its cache key).
-    fn thumbnail_dir_entries_of(video: &Path) -> Vec<String> {
+    fn thumbnail_dir_entries_of(dir: &Path, video: &Path) -> Vec<String> {
         let prefix = raster_cache::entry_name(video, 0, raster_cache::KIND_VIDEO)[..17].to_string();
-        std::fs::read_dir(temp_dir().join("rfm-thumbnails"))
+        std::fs::read_dir(dir)
             .map(|entries| {
                 entries
                     .flatten()
@@ -1752,36 +1805,101 @@ mod external_cmd_tests {
     #[test]
     fn ffmpeg_thumbnail_of_a_too_short_video_is_an_error() {
         let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
         let video = make_video(tmp.path(), "short.mp4", 1);
         // The hardcoded 10s seek is past the end of this clip, so
         // ffmpeg fails and writes no thumbnail - that must surface as
         // Err (the caller then falls back to mediainfo) instead of a
         // phantom image preview.
-        assert!(ffmpeg_thumbnail(&video, 0).is_err());
+        assert!(ffmpeg_thumbnail(cache.path(), &video, 0).is_err());
         // the failed run leaves no .part file behind
         assert!(
-            thumbnail_dir_entries_of(&video).is_empty(),
+            thumbnail_dir_entries_of(cache.path(), &video).is_empty(),
             "a failed run must leave nothing behind"
         );
     }
 
     #[test]
     fn ffmpeg_thumbnail_of_a_long_video_lands_in_the_thumbnail_dir() {
-        // raster_cache::dir() is uninitialized in unit tests → the
-        // temp_dir fallback is exercised deterministically.
         let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
         let video = make_video(tmp.path(), "long.mp4", 15);
-        ffmpeg_thumbnail(&video, 1).unwrap();
-        let thumbnail = temp_dir().join("rfm-thumbnails").join(
-            raster_cache::entry_name(&video, 1, raster_cache::KIND_VIDEO),
-        );
-        assert!(thumbnail.is_file());
+        ffmpeg_thumbnail(cache.path(), &video, 1).unwrap();
+        let name = raster_cache::entry_name(&video, 1, raster_cache::KIND_VIDEO);
+        assert!(cache.path().join(&name).is_file());
         // atomicity: no .part siblings left behind
-        assert_eq!(
-            thumbnail_dir_entries_of(&video),
-            vec![thumbnail.file_name().unwrap().to_string_lossy().into_owned()]
+        assert_eq!(thumbnail_dir_entries_of(cache.path(), &video), vec![name]);
+    }
+
+    #[test]
+    fn ffmpeg_thumbnail_corrupt_cache_entry_is_deleted_and_regenerated() {
+        // Design §error handling: a lookup decode failure deletes the
+        // entry and regenerates. An exists()-only fast path would serve
+        // this corrupt entry as a BLANK preview until the 30-day prune.
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let video = make_video(tmp.path(), "long.mp4", 15);
+        let entry = cache.path().join(raster_cache::entry_name(
+            &video,
+            1,
+            raster_cache::KIND_VIDEO,
+        ));
+        std::fs::write(&entry, b"not a jpeg").unwrap();
+        match ffmpeg_thumbnail(cache.path(), &video, 1).unwrap() {
+            Preview::Image { img, .. } => assert!(img.is_some(), "regenerated, never blank"),
+            _ => panic!("expected an image preview"),
+        }
+        // the regenerated entry decodes
+        assert!(
+            raster_cache::lookup_in(cache.path(), &video, 1, raster_cache::KIND_VIDEO).is_some()
         );
-        let _ = std::fs::remove_file(thumbnail);
+    }
+
+    #[test]
+    fn ffmpeg_thumbnail_recreates_a_deleted_thumbnail_dir() {
+        // "rm -rf ~/.cache/rfm is always safe" — even mid-session it
+        // must not degrade every video preview until restart.
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let gone = cache.path().join("wiped-mid-session");
+        let video = make_video(tmp.path(), "long.mp4", 15);
+        ffmpeg_thumbnail(&gone, &video, 1).unwrap();
+        let name = raster_cache::entry_name(&video, 1, raster_cache::KIND_VIDEO);
+        assert!(gone.join(name).is_file());
+    }
+
+    #[test]
+    fn video_thumbnail_dir_honors_the_privacy_opt_out() {
+        fn fake_fallback() -> &'static Path {
+            Path::new("/fallback")
+        }
+        let cache: Option<&'static Path> = Some(Path::new("/cache"));
+        // cache available → cache dir
+        assert_eq!(video_thumbnail_dir_from(cache, true, fake_fallback), cache);
+        // enabled but unavailable → temp fallback keeps thumbnails alive
+        assert_eq!(
+            video_thumbnail_dir_from(None, true, fake_fallback),
+            Some(Path::new("/fallback"))
+        );
+        // opted out (preview_cache = false) → no location at all:
+        // nothing about the user's files may be written anywhere
+        assert_eq!(video_thumbnail_dir_from(None, false, fake_fallback), None);
+    }
+
+    #[test]
+    fn video_preview_writes_nothing_when_persistence_is_opted_out() {
+        // The raster cache is uninitialized in unit tests, which counts
+        // as opted out: the video preview must degrade to mediainfo
+        // text and write no thumbnail anywhere — the shipped config
+        // promises "nothing about your files is written to disk".
+        let tmp = tempfile::tempdir().unwrap();
+        let video = make_video(tmp.path(), "clip.mp4", 15);
+        let preview = video_preview(&video, SystemTime::now());
+        assert!(matches!(preview, Preview::Text { .. }));
+        assert!(
+            thumbnail_dir_entries_of(&temp_dir().join("rfm-thumbnails"), &video).is_empty(),
+            "opt-out must not write into the temp fallback dir"
+        );
     }
 
     #[test]
