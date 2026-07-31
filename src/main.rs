@@ -174,6 +174,9 @@ async fn main() -> anyhow::Result<()> {
     // Whether the external pdf image tier (pdftoppm/mutool) may run
     // (config key `pdf_render`; default OFF — opt-in).
     let mut pdf_render = false;
+    // Graphics protocol for image previews (config key `image_protocol`;
+    // default `auto` — detect at startup, fall back to half-blocks).
+    let mut image_protocol = config::ImageProtocolChoice::Auto;
     let mut rate_limit_interval_ms = DEFAULT_RATE_LIMIT_INTERVAL_MS;
     let mut style_config = None;
     let mut fancy_icons = false;
@@ -187,6 +190,7 @@ async fn main() -> anyhow::Result<()> {
                 use_trash = config.general.use_trash;
                 persist_previews = config.general.preview_cache;
                 pdf_render = config.general.pdf_render;
+                image_protocol = config.general.image_protocol;
                 rate_limit_interval_ms = config.general.rate_limit_interval_ms;
                 fancy_icons = config.general.fancy_icons;
                 info!("Using rate-limit of {rate_limit_interval_ms}ms");

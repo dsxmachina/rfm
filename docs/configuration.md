@@ -27,6 +27,8 @@ preview_cache = true   # persist image/video preview thumbnails in
                        # $XDG_CACHE_HOME/rfm/thumbnails so they survive restarts
 pdf_render = false     # render page 1 of a PDF as an image (needs pdftoppm or
                        # mutool); off by default — PDFs use the pure-Rust text tier
+image_protocol = "auto" # graphics protocol for image previews:
+                       # "auto" | "kitty" | "sixel" | "half-block"
 fancy_icons = false    # use Nerd Font icons (needs a Nerd Font in your terminal)
 ```
 
@@ -50,6 +52,18 @@ if neither is installed rfm silently stays on the text tier. Rendering writes
 into the same thumbnail cache as image/video previews, so `preview_cache = false`
 skips the image tier entirely (an external render is a disk write) and PDFs fall
 back to the text tier.
+
+`image_protocol` selects how image previews are drawn. With `"auto"` (the
+default), rfm detects the best supported protocol at startup: environment
+heuristics first (kitty, WezTerm, Ghostty), then a short (< 250 ms) terminal
+probe for the kitty graphics protocol and sixel support. Anything uncertain
+falls back to `"half-block"`, the universal cell-based renderer that works in
+every truecolor terminal. Inside tmux/screen, `"auto"` always resolves to
+`"half-block"` — multiplexers swallow graphics escapes unless passthrough is
+configured. The explicit values `"kitty"` and `"sixel"` pin a protocol and skip
+probing (they override even inside tmux, the escape hatch for
+`allow-passthrough` users); `"half-block"` disables graphics protocols
+entirely, e.g. for terminals that misreport their capabilities.
 
 When `fancy_icons = true`, rfm renders file-type icons from the
 [Nerd Fonts](https://www.nerdfonts.com/) project (like yazi). Your terminal must

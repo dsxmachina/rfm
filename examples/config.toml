@@ -40,6 +40,25 @@ preview_cache = true
 #     image tier is skipped entirely.
 pdf_render = false
 
+# Graphics protocol used to draw image previews.
+#
+#   - "auto"       : (default) detect the best protocol at startup. Env
+#                    heuristics first (kitty/WezTerm/Ghostty), then a short
+#                    (<250ms) terminal probe for the kitty graphics protocol
+#                    and sixel support. Anything uncertain falls back to
+#                    "half-block".
+#   - "kitty"      : pin the kitty graphics protocol (kitty, WezTerm, Ghostty).
+#   - "sixel"      : pin DEC sixel (xterm +sixel, foot, mlterm, ...).
+#   - "half-block" : the universal cell-based renderer ("▄" glyphs, two
+#                    pixels per cell). Works in every truecolor terminal.
+#
+# Inside tmux/screen, "auto" always resolves to "half-block" (multiplexers
+# swallow graphics escape sequences unless passthrough is configured).
+# Explicit values skip probing and override even inside tmux — the escape
+# hatch for tmux users with 'allow-passthrough' enabled, and for terminals
+# that misreport their capabilities.
+image_protocol = "auto"
+
 # Use Nerd Font icons for file types.
 #
 # When enabled, rfm will use icons from the Nerd Fonts project (like yazi does).
