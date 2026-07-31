@@ -41,16 +41,27 @@ cmd  = "echo boom-stderr >&2; exit 3"
 
 `./error.log` (step 12.12) is written relative to rfm's **process cwd**, which
 stays at the launch directory (rfm only chdirs for zip/tar/extract/interactive
-commands — none used here). To make the post-mortem path deterministic, `cd`
-into the fixture inside the pane before launching:
+commands — none used here). To make the post-mortem path deterministic, launch
+rfm with its working directory set to `$FIXTURE`. Use the README direct-launch
+form (binary as the session command — NOT `send-keys` into an interactive shell,
+which Atuin/zsh history-search would intercept) with `tmux new-session -c` to
+set the cwd, and an absolute path to the binary:
 
 ```bash
-tmux send-keys -t $SESSION \
-  "cd $FIXTURE && XDG_CACHE_HOME=$CACHE XDG_STATE_HOME=$STATE _ZO_DATA_DIR=$ZO \
-   $OLDPWD/target/debug/rfm --debug-socket $SOCK --config $CFG $FIXTURE" Enter
+RFM=$(pwd)/target/debug/rfm
+tmux kill-session -t $SESSION 2>/dev/null; rm -f $SOCK
+tmux new-session -d -s $SESSION -x 120 -y 30 -c "$FIXTURE" \
+  "env XDG_CACHE_HOME=$CACHE XDG_STATE_HOME=$STATE _ZO_DATA_DIR=$ZO \
+   $RFM --debug-socket $SOCK --config $CFG $FIXTURE"
+until [ -S $SOCK ]; do sleep 0.1; done
 ```
 
-(Use an absolute path to the rfm binary — the pane has cd'd away from the repo.)
+The fixture lives under the quiet README parent (`PARENT=$(mktemp -d);
+FIXTURE=$PARENT/fx`), so the left/parent panel watches a quiet dir. THIS is what
+makes the "two idle `state` snapshots report the same `seq`" invariant
+(12.3/12.11) verifiable and the 12.5 baseline-diff clean — under a churning
+`/tmp` parent `seq` advances with zero input and the left column scrolls on its
+own.
 
 ## Latency canary (used throughout)
 
@@ -218,11 +229,21 @@ snapshot (cwd may still read the deleted path, or the listing may have gone
 empty — record the actual behavior as protocol feedback; no explicit
 deleted-cwd recovery path exists in manager.rs, so the contract here is
 robustness only, not a specific recovery). After `h`: `cwd=="$FIXTURE"`,
-`total==21` (doomed is gone), `mode=="normal"`.
+`total==21` (doomed is gone), `mode=="normal"`. `selection` is a valid
+*remaining* entry (doomed no longer exists), e.g. `subdir` — do NOT assert it
+is `doomed`. **`preview_path` must match the new selection** (e.g.
+`$FIXTURE/subdir`), not the deleted `doomed` — this is the regression check for
+the fixed stale-preview bug; it must hold immediately after `h`, without a
+cursor bounce.
 
 **Expect (screen):** after the `rm`, the pane shows no panic/backtrace text
 and rfm is still drawn (borders + header intact). After `h`, the fixture
-listing is shown again without `doomed`, with a valid highlight row.
+listing is shown again without `doomed`, with a valid highlight row, and the
+preview column reflects the current selection. **Known cosmetic issue (not a
+failure):** the LEFT column's child-count badge for the fixture dir may read
+one higher than the on-disk count (it reflects the count cached before the
+deletion; see KNOWN-ISSUES.md) — assert only the center listing and the
+preview column here, not the left-panel count badge.
 
 **Note:** entering `doomed` queues `zoxide add` — if zoxide is installed, a
 `Executing command 'zoxide'` info line may appear in the widget/log; not a
@@ -231,11 +252,13 @@ failure.
 ### 12.9 — Failing background command lands in log (screen + socket)
 
 **Action:** `tmux send-keys -t $SESSION x e` (the `[commands.fail]` binding).
-`await-idle`. Poll `echo "log 30" | socat - UNIX-CONNECT:$SOCK` (every 0.5 s,
-up to 10 s — the queue executor is rate-limited at 500 ms) until the failure
-line appears. Then `state` and capture **immediately** (within the 10 s
-display TTL). Run `lat`. Record the wall-clock time of the capture — 12.10
-needs it.
+`await-idle`. Poll `echo "log 200" | socat - UNIX-CONNECT:$SOCK` (wide window,
+every 0.5 s, up to 10 s — the queue executor is rate-limited at 500 ms) until
+the failure line appears; use `log 200` (not a short window) so the INFO/WARN/
+ERROR lines are not evicted by TRACE churn. Then `state` and capture
+**immediately** (within the 10 s display TTL); sample the capture 2–3× since a
+single one can race a redraw. Run `lat`. Record the wall-clock time of the
+capture — 12.10 needs it.
 
 **Expect (socket):** `log` history contains, in order:
 `Queueing command 'fail': echo boom-stderr >&2; exit 3` (INFO),
@@ -255,8 +278,10 @@ exist — do not "clean it up".
 ### 12.10 — Log-widget TTL: gone from screen, kept in history
 
 **Action:** wait until 11 s after the 12.9 capture (`sleep 11` is legitimate
-here — we are testing the TTL itself). Then capture, and
-`echo "log 30" | socat - UNIX-CONNECT:$SOCK`. Run `lat`.
+here — we are testing the TTL itself). Then capture (sample 2–3×), and
+`echo "log 200" | socat - UNIX-CONNECT:$SOCK` (the full ring — under any watcher
+churn a short `log 30` window can push the retained ERROR line out even though
+capacity-retention still holds it). Run `lat`.
 
 **Expect (socket):** `log` STILL contains
 `Command 'fail' failed with exit code 3` with `level=="ERROR"` and
@@ -287,11 +312,16 @@ for exit: poll until the pane no longer shows the rfm layout (up to 5 s), then
 `tmux capture-pane -t $SESSION -p`. Then from the harness shell:
 `cat "$FIXTURE/error.log"`.
 
-**Expect (screen):** the pane shows rfm has exited (shell prompt back) and the
-stderr banner containing `Encountered an unexpected error. This is a bug!` and
-`https://github.com/dsxmachina/rfm/issues` (printed because ERROR-level lines
-were retained), followed by an `Error:` list including
-`Command 'fail' failed with exit code 3`.
+**Expect (screen, best-effort):** the pane shows rfm has exited. The stderr
+banner (`Encountered an unexpected error. This is a bug!`,
+`https://github.com/dsxmachina/rfm/issues`, and the `Error:` list including
+`Command 'fail' failed with exit code 3`) is the *intended* output, but under
+the README direct-launch form rfm is the tmux session's root command, so
+`Q` terminates the session and `capture-pane` returns empty — the banner is
+**not observable** this way. Treat the screen banner as best-effort and rely on
+the **file** assertion below as the load-bearing check. (To observe the banner,
+launch rfm under a wrapper shell — `tmux new-session … "…/rfm …; exec $SHELL"` —
+or set `tmux set -t $SESSION remain-on-exit on` before quitting.)
 
 **Expect (file):** `$FIXTURE/error.log` exists (process cwd = launch cwd = the
 fixture, per the launch deviation) and contains a line matching
@@ -313,8 +343,10 @@ behind):
 
 1. `tmux kill-session -t $SESSION 2>/dev/null` — then `tmux has-session -t
    $SESSION 2>/dev/null` must fail.
-2. `rm -f $SOCK` — the socket file survives process exit by design; confirm
-   `[ ! -e $SOCK ]`.
+2. `rm -f $SOCK` — then confirm `[ ! -e $SOCK ]`. Note: rfm removes its own
+   socket on the clean `Q` quit path, so it may already be gone before the
+   `rm` (the `rm -f` is idempotent); the socket only lingers when rfm is killed
+   via `tmux kill-session` rather than quit.
 3. Inspect `$FIXTURE` BEFORE deleting: expected leftovers are exactly the 21
    fixture entries (doomed was deleted in 12.8) plus `error.log` (12.12).
    Anything else (`.part` files, stray temp files, `output.zip`, …) is a

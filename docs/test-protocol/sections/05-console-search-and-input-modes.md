@@ -35,7 +35,7 @@ manager.rs:2219-2232) — the same marked set search populates.
 ## Section fixture
 
 ```bash
-FIXTURE=$(mktemp -d)
+PARENT=$(mktemp -d); FIXTURE="$PARENT/fx"; mkdir "$FIXTURE"   # quiet parent (README)
 mkdir "$FIXTURE/alpha dir"
 mkdir "$FIXTURE/beta dir"
 touch "$FIXTURE/report.txt" "$FIXTURE/report-2.txt" "$FIXTURE/notes.md" "$FIXTURE/misc.log"
@@ -96,7 +96,7 @@ the filtered *screen* and the full `entries` reply here is expected and IS the
 documented behavior, not a stale-render bug.
 
 ### 05.3 — Live search with no match shows the `(no match)` row
-**Action:** `tmux send-keys -t $SESSION Backspace` six times (clears `report`
+**Action:** `tmux send-keys -t $SESSION BSpace` six times (clears `report`
 to empty, then poll — or just clear and retype); simpler: `tmux send-keys -t
 $SESSION -l zzz` to a now-non-matching pattern. Between each, await-idle.
 Preferred sequence: from the `report` state of 05.2, send `Backspace` ×6 to
@@ -177,9 +177,12 @@ capture-pane.
 the literal string `"console"` — `console.rs` `name()`); `cwd == $FIXTURE`
 UNCHANGED (the console navigates live but has not been given a directory yet).
 **Expect (screen):** a centered overlay with horizontal divider bars above and
-below a middle line that shows the current path `$FIXTURE/` (trailing slash
-appended by the console's draw) followed by a blinking cursor; the normal
-Miller columns are still visible behind/around it. No footer search prompt.
+below a middle line that shows the current path prefix `$FIXTURE/` (the console
+appends `/` after the path). A dark-grey recommendation suffix follows the path
+(e.g. `$FIXTURE/beta dir`) — assert only the `$FIXTURE/` path prefix, and do NOT
+assert which subdir is recommended (recommendation ordering is PatriciaSet /
+case-folded, e.g. `beta dir` may precede `alpha dir`). The normal Miller columns
+are still visible behind/around it. No footer search prompt.
 **Note:** `cd` is a 2-char sequence; `c` alone is not a binding here, so the
 mode only opens after the `d`. The mode string is `console`, not `cd`.
 
@@ -219,13 +222,15 @@ recording a bug.
 **Setup:** now inside `$FIXTURE/alpha dir` (from 05.9). Re-open the console:
 `tmux send-keys -t $SESSION -l cd`; await-idle (assert `mode == "console"`,
 overlay path line shows `$FIXTURE/alpha dir/`).
-**Action:** `tmux send-keys -t $SESSION Backspace` (input is empty, so `del()`
+**Action:** `tmux send-keys -t $SESSION BSpace` (input is empty, so `del()`
 walks up to the parent — `console.rs:275-282`); await-idle; `echo state | socat ...`.
 **Expect (socket):** `mode == "console"` still; `cwd == $FIXTURE` (the console
 `Cd`'d to the parent live). Then `tmux send-keys -t $SESSION Enter`; await-idle
 → `mode == "normal"`, `cwd == $FIXTURE`.
-**Expect (screen):** overlay path line updates to `$FIXTURE/` after the
-Backspace; after Enter the overlay is gone and the pane shows the `$FIXTURE`
+**Expect (screen):** overlay path line updates so its prefix is `$FIXTURE/`
+after the Backspace (a dark-grey recommendation suffix, e.g. `$FIXTURE/alpha
+dir`, follows it — assert only the `$FIXTURE/` prefix, not the recommended
+subdir); after Enter the overlay is gone and the pane shows the `$FIXTURE`
 listing.
 **Note:** this is the console's own Backspace-at-empty behavior (parent walk),
 distinct from search's Backspace (character delete). It is asserted via `cwd`,
@@ -248,10 +253,14 @@ capture-pane.
 **Expect (socket):** `mode == "console"` (zoxide reports the SAME `"console"`
 string as the cd console — `console.rs:585-587`).
 **Expect (screen):** a centered overlay with divider bars; a middle input line
-and, below it, a path/recommendation line. With `zoxide` NOT installed the
-recommendation line reads exactly `zoxide is not installed` (in `red`) — shown
-immediately, before any keystroke (`Zoxide::with_availability`,
-`console.rs:378-395`).
+and, below it, a path/recommendation line. Two cases, gated on whether `zoxide`
+is on PATH:
+- **zoxide NOT installed:** the recommendation line reads exactly
+  `zoxide is not installed` (in `red`) — shown immediately, before any keystroke
+  (`Zoxide::with_availability`, `console.rs:378-395`).
+- **zoxide INSTALLED (this env):** the middle line shows the query input line
+  with **no** missing-zoxide hint. Assert the mode transition + overlay only;
+  the "not installed" hint assertion is N/A and must not be expected.
 **Note:** we deliberately do NOT type a query and commit a jump here — a real
 zoxide `Cd` would move the pane to an arbitrary indexed directory
 (unverifiable/host-dependent). Assert only the mode transition, the overlay,
@@ -269,8 +278,8 @@ the assertion; do not test a committed zoxide jump here.
 
 ---
 
-**Teardown:** `tmux kill-session -t $SESSION 2>/dev/null; rm -rf "$FIXTURE"
-"$CFG" "$CACHE" "$STATE" "$ZO"; rm -f $SOCK`
+**Teardown:** `tmux kill-session -t $SESSION 2>/dev/null; rm -rf "$PARENT"
+"$CFG" "$CACHE" "$STATE" "$ZO"; rm -f $SOCK` (`$PARENT` wraps the quiet-parent `$FIXTURE`).
 
 **Section coverage gaps (deliberate):**
 - **Rename / mkdir / touch input modes** (`RenameMode`, `CreateItemMode` —

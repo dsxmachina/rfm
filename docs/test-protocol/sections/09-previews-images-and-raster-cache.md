@@ -5,6 +5,16 @@ This section runs **two rfm launches**: steps 09.1–09.10 with the default conf
 (`preview_cache = true`), steps 09.11–09.12 with a fresh cache dir and
 `preview_cache = false`.
 
+**Quiet fixture parent is REQUIRED here** (`PARENT=$(mktemp -d);
+FIXTURE=$PARENT/fx; mkdir "$FIXTURE"`, per README). If the parent is a churning
+`/tmp`, rfm's preloader stores thumbnails for stray sibling `.jpg` files and the
+200-line log ring is flooded — both break this section's cache assertions. Even
+with a quiet parent, the directory preloader precomputes the fixture's own
+sibling images, so **assert only per-fixture-mtime entries (each == 1) and
+old-swept siblings (== 0), never an aggregate `-img960u.jpg$` total count**; the
+`Rgb8`-vs-`Rgba8` first-visit colour-mode drift is expected when the preloader
+wins the decode race (see 09.1/09.3).
+
 ## Section fixture (create BEFORE launching rfm)
 
 The base64 blobs are deterministic: an 8×8 solid-blue RGBA PNG (79 bytes) and an
@@ -89,9 +99,13 @@ step instead of trusting counted `j` presses.
 (preview) pane:
 - a half-block raster: at least one captured line contains `▄▄▄▄▄▄▄▄` (the 8×8
   image renders as 4 rows of 8 `▄` cells; small images are NOT upscaled).
-- the three image info lines below the raster, exactly:
-  `8 × 8  Rgba8` (note: two spaces, `×` is U+00D7), `png · 79 B`, and a
-  timestamp line matching `YYYY-MM-DD HH:MM:SS`.
+- the three image info lines below the raster: `png · 79 B` and a timestamp
+  line matching `YYYY-MM-DD HH:MM:SS`, plus a colour-mode line that is EITHER
+  `8 × 8  Rgba8` (fresh in-memory decode) OR `8 × 8  Rgb8`. The `Rgb8` variant
+  is **expected** on the first visit when the directory preloader wins the
+  decode race and serves the already-stored JPEG thumbnail (accepted display
+  drift — same as the documented 09.3 cache-hit drift, just one step early).
+  Do not FAIL on `Rgb8` here.
 
 **Expect (disk):**
 - `$THUMBS` exists with mode `700` (`stat -c %a "$THUMBS"` → `700`).
@@ -203,11 +217,15 @@ this visit (mtime changed → lookup miss; compare `log` line count/ages against
 **Expect (screen):** raster + info lines; first line `8 × 8  Rgba8` (fresh
 decode after the miss); timestamp line now shows the new (current) mtime.
 
-**Expect (disk):**
+**Expect (disk):** assert only the specific fixture-mtime entries, never a total
+count — the directory preloader precomputes sibling-image thumbnails (and, if
+the parent isn't quiet, unrelated ones), so a `grep -c -- "-img960u.jpg$"` total
+is polluted and unsafe.
 - new entry: `ls "$THUMBS" | grep -c -- "-$M_BLUE_NEW-img960u.jpg$"` → `1`
 - old sibling swept by the store: `ls "$THUMBS" | grep -c -- "-$M_BLUE-img960u.jpg$"` → `0`
-- total `img960u` entries: `ls "$THUMBS" | grep -c -- "-img960u.jpg$"` → `3`
-  (blue-new, red, spaces).
+- each surviving fixture entry present exactly once:
+  `-$M_RED-img960u.jpg$` → `1` and `-$M_SPC-img960u.jpg$` → `1`
+  (do NOT assert the aggregate `-img960u.jpg$` count == 3).
 
 **Note:** The sweep runs as part of the store, i.e. only after the re-decode
 completed — always `settle` before asserting the disk state.
@@ -290,13 +308,14 @@ fallback text starting `Error: Could not run mediainfo` with the line
 
 **Setup:** tear down the first launch only (keep `$FIXTURE`):
 ```bash
-tmux kill-session -t $SESSION; rm -f $SOCK
+tmux kill-session -t $SESSION 2>/dev/null; rm -f $SOCK
 CACHE2=$(mktemp -d); CFG2=$(mktemp -d)
 printf '[general]\npreview_cache = false\n' > "$CFG2/config.toml"
-tmux new-session -d -s $SESSION -x 120 -y 30
-tmux send-keys -t $SESSION \
-  "XDG_CACHE_HOME=$CACHE2 XDG_STATE_HOME=$STATE _ZO_DATA_DIR=$ZO \
-   ./target/debug/rfm --debug-socket $SOCK --config $CFG2 $FIXTURE" Enter
+# Direct-launch form (README): binary as the session command, not send-keys
+# into an interactive shell (Atuin/zsh history-search would intercept it).
+tmux new-session -d -s $SESSION -x 120 -y 30 \
+  "env XDG_CACHE_HOME=$CACHE2 XDG_STATE_HOME=$STATE _ZO_DATA_DIR=$ZO \
+   ./target/debug/rfm --debug-socket $SOCK --config $CFG2 $FIXTURE"
 until [ -S $SOCK ]; do sleep 0.1; done
 ```
 
@@ -331,9 +350,15 @@ raster in the right pane.
 
 **Expect (disk):**
 - `find "$CACHE2" -type f | wc -l` → `0` still.
-- `find "${TMPDIR:-/tmp}/rfm-thumbnails" -newer "$FIXTURE/f-bad.mp4" 2>/dev/null | wc -l`
-  → `0` — the pre-cache temp fallback dir is for *enabled-but-unavailable*
-  only; with `preview_cache = false` nothing may appear there either.
+- The pre-cache temp fallback dir `${TMPDIR:-/tmp}/rfm-thumbnails` is **shared
+  across machine runs** (7-day prune) and full of stragglers, so a bare
+  `-newer "$FIXTURE/f-bad.mp4"` matches everything left by prior sessions — a
+  false-positive magnet. **Snapshot the dir listing BEFORE this step** (e.g.
+  `before=$(ls "${TMPDIR:-/tmp}/rfm-thumbnails" 2>/dev/null)`), run the step,
+  then assert **no NEW file appeared** (`comm`/`diff` the after-listing against
+  `$before`, or match this instance's `e-clip` mtime component) — do NOT rely on
+  `-newer <fixture> | wc -l == 0`. With `preview_cache = false` nothing new may
+  appear there.
 
 ---
 

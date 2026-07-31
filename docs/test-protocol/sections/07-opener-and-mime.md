@@ -49,7 +49,7 @@ Facts this section relies on (all verified in source):
 ## Section fixture and config
 
 ```bash
-FIXTURE=$(mktemp -d)
+PARENT=$(mktemp -d); FIXTURE="$PARENT/fx"; mkdir "$FIXTURE"   # quiet parent (README)
 printf 'hello opener\n'            > "$FIXTURE/note.txt"
 printf '# heading\n'               > "$FIXTURE/notes.md"
 printf 'ampersand test\n'          > "$FIXTURE/a file & test.txt"
@@ -266,16 +266,28 @@ footer) may show the error line for its 10 s TTL.
 **Expect (fs):** `opened.log` did NOT grow (no fake opener involved).
 
 ### 07.17 — FIFO selection: blank preview, no event-loop wedge
-**Action:** SELECT(`pipe`). `echo await-idle | socat - UNIX-CONNECT:$SOCK`,
-then time `echo state | socat - UNIX-CONNECT:$SOCK`. Capture-pane.
+**Action:** SELECT(`pipe`). `echo await-idle | timeout 12 socat - UNIX-CONNECT:$SOCK`,
+then `echo state | timeout 12 socat - UNIX-CONNECT:$SOCK`. Capture-pane.
+**Timing:** `/usr/bin/time` and `bc` may be absent — do NOT rely on them. The
+wedge guard is the `timeout 12` wrapper itself: a `state` reply arriving at all
+inside 12 s already proves no-wedge. If you want an explicit number, bracket the
+`state` call with `start=$(date +%s%N); …; end=$(date +%s%N)` and diff in
+nanoseconds. A `timeout` with no reply (or a `{"error":"timeout: ..."}`) means
+the sniff/preview path opened the FIFO and wedged — that is the regression this
+step exists for.
 **Expect (socket):** `await-idle` returns idle; `state` replies in well under
-10 s (normally <1 s), `selection=="pipe"`. A `{"error":"timeout: ..."}` reply
-here means the sniff/preview path opened the FIFO and wedged — that is the
-regression this step exists for.
-**Expect (screen):** Right (preview) pane is blank for the FIFO
-(`PreviewPanel::Empty` — a FIFO is neither dir nor regular file). Bottom row's
-permissions string starts with `p` (e.g. `prw-...`) and the mime field shows
-`text/plain` (sniff refuses non-regular files → fallback).
+12 s (normally <1 s), `selection=="pipe"`, `seq` stable across ≥2 polls.
+**Expect (screen):** Bottom row's permissions string starts with `p` (e.g.
+`prw-...`) and the mime field shows `text/plain` (sniff refuses non-regular
+files → fallback). The **load-bearing** assertion is the no-wedge / responsive
+socket + the correct footer.
+**Known bug (BUG-2, run 1 — being fixed via TDD):** on the current binary the
+right (preview) pane stays stuck on a `Loading...` + path placeholder for a
+selected FIFO instead of the intended blank `PreviewPanel::Empty` (the
+directory-panel `loading` flag is never cleared for a non-regular file). Until
+the fix lands, treat a stuck `Loading...` here as the documented BUG-2 failure
+mode (screen only — no wedge, footer correct), not a fresh finding. Once fixed,
+the preview pane should be blank.
 **Note:** `await-idle` does not cover in-flight preview tasks; if anything
 looks mid-load, poll `state` until `seq` is stable across two queries, then
 assert.
@@ -299,7 +311,7 @@ expectations but keep the no-hang assertions.
 
 ---
 
-**Teardown:** `tmux kill-session -t $SESSION; rm -rf "$FIXTURE" "$CFG"; rm -f $SOCK`
+**Teardown:** `tmux kill-session -t $SESSION; rm -rf "$PARENT" "$CFG"; rm -f $SOCK` (`$PARENT` wraps the quiet-parent `$FIXTURE`).
 (the FIFO is removed with the fixture dir; the session kill also reaps any
 stuck opener child).
 

@@ -25,9 +25,19 @@ alphabetical): `dirA`, `dirB`, `amp & file.txt`, `b1.txt`(*after 06.17 only*),
 `r1.txt`, `spaced name.txt`. Initial selection is **dirA** (first directory),
 never `amp & file.txt`.
 
-Launch per README: `rfm --debug-socket $SOCK --config $CFG "$FIXTURE"` in a
+Launch per README (binary as the tmux session command, quiet fixture parent):
+`env … ./target/debug/rfm --debug-socket $SOCK --config $CFG "$FIXTURE"` in a
 120×30 tmux session. The steps are stateful in order; the section runs in
 isolation but individual steps assume their predecessors ran.
+
+**Log assertions (06.6/06.16/06.18 and any `new tab`/`focus`/`cut`/`paste`
+line):** query the socket `log` with a **wide window (`log 200`) IMMEDIATELY
+after the action** and grep in the same call — under `--debug-socket` the TRACE
+stream floods short `log 30`/`log 40` windows. Even at `log 200` a paste INFO
+line can be capacity-evicted before re-query; when it is, PASS on the stronger
+evidence (`undo_depth` bump + correct `entries`/disk + absence of any
+`Failed to move`/ERROR line). Treat the 10 s on-screen log widget as
+timing-fragile (sample 2–3× before asserting absence).
 
 Key source facts this section relies on (verified in
 `src/panel/manager.rs` / `src/panel/mod.rs` / `examples/default-config.toml

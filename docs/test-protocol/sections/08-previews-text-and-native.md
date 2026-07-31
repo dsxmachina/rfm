@@ -84,9 +84,15 @@ script`
 
 ## Section procedures
 
-**SELECT(name):** send `j` or `k` one keypress at a time (each followed by
-`await-idle`) until `state.selection == "<name>"`. Never assume a fixed key
-count — earlier steps may have moved the cursor.
+**SELECT(name):** step **toward** the target the shortest way — read `entries
+center`, find `<name>`'s **visible** index, compare with `state.selected_idx`,
+then send `j` (target below) or `k` (target above) exactly that many times, one
+keypress per `await-idle`, confirming via `state.selection`. Do NOT press blind
+`j` until it matches: overshooting wraps the list and each stray keypress emits
+~3 TRACE lines that flood the 200-line log ring and **evict the very
+preview-backend DEBUG lines this section asserts on** (08.6/08.9/08.10/08.11/
+08.16/08.17). Minimal keystrokes keep those lines within retention. See the
+README SELECT helper.
 
 **PREVIEW-SETTLE:** after SELECT, previews are rate-limited
 (`rate_limit_interval_ms` = 500, default) and load async — `await-idle` does
@@ -173,6 +179,7 @@ then `SAN:        DNSName(test.example)`.
 **Expect (socket):** `selection=="doc.pdf"`; `preview_path` ends in `/work/doc.pdf`; log contains NO `pdf text tier failed, falling back to stat` line and NO `rendering pdf page 1` line (render tier must not run with default config).
 **Expect (screen):** preview column shows, in order: `PDF · 1 page` (singular — one page), `Title:    hello rfm` (from /Info; `Title:` + 4 spaces), a blank row, then the extracted page-1 text `hello from page one`. NO `Size:`/`MIME type:` rows (those would mean the text tier failed and the stat fallback rendered — that is a regression, not a pass).
 **Note:** the fixture PDF must be byte-exact (base64 recipe): lopdf follows the xref table, and hand-typed offsets that don't match make the text tier fail down to the stat block. Also assert (filesystem): `$XDG_CACHE_HOME/rfm/thumbnails/` contains no `*-pdf-p1-960.jpg` entry.
+**Benign WARN — do not trip on it:** previewing this PDF emits a lopdf `WARN Could not parse the encoding ... Using standard encoding as a fallback!` (Helvetica font). This is expected and harmless — a loose grep for `failed`/`warning` near the log must NOT treat it as a failure. The `pdf text tier failed` line is the only PDF failure signal that matters.
 
 ### 08.12 — Generic application/*: native stat block
 **Action:** SELECT(`f.wasm`), PREVIEW-SETTLE, `state` + capture-pane.
@@ -193,7 +200,7 @@ then `SAN:        DNSName(test.example)`.
 ### 08.15 — Broken symlink: Empty preview, loop stays responsive
 **Action:** SELECT(`dangling`); then immediately `echo await-idle | socat - UNIX-CONNECT:$SOCK` (must return within a few seconds, `{"idle":true,...}`), then `state` + capture-pane.
 **Expect (socket):** `selection=="dangling"`; `preview_path == "path-of-empty-panel"` (the literal placeholder for `PreviewPanel::Empty` — `is_file()`/`is_dir()` follow the link and both report false); `state` replies promptly (a 10 s timeout here = wedged event loop = bug, report it as a finding).
-**Expect (screen):** center column still shows `dangling` on the highlighted row; the preview column is entirely blank — no error text, no stale content from the previously selected file (compare against 08.14's `just words`: it must be gone; stale right-pane content with a correct socket state is a render-path bug).
+**Expect (screen):** center column still shows `dangling` on the highlighted row; the preview column is entirely blank — no error text, no stale content from the previously selected file (compare against 08.14's `just words`: it must be gone; stale right-pane content with a correct socket state is a render-path bug). Only assert the center and preview columns: the header (top row) shows `.../work` with **no** filename segment appended for a dangling link (the target is unresolvable) — do not assert `.../work/dangling` in the header.
 
 ### 08.16 — Forged native failure → shell-out fallback log line
 **Action:** SELECT(`bad.zip`), PREVIEW-SETTLE, `state` + capture-pane + `echo "log 100" | socat - UNIX-CONNECT:$SOCK`.
@@ -203,7 +210,8 @@ then `SAN:        DNSName(test.example)`.
 
 ### 08.17 — Backend-choice audit: everything else was native
 **Action:** `echo "log 200" | socat - UNIX-CONNECT:$SOCK`; filter messages containing `failed, trying` or `falling back`.
-**Expect (socket):** the ONLY matching line is 08.16's `native zip list failed, trying unzip: ...` for `bad.zip`. Specifically absent: `native tar list failed`, `native gzip preview failed`, `native cert parse failed`, `pdf text tier failed`, `stat block failed`, `native audio metadata failed`. Any other hit means a preview asserted above silently came from a fallback — investigate that step's fixture/tooling before declaring the section passed.
+**Expect (socket):** the ONLY line matching the exact `failed, trying`/`falling back` fallback pattern is 08.16's `native zip list failed, trying unzip: ...` for `bad.zip`. Specifically absent: `native tar list failed`, `native gzip preview failed`, `native cert parse failed`, `pdf text tier failed`, `stat block failed`, `native audio metadata failed`. Any other hit means a preview asserted above silently came from a fallback — investigate that step's fixture/tooling before declaring the section passed.
+**Two benign non-fallback lines that a loose grep for `failed`/`warning` can trip on — IGNORE both:** (1) lopdf's `WARN Could not parse the encoding ... Using standard encoding as a fallback!` from previewing `doc.pdf`, and (2) a `[bat warning]: Binary content ...` line (from the bat text preview of `garbage`-like content). Neither is a backend fallback; filter on the exact `failed, trying`/`falling back` substrings, not a bare `failed`/`warning`.
 **Expect (screen):** n/a (log-only audit step); optionally capture-pane to confirm no error widget lines are visible.
 **Note:** this audit only works because the section launched in `$FIXTURE/work` (quiet left panel). If unrelated `... failed, trying ...` lines from paths outside `$FIXTURE` appear, the retention was polluted by the environment — rerun the section with a clean fixture rather than waiving the assertion.
 

@@ -34,6 +34,15 @@ wait_undo() {
 After `wait_undo` succeeds, still run one `await-idle` before asserting
 `entries`/screen (the reload triggered by the landed transaction must drain).
 
+**Log assertions (steps 03.7/03.10/03.11):** assert `paste`/`copy`/`cut` INFO
+lines on the socket `log`, queried with a **wide window (`log 200`) IMMEDIATELY
+after the action** — under `--debug-socket` verbosity is TRACE and reload TRACE
+lines flood a short `log 5`/`log 10` window, evicting the INFO line within a
+tick. The quiet fixture parent (README) keeps the window from filling with
+`/tmp` churn, but the wide-window-right-after rule still applies. Sample the
+on-screen log widget 2–3× before asserting a line is *absent* (a single capture
+can race a redraw).
+
 Facts this section relies on (verified in source, `src/panel/manager.rs`
 `Command::{Mark,Cut,Copy,Paste}` arms; `src/util.rs` `get_destination`/
 `move_item`/`copy_item`; `src/panel/directory.rs` `mark_selected_item`):

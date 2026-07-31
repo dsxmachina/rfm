@@ -8,7 +8,10 @@ Harness per README (`N=01`, `SESSION=rfm-sec01`, `SOCK=/tmp/rfm-sec01.sock`).
 
 ## Section fixture
 
-Created before launch (in addition to the standard `FIXTURE=$(mktemp -d)`):
+Created before launch, inside the quiet-parent `$FIXTURE` from the README
+harness (`PARENT=$(mktemp -d); FIXTURE=$PARENT/fx; mkdir "$FIXTURE"` — so the
+left/parent panel is quiet, which is what makes 01.2's idle-`seq` invariant
+verifiable):
 
 ```bash
 mkdir "$FIXTURE/Bilder & Videos" "$FIXTURE/many" "$FIXTURE/subdir_a"
@@ -45,14 +48,23 @@ harness-geometry issue, inconsistent deltas are an rfm bug.
 Highlight-position technique used by the "Expect (screen)" items: plain
 `capture-pane -p` strips attributes, so to locate the cursor row use
 `tmux capture-pane -t $SESSION -p -e` and find the row whose cells carry the
-reverse-video SGR (substring `[7m`; the selected row is printed with
-`Attribute::Reverse`, `src/panel/directory.rs`). Exactly one row inside the
-center column should carry it. Where a step says "highlight on `<name>`",
-check that the `[7m`-carrying row of the center column contains `<name>`.
+reverse-video SGR. rfm emits that attribute as **both** `\x1b[7m` (plain
+reverse) and `\x1b[0;7m` (reset+reverse, on file rows), so match `[7m` **OR**
+`[0;7m` — a bare `[7m` grep misses the `0;7m` file rows and false-FAILs (the
+selected row is printed with `Attribute::Reverse`, `src/panel/directory.rs`).
+Exactly one row inside the center column should carry it. Where a step says
+"highlight on `<name>`", check that the highlighted (`[7m` or `[0;7m`) row of
+the center column contains `<name>`.
 
-Launch (per README): export the isolation env in the pane, then
-`./target/debug/rfm --debug-socket $SOCK --config $CFG $FIXTURE`, wait for
-`$SOCK`.
+Launch (per README): the harness launches the binary DIRECTLY as the tmux
+session command (`tmux new-session … "env … ./target/debug/rfm …"`), not via
+`send-keys` into an interactive shell; wait for `$SOCK`.
+
+The fixture lives under a fresh empty parent (`PARENT=$(mktemp -d);
+FIXTURE=$PARENT/fx`, per README) so the left/parent panel is quiet. This is what
+makes 01.2's "idle `seq` stable across two `state` queries" and the
+`log`-based TRACE assertions (01.10/01.11) verifiable — under a churning `/tmp`
+parent `seq` advances with no input and the log ring evicts rfm's own lines.
 
 ---
 
@@ -190,7 +202,7 @@ Launch (per README): export the isolation env in the pane, then
 
 ---
 
-**Teardown:** `tmux kill-session -t $SESSION; rm -rf "$FIXTURE" "$CFG"; rm -f $SOCK` (plus the mktemp dirs exported as XDG_CACHE_HOME/XDG_STATE_HOME/_ZO_DATA_DIR).
+**Teardown:** `tmux kill-session -t $SESSION; rm -rf "$PARENT" "$CFG"; rm -f $SOCK` (`$PARENT` wraps the quiet-parent `$FIXTURE`; plus the mktemp dirs exported as XDG_CACHE_HOME/XDG_STATE_HOME/_ZO_DATA_DIR).
 
 **Section coverage gaps (deliberate):**
 - Opening files with `l`/`Right` on a regular file (opener path) — covered by the opener section; this section only ever presses `l` on directories.

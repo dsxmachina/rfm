@@ -13,7 +13,7 @@ AND barriers; the redo stack counts redoable transactions only.**
 ## Section fixture
 
 ```bash
-FIXTURE=$(mktemp -d)
+PARENT=$(mktemp -d); FIXTURE="$PARENT/fx"; mkdir "$FIXTURE"   # quiet parent (README)
 printf 'alpha\n'   > "$FIXTURE/a.txt"
 printf 'bravo\n'   > "$FIXTURE/b.txt"
 printf 'charlie\n' > "$FIXTURE/c.txt"
@@ -207,11 +207,15 @@ log line `rückgängig: paste (3 items)`. Disk: all three copies gone from
 ### 11.8 — Trash-delete: undo restores from trash, redo re-trashes
 **Setup:** `tmux send-keys -t $SESSION h` (back to $FIXTURE); select
 `b.txt` (verify `selection`=="b.txt", `marked`==[]).
-**Action:** `tmux send-keys -t $SESSION delete` (6-char sequence),
+**Action:** `tmux send-keys -t $SESSION -l delete` (type the 6-char
+sequence LITERALLY — `delete` is a tmux **key name**, so a bare
+`send-keys delete` sends the Delete key and rfm never sees the
+d-e-l-e-t-e binding, silently no-opping; the `-l` is required),
 await-idle.
 **Expect (socket):** `undo_depth`==1 (redo from 11.7 cleared,
-`redo_depth`==0). `log 10` has `Deleted 1 items`. `entries center` has
-no `b.txt`.
+`redo_depth`==0). `log 200` (queried immediately) has `Deleted 1 items`
+(a short `log 10` window can be evicted by TRACE churn). `entries center`
+has no `b.txt`.
 Disk: `$FIXTURE/b.txt` gone; `$TRASHHOME/Trash/files/b.txt` exists and
 `$TRASHHOME/Trash/info/b.txt.trashinfo` exists.
 **Expect (screen):** no `b.txt` row.
@@ -299,10 +303,12 @@ entry, no directories in FIXTURE2 → initial selection IS `x.txt`), send
 `rename`, then `.bak`, `Enter`; await-idle.
 **Expect (socket):** `undo_depth`==1; `$FIXTURE2/x.txt.bak` exists.
 
-**Action (b — permanent delete):** select `y.txt`, send `delete`,
+**Action (b — permanent delete):** select `y.txt`, send the delete
+binding LITERALLY: `tmux send-keys -t $SESSION -l delete` (bare
+`send-keys delete` sends the Delete key, not the binding — see 11.8),
 await-idle.
 **Expect (socket):** `undo_depth`==2 (the Barrier counts as a stack
-entry), `redo_depth`==0. `log 10` has `Deleted 1 items`. Disk:
+entry), `redo_depth`==0. `log 200` has `Deleted 1 items`. Disk:
 `$FIXTURE2/y.txt` gone AND `$TRASHHOME2/Trash/files/` does not contain
 `y.txt` (nothing was trashed — permanent).
 **Expect (screen):** `y.txt` row gone.
@@ -327,8 +333,8 @@ stack); the `redo blockiert:` string exists in source but is not
 reachable through this flow — do not expect it.
 
 **Teardown:** `tmux kill-session -t $SESSION 2>/dev/null; rm -rf
-"$FIXTURE" "$FIXTURE2" "$CFG" "$CACHE" "$STATE" "$ZO" "$TRASHHOME"
-"$TRASHHOME2"; rm -f $SOCK`
+"$PARENT" "$FIXTURE2" "$CFG" "$CACHE" "$STATE" "$ZO" "$TRASHHOME"
+"$TRASHHOME2"; rm -f $SOCK` (`$PARENT` is the quiet-parent wrapper of `$FIXTURE`).
 
 **Section coverage gaps (deliberate):**
 - mkdir/touch `Create` undo (incl. the touch-on-existing-file

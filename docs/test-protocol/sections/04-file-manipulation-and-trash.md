@@ -18,7 +18,8 @@ under `$TMPDIR` (same filesystem), trashed fixture files land in `$DATA/Trash/fi
 in the user's real trash.
 
 ```bash
-FIXTURE=$(mktemp -d); DATA=$(mktemp -d); CFG=$(mktemp -d)
+PARENT=$(mktemp -d); FIXTURE="$PARENT/fx"; mkdir "$FIXTURE"   # quiet parent (README)
+DATA=$(mktemp -d); CFG=$(mktemp -d)
 mkdir "$FIXTURE/sub dir & stuff"
 touch "$FIXTURE/sub dir & stuff/inner.txt"
 touch "$FIXTURE/alpha.txt" "$FIXTURE/bravo.txt" "$FIXTURE/amp & spaced.txt"
@@ -63,7 +64,7 @@ has `selected:true`.
 header shows the `$FIXTURE` path.
 
 ### 04.2 — Enter rename mode (seeded input)
-**Action:** press `j` until `state.selection == "alpha.txt"`; then `tmux send-keys -t $SESSION -l rename`; await-idle.
+**Action:** navigate toward `alpha.txt` — press `j` or `k` **toward the target** (it may sort *above* the current selection after a prior rename/delete, so blind `j` can overshoot and wrap; see the SELECT helper in README — compute the target's visible index from `entries center` and step the shortest direction). Once `state.selection == "alpha.txt"`, then `tmux send-keys -t $SESSION -l rename`; await-idle.
 **Expect (socket):** `mode == "rename"`.
 **Expect (screen):** footer line shows the yellow prompt `Rename:` followed by the seeded
 current name `alpha.txt` (RenameMode seeds the input with the file name, cursor at end).
@@ -140,11 +141,10 @@ removed the phantom).
 Disk: `[ ! -e "$FIXTURE/ghost.txt" ]`.
 
 ### 04.10 — Delete a file to the trash
-**Action:** press `j`/`k` until `state.selection == "made file.txt"`; `tmux send-keys -t $SESSION -l delete`; await-idle; `echo "log 20" | socat ...`.
+**Action:** navigate `j`/`k` **toward** `made file.txt` (shortest direction — see the README SELECT helper) until `state.selection == "made file.txt"`; `tmux send-keys -t $SESSION -l delete`; await-idle; `echo "log 20" | socat ...`.
 **Expect (socket):** `mode == "normal"`; `clipboard == null` (the `d` prefix did NOT trigger
 `dd`/cut — `d`,`de`,… defer until the sequence resolves); log contains INFO `Deleted 1 items`;
-`undo_depth == 4` (trash delete is undo-recorded); `entries center` no longer contains
-`made file.txt`.
+`undo_depth == 4` (trash delete is undo-recorded). Assert `made file.txt` is gone against the FULL `entries center` JSON (parse the array and confirm no member's `name == "made file.txt"`) — do NOT bare-grep the substring, which also appears in the `log` "Deleted 1 items" trail context.
 **Expect (screen):** `made file.txt` gone from the center pane.
 Disk: `[ ! -e "$FIXTURE/made file.txt" ]`; trash:
 `ls "$DATA/Trash/files"` contains `made file.txt` (name may carry a suffix on collision —
@@ -263,7 +263,7 @@ Disk: `[ ! -e "$FIXTURE2/doomed.txt" ]` — nothing came back.
 
 ---
 
-**Teardown:** `tmux kill-session -t $SESSION; rm -rf "$FIXTURE" "$DATA" "$CFG" "$FIXTURE2" "$DATA2" "$CFG2"; rm -f $SOCK`
+**Teardown:** `tmux kill-session -t $SESSION; rm -rf "$PARENT" "$DATA" "$CFG" "$FIXTURE2" "$DATA2" "$CFG2"; rm -f $SOCK` (`$PARENT` wraps the quiet-parent `$FIXTURE`).
 
 **Section coverage gaps (deliberate):**
 - Undo/redo of rename/mkdir/touch/trash-delete (the `u`/`ctrl-r` round-trips, redo re-trash,

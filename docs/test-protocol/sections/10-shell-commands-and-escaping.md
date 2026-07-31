@@ -68,6 +68,18 @@ order; `$` = 0x24 sorts before letters): `a directory with spaces`,
 the layout it expects. No hidden files exist, so visible order == `entries`
 reply order throughout this section.
 
+**Launch and log assertions.** Launch per README — the binary is the tmux
+session command directly (`tmux new-session -d … "env … ./target/debug/rfm …"`),
+NOT typed into an interactive shell: a zsh history-search widget (Atuin)
+intercepts the typed command and rfm never starts. The fixture lives under the
+quiet README parent so the left panel does not watch a churning `/tmp`. For the
+command-log assertions (10.2/10.4/10.5/10.7/10.14) query the socket `log` with a
+**wide window (`log 200`) IMMEDIATELY after each action** and grep in the same
+call — the TRACE stream evicts command INFO/WARN/ERROR lines from short windows
+within seconds. Treat the 10 s on-screen log widget as timing-fragile (sample
+2–3×). External file ops for 10.8/10.12 ("from the harness shell, NOT inside
+rfm") run from the Bash tool directly against `$FIXTURE` since the pane IS rfm.
+
 Facts this section relies on (verified in source):
 
 - User commands: `src/panel/manager.rs` `Command::UserCommand` arm.

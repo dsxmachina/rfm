@@ -5,7 +5,7 @@ N=02, SESSION=rfm-sec02, SOCK=/tmp/rfm-sec02.sock. Harness per README.
 **Section fixture** (create before launch, in addition to the standard harness dirs):
 
 ```bash
-FIXTURE=$(mktemp -d)
+PARENT=$(mktemp -d); FIXTURE="$PARENT/fx"; mkdir "$FIXTURE"   # quiet parent (README)
 mkdir -p "$FIXTURE/alpha/nested/deep"
 printf 'leaf content\n' > "$FIXTURE/alpha/nested/deep/leaf.txt"
 mkdir -p "$FIXTURE/Bilder & Videos"
@@ -88,6 +88,7 @@ Steps are ordered and reuse state; each step lists the cwd it starts from.
 **Expect (socket):** after `j j`: `selection`=="emptydir", `selected_idx`==2, `preview_path`==$FIXTURE/emptydir. After `l`: `cwd`==$FIXTURE/emptydir, `selection`==null, `total`==0. After `h`: `cwd`==$FIXTURE, `selection`=="emptydir".
 **Expect (screen):** after `j j`: right (preview) column shows `(empty)`. After `l`: center column shows `(empty)` and nothing else in that column; top row contains `/emptydir`. After `h`: back to the fixture listing with `emptydir` still the selected row.
 **Note:** await-idle must return promptly at every point — a `state` timeout here is a wedged-event-loop finding.
+**Sentinel note:** for the empty `emptydir`, `state.preview_path` is the sentinel string `"path-of-empty-panel"`, not a real path; the same sentinel appears as `left_path` at filesystem root (`/`) in 02.10. Do not mis-assert a real path against either — this step does not assert `preview_path`.
 
 ### 02.9 — Directory name with spaces and `&` (shell-interpolation path)
 **Action:** (from $FIXTURE, `emptydir` selected) `tmux send-keys -t $SESSION k` (selection: `Bilder & Videos`) → `tmux send-keys -t $SESSION l` → await-idle → `state`, `log 30`, capture-pane. Then `tmux send-keys -t $SESSION h` → await-idle.
@@ -111,7 +112,7 @@ Steps are ordered and reuse state; each step lists the cwd it starts from.
 **Expect (screen):** after `gh`: top row contains the $HOME path. After `''`: fixture listing again.
 
 ### 02.13 — jump_to to a missing directory is a no-op (conditional)
-**Setup:** pick the first default jump target that does NOT exist on this machine: `gm`→~/Music, `gp`→~/Pictures, `gd`→~/Documents, `gD`→~/Downloads. If all four exist, SKIP this step (record as N/A).
+**Setup:** pick the first default jump target that does NOT exist on this machine: `gm`→~/Music, `gp`→~/Pictures, `gd`→~/Documents, `gD`→~/Downloads. On a typical dev box at least one of the four is missing; if ALL four exist, SKIP this step (record as N/A). This step depends on machine state — assert the *behavior* (jump to a nonexistent path is a no-op), not any specific target.
 **Action:** (from $FIXTURE) record `seq` from `state`; send the chosen two-key sequence (e.g. `tmux send-keys -t $SESSION g m`) → await-idle → `state`, capture-pane.
 **Expect (socket):** `cwd`==$FIXTURE unchanged, `selection` unchanged; `seq` increased (input WAS processed). A TRACE `jump-to <target>` line may appear in `log` — the jump itself refuses non-existent paths.
 **Expect (screen):** unchanged fixture listing.
@@ -135,7 +136,7 @@ Steps are ordered and reuse state; each step lists the cwd it starts from.
 ### 02.17 — Open the cd console
 **Action:** (from $FIXTURE, mode normal) `tmux send-keys -t $SESSION c d` → await-idle → `state`, capture-pane.
 **Expect (socket):** `mode`=="console"; `cwd` still $FIXTURE (opening the console does not navigate).
-**Expect (screen):** a horizontal overlay band around the vertical center: a rule line above and below, and between them the current path text ending with a trailing slash (contains `$FIXTURE` basename followed by `/`). A dark-grey completion suggestion may follow the path — do not assert its value.
+**Expect (screen):** a horizontal overlay band around the vertical center: a rule line above and below, and between them the current path. The console pre-fills a dark-grey autocompletion, so the visible line is `<cwd>/<completion>` — assert only that the base path up to and including the `/` is present (i.e. `$FIXTURE` basename followed by `/`), NOT a literal trailing slash at end-of-line, and do not assert the completion's value.
 
 ### 02.18 — cd console: typed completion navigates live, Enter accepts
 **Action:** (console open from 02.17) `tmux send-keys -t $SESSION alpha` → await-idle → `state`. Then `tmux send-keys -t $SESSION Enter` → await-idle → `state`, capture-pane.
@@ -146,7 +147,7 @@ Steps are ordered and reuse state; each step lists the cwd it starts from.
 ### 02.19 — cd console: Backspace on empty input goes to parent
 **Action:** (from $FIXTURE/alpha, mode normal) `tmux send-keys -t $SESSION c d` → await-idle. `tmux send-keys -t $SESSION BSpace` → await-idle → `state`. Then `tmux send-keys -t $SESSION Enter` → await-idle → `state`.
 **Expect (socket):** after BSpace (still `mode`=="console"): `cwd`==$FIXTURE (live parent navigation). After Enter: `mode`=="normal", `cwd`==$FIXTURE.
-**Expect (screen):** while open, the overlay path line shows the $FIXTURE path with trailing `/`; after Enter the fixture listing is back.
+**Expect (screen):** while open, the overlay path line contains the $FIXTURE base path up to and including the `/` (a dark-grey completion may follow it — assert the base path + `/` prefix, not a literal trailing slash at end-of-line); after Enter the fixture listing is back.
 
 ### 02.20 — cd console: Esc reverts to the starting directory
 **Action:** (from $FIXTURE) `tmux send-keys -t $SESSION c d` → await-idle. `tmux send-keys -t $SESSION alpha` → await-idle → `state` (confirm `cwd`==$FIXTURE/alpha, `mode`=="console"). Then `tmux send-keys -t $SESSION Escape` → await-idle → `state`, capture-pane.
@@ -185,7 +186,7 @@ Steps are ordered and reuse state; each step lists the cwd it starts from.
 
 ---
 
-**Teardown:** `tmux kill-session -t $SESSION; rm -rf "$FIXTURE" "$ZO_DATA" "$(dirname "$ZOXTARGET")" "$CFG"; rm -f $SOCK` (plus the standard XDG temp dirs from the harness).
+**Teardown:** `tmux kill-session -t $SESSION; rm -rf "$PARENT" "$ZO_DATA" "$(dirname "$ZOXTARGET")" "$CFG"; rm -f $SOCK` (`$PARENT` wraps the quiet-parent `$FIXTURE`; plus the standard XDG temp dirs from the harness).
 
 **Section coverage gaps** (deliberately not covered here):
 - Cursor movement within a listing beyond what navigation needs (`gg`/`G`/paging/half-paging) — cursor-movement section.
