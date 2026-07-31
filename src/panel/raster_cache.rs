@@ -17,8 +17,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Kind tag for image thumbnails (bounded to 960×540 by the producer).
-pub(crate) const KIND_IMAGE: &str = "img960";
+/// Kind tag for image thumbnails (bounded to 960×540 by the producer,
+/// EXIF orientation applied — upright by construction). The `u` is the
+/// upright bump: a plain `img960` entry written by a pre-orientation
+/// build may hold a sideways raster the hit path would never
+/// re-rotate, so those entries must miss (they age out via the 30-day
+/// prune; the stale-sibling sweep only removes old *mtimes*).
+pub(crate) const KIND_IMAGE: &str = "img960u";
 /// Kind tag for ffmpeg video frames (`scale=120:-1`).
 pub(crate) const KIND_VIDEO: &str = "vid120";
 /// Kind tag for resvg SVG renders: aspect-fit to 960×540 (vectors are
@@ -551,7 +556,7 @@ mod tests {
         let name = entry_name(Path::new("/some/pic.png"), 1700000000, KIND_IMAGE);
         let (hash, rest) = name.split_at(16);
         assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
-        assert_eq!(rest, "-1700000000-img960.jpg");
+        assert_eq!(rest, "-1700000000-img960u.jpg");
         // same path+kind, different mtime → same hash prefix, different name
         let other = entry_name(Path::new("/some/pic.png"), 1700000001, KIND_IMAGE);
         assert_eq!(other[..17], name[..17]);
