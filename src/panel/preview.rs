@@ -223,6 +223,10 @@ impl FilePreview {
         let mime = get_mime_type(&path);
 
         let preview = match (mime.type_().as_str(), mime.subtype().as_str()) {
+            // Before the raster arm: image/svg+xml used to mis-land on
+            // the bitmap decode (which cannot read SVG). Covers .svgz
+            // too — usvg auto-detects the gzip magic.
+            ("image", "svg+xml") => svg_preview(&path, modified),
             ("image", _) => cached_image_preview(&path, modified, &mime),
             ("audio", _) => audio_preview(&path),
             ("video", _) => video_preview(&path, modified),
@@ -432,6 +436,105 @@ fn cached_image_info(path: &Path, cached: &DynamicImage, subtype: &str) -> Vec<S
         .and_then(|m| m.modified().ok())
         .unwrap_or(SystemTime::UNIX_EPOCH);
     image_info_lines(width, height, cached.color(), byte_size, modified, subtype)
+}
+
+/// Render an SVG to a white-backed RGBA raster, aspect-fit to the same
+/// 960×540 bound as image previews. Unlike bitmap thumbnails, vectors
+/// are *scaled up* to the bound — there is no source resolution to
+/// preserve. `None` routes the caller to the text fallback.
+fn native_svg_render(data: &[u8]) -> Option<DynamicImage> {
+    let tree = resvg::usvg::Tree::from_data(data, &resvg::usvg::Options::default()).ok()?;
+    let size = tree
+        .size()
+        .to_int_size()
+        .scale_to(resvg::tiny_skia::IntSize::from_wh(960, 540)?); // aspect-fit
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(size.width(), size.height())?;
+    // White background: the JPEG cache stores RGB (no alpha), and a
+    // white fill also makes premultiplied == straight alpha, so the
+    // raw buffer converts directly to an RgbaImage.
+    pixmap.fill(resvg::tiny_skia::Color::WHITE);
+    let sx = size.width() as f32 / tree.size().width();
+    let sy = size.height() as f32 / tree.size().height();
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(sx, sy),
+        &mut pixmap.as_mut(),
+    );
+    let img = image::RgbaImage::from_raw(pixmap.width(), pixmap.height(), pixmap.take())?;
+    Some(image::DynamicImage::ImageRgba8(img))
+}
+
+/// Bounded read of an SVG source: 4 MiB covers any sane SVG while a
+/// mislabeled multi-GB file cannot exhaust memory.
+fn read_svg_bounded(path: &Path) -> io::Result<Vec<u8>> {
+    let mut data = Vec::new();
+    File::open(path)?
+        .take(4 * 1024 * 1024)
+        .read_to_end(&mut data)?;
+    Ok(data)
+}
+
+/// Info footer for a rendered SVG: the render's dimensions (the source
+/// has no pixel dims), source size and mtime.
+fn svg_info_lines(path: &Path, rendered: &DynamicImage) -> Vec<String> {
+    let meta = path.metadata().ok();
+    let byte_size = meta.as_ref().map(|m| m.len()).unwrap_or_default();
+    let modified = meta
+        .and_then(|m| m.modified().ok())
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    image_info_lines(
+        rendered.width(),
+        rendered.height(),
+        rendered.color(),
+        byte_size,
+        modified,
+        "svg",
+    )
+}
+
+/// SVG arm via the persistent raster cache (kind `svg960`).
+fn svg_preview(path: &Path, modified: SystemTime) -> Preview {
+    svg_preview_in(raster_cache::dir(), path, modified)
+}
+
+/// Dir-parameterized core of [`svg_preview`]; `None` (cache disabled)
+/// renders in-memory. Render/parse failure falls back to the bat/text
+/// path (the raw XML) — never a broken `Preview::Image { img: None }`.
+fn svg_preview_in(cache_dir: Option<&Path>, path: &Path, modified: SystemTime) -> Preview {
+    let mtime = mtime_secs(modified);
+    if let Some(dir) = cache_dir {
+        if let Some(img) = raster_cache::lookup_in(dir, path, mtime, raster_cache::KIND_SVG) {
+            log::debug!("raster cache hit for {}", path.display());
+            let info = svg_info_lines(path, &img);
+            return Preview::Image {
+                img: Some(img),
+                info,
+            };
+        }
+    }
+    let rendered = read_svg_bounded(path)
+        .ok()
+        .and_then(|data| native_svg_render(&data));
+    match rendered {
+        Some(img) => {
+            if let Some(dir) = cache_dir {
+                if let Err(e) =
+                    raster_cache::store_in(dir, path, mtime, raster_cache::KIND_SVG, &img)
+                {
+                    log::debug!("raster cache store failed for {}: {e}", path.display());
+                }
+            }
+            let info = svg_info_lines(path, &img);
+            Preview::Image {
+                img: Some(img),
+                info,
+            }
+        }
+        None => {
+            log::debug!("svg render failed, falling back to bat: {}", path.display());
+            bat_preview(path, false)
+        }
+    }
 }
 
 fn video_preview(path: impl AsRef<Path>, modified: SystemTime) -> Preview {
@@ -1919,6 +2022,85 @@ mod external_cmd_tests {
         prune_older_than(tmp.path(), Duration::from_secs(7 * 24 * 60 * 60));
         assert!(!old.exists(), "the stale file must be pruned");
         assert!(fresh.exists(), "the fresh file must survive");
+    }
+}
+
+#[cfg(test)]
+mod new_type_tests {
+    use super::*;
+
+    /// 100×50 with a centered red rect — the corners show the background.
+    const TEST_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50"><rect x="25" y="0" width="50" height="50" fill="red"/></svg>"#;
+
+    #[test]
+    fn svg_render_rasterises_to_the_960x540_bound() {
+        // Vectors are scaled UP to the preview bound (unlike bitmap
+        // thumbnails): 100×50 aspect-fits 960×540 as 960×480.
+        let img = native_svg_render(TEST_SVG).expect("a valid svg must render");
+        assert_eq!((img.width(), img.height()), (960, 480));
+        let rgba = img.to_rgba8();
+        // JPEG cache has no alpha: the background must be white, not
+        // transparent/black.
+        assert_eq!(rgba.get_pixel(0, 0).0, [255, 255, 255, 255]);
+        let center = rgba.get_pixel(480, 240).0;
+        assert!(
+            center[0] > 200 && center[1] < 60 && center[2] < 60,
+            "the red rect must be rendered: {center:?}"
+        );
+    }
+
+    #[test]
+    fn svg_render_of_garbage_is_none() {
+        assert!(native_svg_render(b"<not-svg").is_none());
+    }
+
+    #[test]
+    fn svg_preview_of_garbage_falls_back_to_text() {
+        // Malformed SVG: never a broken Preview::Image, the bat/text
+        // path shows the raw XML instead.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("broken.svg");
+        std::fs::write(&path, b"<not-svg").unwrap();
+        let modified = path.metadata().unwrap().modified().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        match svg_preview_in(Some(cache.path()), &path, modified) {
+            Preview::Text { lines } => assert!(!lines.is_empty(), "{lines:?}"),
+            _ => panic!("expected the text fallback"),
+        }
+        assert_eq!(
+            std::fs::read_dir(cache.path()).unwrap().count(),
+            0,
+            "no cache entry for an unrenderable svg"
+        );
+    }
+
+    #[test]
+    fn cached_svg_preview_stores_on_miss_and_hits_without_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("pic.svg");
+        std::fs::write(&path, TEST_SVG).unwrap();
+        let modified = path.metadata().unwrap().modified().unwrap();
+
+        // miss: render + store
+        match svg_preview_in(Some(cache.path()), &path, modified) {
+            Preview::Image { img, .. } => assert!(img.is_some()),
+            _ => panic!("expected an image preview"),
+        }
+        let entry = cache.path().join(raster_cache::entry_name(
+            &path,
+            mtime_secs(modified),
+            raster_cache::KIND_SVG,
+        ));
+        assert!(entry.is_file(), "miss must store the render");
+
+        // Delete the SOURCE: a second call with the same mtime must still
+        // yield pixels — proof they came from the cache, not a re-render.
+        std::fs::remove_file(&path).unwrap();
+        match svg_preview_in(Some(cache.path()), &path, modified) {
+            Preview::Image { img, .. } => assert!(img.is_some(), "hit must serve cached pixels"),
+            _ => panic!("expected an image preview from the cache"),
+        }
     }
 }
 

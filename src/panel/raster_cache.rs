@@ -21,6 +21,10 @@ use std::{
 pub(crate) const KIND_IMAGE: &str = "img960";
 /// Kind tag for ffmpeg video frames (`scale=120:-1`).
 pub(crate) const KIND_VIDEO: &str = "vid120";
+/// Kind tag for resvg SVG renders: aspect-fit to 960×540 (vectors are
+/// scaled up to the bound), white background (the JPEG cache has no
+/// alpha).
+pub(crate) const KIND_SVG: &str = "svg960";
 
 /// `<seahash(abs path):016x>-<mtime_secs>-<kind>.jpg` — the filename is
 /// the entire metadata. `kind` must be filename-safe (`[a-z0-9-]`).
