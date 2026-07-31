@@ -531,6 +531,14 @@ const FONT_SOURCE_MAX: u64 = 64 * 1024 * 1024;
 /// A .svgz may legitimately inflate ~10-50x; 32 MiB of XML is far past
 /// any real SVG.
 const SVGZ_INFLATED_MAX: u64 = 32 * 1024 * 1024;
+/// PDFs above this take the stat block (or the image tier): the text
+/// tier's value is capped anyway and load_filtered slurps the file.
+const PDF_SOURCE_MAX: u64 = 32 * 1024 * 1024;
+/// Total decompressed bytes lopdf may materialize per document.
+const PDF_DECOMP_BUDGET: u64 = 64 * 1024 * 1024;
+/// Longest retained preview line (chars) — a PDF can emit one
+/// multi-megabyte text run with no newlines.
+const PDF_LINE_MAX: usize = 1024;
 
 /// usvg auto-detects the gzip magic (.svgz and .svg alike) and
 /// inflates it with NO output bound (`decompress_svgz` is a plain
@@ -1640,6 +1648,210 @@ fn sqlite_preview(path: &Path, mime: &mime::Mime) -> Preview {
             stat_preview(path, mime)
         }
     }
+}
+
+thread_local! {
+    /// Remaining decompression budget for the load_filtered call on
+    /// this thread (the FilterFunc is a plain fn pointer, so the
+    /// budget travels beside it; rayon is disabled in our lopdf
+    /// features, the filter runs on the loading thread).
+    static PDF_BUDGET: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many bytes lopdf would materialize when decompressing `stream`,
+/// bounded probes only — never more than `budget + 1` counting bytes.
+/// `None` means unmeasurable-or-over-budget: drop the stream.
+///
+/// - FlateDecode (sole filter): counting-decompress through a Take'd
+///   sink; a mid-stream zlib error bounds lopdf's own partial
+///   `read_to_end` at the same byte, so the count stays correct.
+/// - LZWDecode, or any chain still containing an inflating filter
+///   (e.g. ASCII85+Flate — the raw bytes cannot be counting-decoded):
+///   charge pessimistically at the max deflate/LZW ratio (1032:1).
+/// - DCT/ASCII85/plain pass at zero: lopdf never inflates DCT,
+///   ASCII85 shrinks, and plain content is bounded by PDF_SOURCE_MAX.
+fn pdf_stream_charge(stream: &lopdf::Stream, budget: u64) -> Option<u64> {
+    const MAX_INFLATE_RATIO: u64 = 1032;
+    let filters = match stream.filters() {
+        Ok(filters) => filters,
+        // No/unreadable Filter entry: plain content, nothing inflates.
+        Err(_) => return Some(0),
+    };
+    let inflating = |f: &&[u8]| matches!(**f, ref n if n == b"FlateDecode" || n == b"LZWDecode");
+    if filters.first().map(|f| *f == b"FlateDecode").unwrap_or(false) && filters.len() == 1 {
+        let mut n: u64 = 0;
+        let mut decoder = flate2::read::ZlibDecoder::new(stream.content.as_slice())
+            .take(budget.saturating_add(1));
+        let mut buf = [0u8; 16 * 1024];
+        loop {
+            match decoder.read(&mut buf) {
+                Ok(0) => break,
+                Ok(k) => n += k as u64,
+                // Broken zlib: lopdf's own read_to_end fails at the
+                // same offset, materializing only the bytes counted so
+                // far — charge those.
+                Err(_) => break,
+            }
+        }
+        return (n <= budget).then_some(n);
+    }
+    if filters.iter().any(inflating) {
+        let charge = (stream.content.len() as u64).saturating_mul(MAX_INFLATE_RATIO);
+        return (charge <= budget).then_some(charge);
+    }
+    Some(0)
+}
+
+/// lopdf's decompress_zlib/_lzw are unbounded read_to_ends — verify
+/// every stream BEFORE lopdf inflates it (`load_filtered` calls this
+/// for each parsed object; returning `None` drops it). Over budget =>
+/// drop the object AND zero the budget: one bomb costs at most
+/// budget+1 counting bytes, every later stream then drops after <=1
+/// byte — total work across a hostile file stays O(2 * budget). A
+/// dropped stream leaves a hole; lopdf then errs or extracts nothing
+/// and the caller degrades — exactly right for a hostile file.
+fn pdf_guard_filter(
+    id: (u32, u16),
+    object: &mut lopdf::Object,
+) -> Option<((u32, u16), lopdf::Object)> {
+    if let lopdf::Object::Stream(stream) = &*object {
+        let budget = PDF_BUDGET.with(|b| b.get());
+        match pdf_stream_charge(stream, budget) {
+            Some(charge) => PDF_BUDGET.with(|b| b.set(budget - charge)),
+            None => {
+                PDF_BUDGET.with(|b| b.set(0));
+                log::debug!("pdf stream {id:?} exceeds the decompression budget, dropping it");
+                return None;
+            }
+        }
+    }
+    // The clone is the FilterFunc API's shape; it is bounded by
+    // PDF_SOURCE_MAX (the raw, still-compressed bytes).
+    Some((id, object.clone()))
+}
+
+/// Bounded lopdf load: size pre-check, budget arm, guarded parse.
+fn load_pdf_guarded(path: &Path) -> anyhow::Result<lopdf::Document> {
+    load_pdf_guarded_bounded(path, PDF_SOURCE_MAX, PDF_DECOMP_BUDGET)
+}
+
+/// Parameterized core of [`load_pdf_guarded`]. The size pre-check
+/// replaces a literal bounded read (`load_filtered` takes a path and
+/// slurps it): benign TOCTOU — a file growing between check and read
+/// only wastes one preview's work.
+fn load_pdf_guarded_bounded(
+    path: &Path,
+    source_max: u64,
+    budget: u64,
+) -> anyhow::Result<lopdf::Document> {
+    let len = path.metadata()?.len();
+    anyhow::ensure!(
+        len <= source_max,
+        "pdf too large for the text tier ({len} bytes)"
+    );
+    PDF_BUDGET.with(|b| b.set(budget));
+    Ok(lopdf::Document::load_filtered(path, pdf_guard_filter)?)
+}
+
+/// Scrub + length-cap one PDF-sourced line (/Info strings and
+/// extracted text are attacker-controlled).
+fn pdf_line(line: &str) -> String {
+    let scrubbed = scrub_line(line.to_string());
+    if scrubbed.len() > PDF_LINE_MAX {
+        // chars().take is char-boundary safe by construction; when the
+        // byte length exceeds the cap but the char count does not, the
+        // collect returns the string unchanged.
+        scrubbed.chars().take(PDF_LINE_MAX).collect()
+    } else {
+        scrubbed
+    }
+}
+
+/// `Size:`/`Modified:` block from file metadata (best-effort).
+fn size_modified_lines(path: &Path) -> Vec<String> {
+    use time::OffsetDateTime;
+    let mut lines = Vec::new();
+    if let Ok(meta) = path.metadata() {
+        lines.push(format!(
+            "Size:     {}",
+            crate::util::file_size_str(meta.len())
+        ));
+        if let Ok(modified) = meta.modified() {
+            let t = OffsetDateTime::from(modified);
+            lines.push(format!(
+                "Modified: {}-{:02}-{:02} {:02}:{:02}:{:02}",
+                t.year(),
+                u8::from(t.month()),
+                t.day(),
+                t.hour(),
+                t.minute(),
+                t.second()
+            ));
+        }
+    }
+    lines
+}
+
+/// Header + body lines of the text tier. Encrypted docs get
+/// "encrypted PDF (N pages)" + Size/Modified only — NO /Info strings
+/// (they are encrypted garbage in a real encrypted file) and no
+/// extract_text. Otherwise: "PDF · N pages", Title/Author/Producer
+/// from /Info when present, blank, then page-1 text — every line
+/// scrubbed + length-capped, 128 lines total. Body-extraction failure
+/// (dropped/looping content) is "no body", never a tier failure — the
+/// metadata header still shows.
+fn native_pdf_lines(doc: &lopdf::Document, path: &Path) -> Vec<String> {
+    let n_pages = doc.get_pages().len();
+    let pages_word = if n_pages == 1 { "page" } else { "pages" };
+    if doc.is_encrypted() {
+        let mut lines = vec![format!("encrypted PDF ({n_pages} {pages_word})"), String::new()];
+        lines.extend(size_modified_lines(path));
+        return lines;
+    }
+    let mut lines = vec![format!("PDF · {n_pages} {pages_word}")];
+    if let Ok(info) = doc
+        .trailer
+        .get(b"Info")
+        .and_then(|o| doc.dereference(o))
+        .and_then(|(_, o)| o.as_dict())
+    {
+        for (key, label) in [
+            (b"Title".as_slice(), "Title:    "),
+            (b"Author".as_slice(), "Author:   "),
+            (b"Producer".as_slice(), "Producer: "),
+        ] {
+            let value = info
+                .get(key)
+                .and_then(|o| doc.dereference(o))
+                .ok()
+                .and_then(|(_, o)| o.as_str().ok())
+                .map(String::from_utf8_lossy);
+            if let Some(value) = value {
+                if !value.trim().is_empty() {
+                    lines.push(pdf_line(&format!("{label}{value}")));
+                }
+            }
+        }
+    }
+    lines.push(String::new());
+    if let Ok(text) = doc.extract_text(&[1]) {
+        for line in text.lines() {
+            if lines.len() >= 128 {
+                break;
+            }
+            lines.push(pdf_line(line));
+        }
+    }
+    lines.truncate(128);
+    lines
+}
+
+/// PDF text tier: guarded lopdf load + metadata/page-1 lines.
+fn pdf_text_tier(path: &Path) -> anyhow::Result<Preview> {
+    let doc = load_pdf_guarded(path)?;
+    Ok(Preview::Text {
+        lines: native_pdf_lines(&doc, path),
+    })
 }
 
 /// Dependency-free stat block for generic application/* files: path,
@@ -3647,6 +3859,326 @@ mod new_type_tests {
             lines.iter().all(|l| !l.contains("late.txt")),
             "the scan budget must stop the listing: {lines:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod pdf_tests {
+    use super::*;
+    use lopdf::{
+        content::{Content, Operation},
+        dictionary, Document, Object, Stream,
+    };
+
+    /// Default per-page content: one text block with a page marker.
+    fn page_ops(n: usize) -> Vec<Operation> {
+        vec![
+            Operation::new("BT", vec![]),
+            Operation::new("Tf", vec!["F1".into(), 24.into()]),
+            Operation::new("Td", vec![100.into(), 600.into()]),
+            Operation::new(
+                "Tj",
+                vec![Object::string_literal(format!("Hello PDF page {n}"))],
+            ),
+            Operation::new("ET", vec![]),
+        ]
+    }
+
+    /// Catalog/Pages/Page skeleton with /Info (Title = `title`,
+    /// Author with an embedded newline — deliberate, lopdf hands /Info
+    /// strings through raw — and a Producer). One page per element of
+    /// `pages`, each with the given content operations.
+    fn build_pdf(title: &str, pages: Vec<Vec<Operation>>) -> Document {
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let font_id = doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Courier",
+        });
+        let resources_id = doc.add_object(dictionary! {
+            "Font" => dictionary! { "F1" => font_id },
+        });
+        let mut kids: Vec<Object> = Vec::new();
+        let count = pages.len() as i64;
+        for ops in pages {
+            let content = Content { operations: ops };
+            let content_id =
+                doc.add_object(Stream::new(dictionary! {}, content.encode().unwrap()));
+            let page_id = doc.add_object(dictionary! {
+                "Type" => "Page",
+                "Parent" => pages_id,
+                "Contents" => content_id,
+            });
+            kids.push(page_id.into());
+        }
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => kids,
+                "Count" => count,
+                "Resources" => resources_id,
+                "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+            }),
+        );
+        let catalog_id = doc.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+        doc.trailer.set("Root", catalog_id);
+        let info_id = doc.add_object(dictionary! {
+            "Title" => Object::string_literal(title),
+            "Author" => Object::string_literal("Prob\ne Author"),
+            "Producer" => Object::string_literal("rfm test producer"),
+        });
+        doc.trailer.set("Info", info_id);
+        doc
+    }
+
+    fn save_pdf(dir: &Path, name: &str, mut doc: Document) -> PathBuf {
+        let path = dir.join(name);
+        let mut bytes = Vec::new();
+        doc.save_to(&mut bytes).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    fn make_pdf(dir: &Path, name: &str, title: &str, n_pages: usize) -> PathBuf {
+        let pages = (1..=n_pages).map(page_ops).collect();
+        save_pdf(dir, name, build_pdf(title, pages))
+    }
+
+    /// Detection-only /Encrypt fixture: lopdf's `is_encrypted` checks
+    /// the trailer; the crafted O/U never authenticate with "".
+    fn make_encrypted_pdf(dir: &Path) -> PathBuf {
+        let mut doc = build_pdf("Secret Title", vec![page_ops(1), page_ops(2)]);
+        let enc_id = doc.add_object(dictionary! {
+            "Filter" => "Standard",
+            "V" => 1,
+            "R" => 2,
+            "O" => Object::string_literal(vec![0u8; 32]),
+            "U" => Object::string_literal(vec![0u8; 32]),
+            "P" => -1,
+        });
+        doc.trailer.set("Encrypt", enc_id);
+        save_pdf(dir, "locked.pdf", doc)
+    }
+
+    /// Page-1 Contents is a FlateDecode stream inflating to
+    /// `inflated_len` bytes — mostly padding around a marker text that
+    /// must never surface in a preview (proof the stream was dropped,
+    /// not inflated and parsed).
+    fn make_bomb_pdf(dir: &Path, inflated_len: usize) -> PathBuf {
+        use std::io::Write;
+        let mut doc = build_pdf("Bomb", vec![page_ops(1)]);
+        let mut inflated = b"BT /F1 24 Tf (BOMB MARKER) Tj ET\n".to_vec();
+        inflated.resize(inflated_len, b' ');
+        let mut enc =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        enc.write_all(&inflated).unwrap();
+        let compressed = enc.finish().unwrap();
+        let bomb_id = doc.add_object(
+            Stream::new(dictionary! { "Filter" => "FlateDecode" }, compressed)
+                .with_compression(false),
+        );
+        let page_id = *doc.get_pages().get(&1).unwrap();
+        doc.get_object_mut(page_id)
+            .and_then(Object::as_dict_mut)
+            .unwrap()
+            .set("Contents", bomb_id);
+        save_pdf(dir, "bomb.pdf", doc)
+    }
+
+    /// Two objects referencing each other, page-1 Contents pointing
+    /// into the loop.
+    fn make_loop_pdf(dir: &Path) -> PathBuf {
+        let mut doc = build_pdf("Loop", vec![page_ops(1)]);
+        let a_id = doc.new_object_id();
+        let b_id = doc.new_object_id();
+        doc.objects.insert(a_id, Object::Reference(b_id));
+        doc.objects.insert(b_id, Object::Reference(a_id));
+        let page_id = *doc.get_pages().get(&1).unwrap();
+        doc.get_object_mut(page_id)
+            .and_then(Object::as_dict_mut)
+            .unwrap()
+            .set("Contents", a_id);
+        save_pdf(dir, "loop.pdf", doc)
+    }
+
+    fn text_tier_lines(path: &Path) -> Vec<String> {
+        match pdf_text_tier(path).unwrap() {
+            Preview::Text { lines } => lines,
+            _ => panic!("expected a text preview"),
+        }
+    }
+
+    #[test]
+    fn pdf_text_tier_shows_page_count_title_and_first_page_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = make_pdf(tmp.path(), "report.pdf", "Quarterly Report", 3);
+        let lines = text_tier_lines(&pdf);
+        let joined = lines.join("\n");
+        assert!(joined.contains("PDF · 3 pages"), "{joined}");
+        assert!(joined.contains("Quarterly Report"), "{joined}");
+        assert!(joined.contains("Hello PDF page 1"), "{joined}");
+        assert!(
+            !joined.contains("Hello PDF page 2"),
+            "page 1 only: {joined}"
+        );
+    }
+
+    #[test]
+    fn pdf_info_strings_are_scrubbed() {
+        // The Author fixture value carries an embedded newline (lopdf
+        // hands /Info strings through raw — proven); it must render as
+        // ONE line.
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = make_pdf(tmp.path(), "report.pdf", "Title", 1);
+        let lines = text_tier_lines(&pdf);
+        assert!(
+            lines.iter().all(|l| !l.contains(['\r', '\n'])),
+            "newlines must be scrubbed: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("Probe Author")),
+            "the scrubbed author must still show: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn pdf_text_is_capped_at_128_lines() {
+        // 200 BT..ET blocks extract as 200 lines; the preview output is
+        // capped at the shared 128.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ops = Vec::new();
+        for i in 0..200 {
+            ops.push(Operation::new("BT", vec![]));
+            ops.push(Operation::new("Tf", vec!["F1".into(), 12.into()]));
+            ops.push(Operation::new("Td", vec![10.into(), 10.into()]));
+            ops.push(Operation::new(
+                "Tj",
+                vec![Object::string_literal(format!("body line {i}"))],
+            ));
+            ops.push(Operation::new("ET", vec![]));
+        }
+        let pdf = save_pdf(tmp.path(), "long.pdf", build_pdf("Long", vec![ops]));
+        let lines = text_tier_lines(&pdf);
+        assert!(lines.len() <= 128, "cap must hold, got {}", lines.len());
+        assert!(
+            lines.iter().any(|l| l.contains("body line 0")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().all(|l| !l.contains("body line 199")),
+            "the tail past the cap must be dropped"
+        );
+    }
+
+    #[test]
+    fn pdf_lines_are_length_capped() {
+        // A PDF can emit one multi-megabyte text run with no newlines;
+        // the retained line is truncated (char-boundary safe).
+        let tmp = tempfile::tempdir().unwrap();
+        let huge = "A".repeat(100 * 1024);
+        let ops = vec![
+            Operation::new("BT", vec![]),
+            Operation::new("Tf", vec!["F1".into(), 12.into()]),
+            Operation::new("Tj", vec![Object::string_literal(huge)]),
+            Operation::new("ET", vec![]),
+        ];
+        let pdf = save_pdf(tmp.path(), "wide.pdf", build_pdf("Wide", vec![ops]));
+        let lines = text_tier_lines(&pdf);
+        assert!(
+            lines.iter().all(|l| l.chars().count() <= PDF_LINE_MAX),
+            "every line must be capped at {PDF_LINE_MAX} chars"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("AAAA")),
+            "the truncated run must still show: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn encrypted_pdf_shows_encrypted_line_and_page_count() {
+        // Metadata = file Size/Modified, NOT /Info strings: in a real
+        // encrypted PDF the strings are encrypted garbage (the
+        // dictionaries are not, which is why the page count reads).
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = make_encrypted_pdf(tmp.path());
+        let lines = text_tier_lines(&pdf);
+        assert_eq!(lines[0], "encrypted PDF (2 pages)", "{lines:?}");
+        let joined = lines.join("\n");
+        assert!(joined.contains("Size:"), "{joined}");
+        assert!(joined.contains("Modified:"), "{joined}");
+        assert!(
+            !joined.contains("Secret Title"),
+            "/Info strings must not show for an encrypted pdf: {joined}"
+        );
+    }
+
+    #[test]
+    fn truncated_pdf_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = make_pdf(tmp.path(), "whole.pdf", "T", 1);
+        let bytes = std::fs::read(&pdf).unwrap();
+        let cut = tmp.path().join("cut.pdf");
+        std::fs::write(&cut, &bytes[..bytes.len() / 2]).unwrap();
+        assert!(pdf_text_tier(&cut).is_err());
+    }
+
+    #[test]
+    fn garbage_pdf_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bogus = tmp.path().join("bogus.pdf");
+        std::fs::write(&bogus, b"%PDF-1.4\nnot a pdf").unwrap();
+        assert!(pdf_text_tier(&bogus).is_err());
+    }
+
+    #[test]
+    fn oversized_pdf_is_an_error() {
+        // The size pre-check replaces a literal bounded read
+        // (load_filtered takes a path and slurps): past source_max the
+        // tier bails before parsing anything.
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = make_pdf(tmp.path(), "big.pdf", "Big", 1);
+        let len = std::fs::metadata(&pdf).unwrap().len();
+        assert!(load_pdf_guarded_bounded(&pdf, len - 1, PDF_DECOMP_BUDGET).is_err());
+        // The same file parses fine under the real cap.
+        assert!(load_pdf_guarded_bounded(&pdf, PDF_SOURCE_MAX, PDF_DECOMP_BUDGET).is_ok());
+    }
+
+    #[test]
+    fn flate_bomb_content_stream_is_dropped_not_inflated() {
+        // lopdf's decompress_zlib is an unbounded read_to_end; the
+        // guard filter must size-verify and drop the stream BEFORE
+        // lopdf ever inflates it. 16 MiB inflated vs a 1 MiB budget.
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = make_bomb_pdf(tmp.path(), 16 * 1024 * 1024);
+        let doc = load_pdf_guarded_bounded(&pdf, PDF_SOURCE_MAX, 1024 * 1024).unwrap();
+        let lines = native_pdf_lines(&doc, &pdf);
+        let joined = lines.join("\n");
+        assert!(
+            !joined.contains("BOMB MARKER"),
+            "the bomb stream must be dropped, not parsed: {joined}"
+        );
+        // The metadata header survives the dropped body.
+        assert!(joined.contains("PDF · 1 page"), "{joined}");
+    }
+
+    #[test]
+    fn reference_loop_pdf_terminates() {
+        // lopdf's DEREF_LIMIT bounds the chase; the tier must simply
+        // return (metadata Ok, or Err) instead of spinning.
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = make_loop_pdf(tmp.path());
+        match pdf_text_tier(&pdf) {
+            Ok(Preview::Text { lines }) => {
+                assert!(lines.iter().any(|l| l.contains("PDF")), "{lines:?}")
+            }
+            Ok(_) => panic!("expected a text preview"),
+            Err(_) => {} // an error is a valid terminating outcome
+        }
     }
 }
 
