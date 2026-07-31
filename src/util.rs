@@ -388,10 +388,7 @@ pub fn xdg_config_home() -> anyhow::Result<PathBuf> {
 /// Query the XDG Cache Home (usually ~/.cache) according to
 /// https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
 pub fn xdg_cache_home() -> anyhow::Result<PathBuf> {
-    xdg_cache_home_from(
-        std::env::var_os("XDG_CACHE_HOME"),
-        std::env::var_os("HOME"),
-    )
+    xdg_cache_home_from(std::env::var_os("XDG_CACHE_HOME"), std::env::var_os("HOME"))
 }
 
 /// Pure core of [`xdg_cache_home`]: `$XDG_CACHE_HOME`, else `$HOME/.cache`,
@@ -415,8 +412,11 @@ fn xdg_cache_home_from(
 fn xdg_cache_home_prefers_env_then_home() {
     use std::ffi::OsString;
     assert_eq!(
-        xdg_cache_home_from(Some(OsString::from("/xdg/cache")), Some(OsString::from("/home/u")))
-            .unwrap(),
+        xdg_cache_home_from(
+            Some(OsString::from("/xdg/cache")),
+            Some(OsString::from("/home/u"))
+        )
+        .unwrap(),
         PathBuf::from("/xdg/cache")
     );
     assert_eq!(
