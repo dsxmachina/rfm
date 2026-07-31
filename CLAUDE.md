@@ -237,3 +237,40 @@ multi-select.
 
 Debug socket `state` exposes
 `undo_depth` / `redo_depth`.
+
+## Architecture: preview raster cache
+
+Persistent image/video preview rasters in `$XDG_CACHE_HOME/rfm/thumbnails/`
+(`src/panel/raster_cache.rs`; created 0700 per the XDG basedir spec). The
+filename is the entire metadata: `<seahash(abs path):016x>-<mtime_secs>-
+<kind>.jpg`, with kinds `img960` (image thumbnails, bounded to 960×540 —
+never upscaled) and `vid120` (ffmpeg frames, `scale=120:-1`). Same
+path+mtime with two kinds coexist; a store's stale-sibling sweep deletes
+everything with the `<hash>-` prefix OUTSIDE the keep scope
+`<hash>-<mtime>-` (old mtimes of any kind, plus their orphaned `.part`s).
+
+Writes are atomic: same-dir `<final>.<pid>-<seq>.part` temp name (the
+per-process counter matters — the directory preloader and the on-demand
+preview task can store the same entry concurrently), then rename; the
+ffmpeg producer keeps `.jpg` LAST in its part name so container inference
+works. Lookups apply the corrupt-entry rule (decode failure → delete +
+regenerate — both producers, never a blank preview). Everything is
+best-effort: a cache fault only costs a recompute, and the video producer
+re-creates the dir before each ffmpeg run, so `rm -rf ~/.cache/rfm` is
+safe mid-session. Startup prune (spawn_blocking): 30-day age, then
+oldest-first down to 256 MB (one shared budget).
+
+`preview_cache` (config, default true) gates it via
+`raster_cache::init(enabled)` in main. `false` is a privacy promise —
+nothing about the user's files is written: images run in-memory
+(`native_image_preview`), videos degrade to mediainfo text (no ffmpeg
+thumbnail at all). Enabled-but-unavailable (no resolvable cache home) is
+different: videos then fall back to the pre-cache `temp_dir()/
+rfm-thumbnails` (7-day prune). See `video_thumbnail_dir_from`.
+
+Testing: unit tests never call `init` (uninitialized == opted out); the
+producers are dir-parameterized (`cached_image_preview_in`,
+`ffmpeg_thumbnail(dir, …)`) so tests pass tempdirs. E2e: launch in tmux
+with `XDG_CACHE_HOME=$(mktemp -d)` in the pane before rfm, then assert on
+the entries in `$XDG_CACHE_HOME/rfm/thumbnails` and grep the socket `log`
+for "raster cache hit".
