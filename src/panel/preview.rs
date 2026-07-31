@@ -1026,8 +1026,8 @@ fn video_preview(path: impl AsRef<Path>, modified: SystemTime) -> Preview {
     match preview {
         Ok(preview) => preview,
         Err(e) => {
-            // Expected e.g. for videos shorter than the 10s thumbnail
-            // seek - not worth an on-screen error on every visit.
+            // Expected e.g. for corrupt files or a deadline-killed
+            // ffmpeg - not worth an on-screen error on every visit.
             log::debug!("no ffmpeg thumbnail, falling back to mediainfo: {e}");
             cmd_to_preview("mediainfo", mediainfo(path.as_ref()))
         }
@@ -1156,18 +1156,22 @@ fn ffmpeg_thumbnail(dir: &Path, path: impl AsRef<Path>, modified: u64) -> anyhow
     // file. The extension stays LAST so ffmpeg's container inference
     // still works.
     let part = dir.join(format!("{name}.{}.part.jpg", raster_cache::part_token()));
+    // The `thumbnail` filter picks a representative frame from the
+    // first batch (default 100 frames) — probe-free and seek-free, so
+    // short clips work and the cost stays bounded regardless of the
+    // video's length (run_bounded's deadline covers the pathological
+    // rest). Output semantics (`scale=120:-1`) are unchanged, so the
+    // cache kind stays `vid120`.
     let mut cmd = std::process::Command::new("ffmpeg");
-    cmd.arg("-ss")
-        .arg("00:00:10")
-        .arg("-y")
+    cmd.arg("-y")
         .arg("-i")
         .arg(path.as_ref())
-        .arg("-vframes")
+        .arg("-frames:v")
         .arg("1")
         .arg("-q:v")
         .arg("2")
         .arg("-vf")
-        .arg("scale=120:-1")
+        .arg("thumbnail,scale=120:-1")
         .arg(&part);
     cmd.stdin(Stdio::null());
     let out = match run_bounded(&mut cmd, EXTERNAL_RENDER_DEADLINE) {
@@ -3680,14 +3684,32 @@ mod external_cmd_tests {
     }
 
     #[test]
-    fn ffmpeg_thumbnail_of_a_too_short_video_is_an_error() {
+    fn ffmpeg_thumbnail_of_a_short_video_produces_a_thumbnail() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
         let video = make_video(tmp.path(), "short.mp4", 1);
-        // The hardcoded 10s seek is past the end of this clip, so
-        // ffmpeg fails and writes no thumbnail - that must surface as
-        // Err (the caller then falls back to mediainfo) instead of a
-        // phantom image preview.
+        // The `thumbnail` filter picks a representative frame from the
+        // first batch — no seek, so even a 1s clip yields a real
+        // thumbnail (the old hardcoded 10s seek made every short video
+        // silently degrade to mediainfo text).
+        match ffmpeg_thumbnail(cache.path(), &video, 0).unwrap() {
+            Preview::Image { img, .. } => assert!(img.is_some(), "a real decoded thumbnail"),
+            _ => panic!("expected an image preview"),
+        }
+        // the vid120 entry landed, and no .part siblings remain
+        let name = raster_cache::entry_name(&video, 0, raster_cache::KIND_VIDEO);
+        assert_eq!(thumbnail_dir_entries_of(cache.path(), &video), vec![name]);
+    }
+
+    #[test]
+    fn ffmpeg_thumbnail_of_an_invalid_video_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let video = tmp.path().join("corrupt.mp4");
+        std::fs::write(&video, b"this is not a video container").unwrap();
+        // Genuine decode failure: ffmpeg writes no thumbnail — that
+        // must surface as Err (the caller then falls back to
+        // mediainfo) instead of a phantom image preview.
         assert!(ffmpeg_thumbnail(cache.path(), &video, 0).is_err());
         // the failed run leaves no .part file behind
         assert!(
