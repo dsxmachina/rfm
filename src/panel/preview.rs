@@ -228,6 +228,16 @@ impl FilePreview {
             // too — usvg auto-detects the gzip magic.
             ("image", "svg+xml") => svg_preview(&path, modified),
             ("image", _) => cached_image_preview(&path, modified, &mime),
+            // ttf/otf (and any sfnt the sniff finds) get the rendered
+            // sample; woff/woff2 currently degrade to the stat fallback
+            // inside the arm (no MSRV-1.83 pure-Rust woff decoder —
+            // ttf-parser cannot read WOFF containers).
+            ("font", _) => font_preview(&path, modified, &mime),
+            // .otf via mime_guess; extensionless ttf/otf and woff via
+            // the infer sniff — the legacy application/font-* aliases.
+            ("application", "font-sfnt") | ("application", "font-woff") => {
+                font_preview(&path, modified, &mime)
+            }
             ("audio", _) => audio_preview(&path),
             ("video", _) => video_preview(&path, modified),
             ("application", "x-x509-ca-cert") => cert_preview(&path),
@@ -533,6 +543,165 @@ fn svg_preview_in(cache_dir: Option<&Path>, path: &Path, modified: SystemTime) -
         None => {
             log::debug!("svg render failed, falling back to bat: {}", path.display());
             bat_preview(path, false)
+        }
+    }
+}
+
+/// The rendered sample text — `raster_cache::KIND_FONT` encodes its
+/// version (`s1`) and the px size (`24`): changing either MUST bump
+/// that constant, or stale cache entries keep serving the old sample.
+const FONT_SAMPLE_LINES: [&str; 2] = [
+    "The quick brown fox jumps over the lazy dog",
+    "0123456789 ?!&@%(){}[]",
+];
+const FONT_SAMPLE_PX: f32 = 24.0;
+
+/// Family/style from the name table (IDs 1/2, unicode entries only),
+/// scrubbed — name tables are attacker-controlled. Empty when the face
+/// does not parse or carries no unicode names.
+fn font_name_lines(data: &[u8]) -> Vec<String> {
+    let face = match ttf_parser::Face::parse(data, 0) {
+        Ok(face) => face,
+        Err(_) => return Vec::new(),
+    };
+    let mut family = None;
+    let mut style = None;
+    for name in face.names() {
+        if !name.is_unicode() {
+            continue;
+        }
+        match name.name_id {
+            ttf_parser::name_id::FAMILY => family = family.or_else(|| name.to_string()),
+            ttf_parser::name_id::SUBFAMILY => style = style.or_else(|| name.to_string()),
+            _ => {}
+        }
+    }
+    [family, style]
+        .into_iter()
+        .flatten()
+        .map(scrub_line)
+        .collect()
+}
+
+/// Rasterise the sample rows (pangram + digits/symbols) at 24 px onto a
+/// white grayscale canvas — dark glyphs on white so the JPEG round-trip
+/// of the raster cache stays clean. Returns the name lines alongside.
+/// `Err` (not an sfnt — includes woff/woff2, see the dispatch comment)
+/// routes the caller to the stat fallback.
+fn native_font_sample(data: &[u8]) -> anyhow::Result<(Vec<String>, DynamicImage)> {
+    use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
+    let names = font_name_lines(data);
+    let font = FontRef::try_from_slice(data)?;
+    let scaled = font.as_scaled(PxScale::from(FONT_SAMPLE_PX));
+    let line_height = scaled.height() + scaled.line_gap();
+    let margin = 8.0f32;
+    let width: u32 = 960;
+    let height = (2.0 * line_height + 2.0 * margin).ceil() as u32;
+    let mut img = image::GrayImage::from_pixel(width, height, image::Luma([255u8]));
+    for (row, text) in FONT_SAMPLE_LINES.iter().enumerate() {
+        let baseline = margin + scaled.ascent() + row as f32 * line_height;
+        let mut x = margin;
+        for c in text.chars() {
+            // Position is set on the glyph BEFORE outlining (there is
+            // no into_glyph_at); advance comes from the scaled font.
+            let mut glyph = scaled.scaled_glyph(c);
+            glyph.position = ab_glyph::point(x, baseline);
+            x += scaled.h_advance(glyph.id);
+            if x > width as f32 {
+                break;
+            }
+            if let Some(og) = scaled.outline_glyph(glyph) {
+                let bounds = og.px_bounds();
+                og.draw(|gx, gy, cov| {
+                    let px = bounds.min.x as i32 + gx as i32;
+                    let py = bounds.min.y as i32 + gy as i32;
+                    if (0..width as i32).contains(&px) && (0..height as i32).contains(&py) {
+                        let p = img.get_pixel_mut(px as u32, py as u32);
+                        p.0[0] = p.0[0].min(255u8.saturating_sub((cov * 255.0) as u8));
+                    }
+                });
+            }
+        }
+    }
+    Ok((names, DynamicImage::ImageLuma8(img)))
+}
+
+/// Info footer for a font preview: name lines (when readable) plus the
+/// size/mtime block from metadata.
+fn font_info_lines(path: &Path, mut names: Vec<String>) -> Vec<String> {
+    use time::OffsetDateTime;
+    if !names.is_empty() {
+        names.push(String::new());
+    }
+    if let Ok(meta) = path.metadata() {
+        names.push(format!(
+            "Size:     {}",
+            crate::util::file_size_str(meta.len())
+        ));
+        if let Ok(modified) = meta.modified() {
+            let t = OffsetDateTime::from(modified);
+            names.push(format!(
+                "Modified: {}-{:02}-{:02} {:02}:{:02}:{:02}",
+                t.year(),
+                u8::from(t.month()),
+                t.day(),
+                t.hour(),
+                t.minute(),
+                t.second()
+            ));
+        }
+    }
+    names
+}
+
+/// Font arm via the persistent raster cache (kind `font-s1-24`).
+fn font_preview(path: &Path, modified: SystemTime, mime: &mime::Mime) -> Preview {
+    font_preview_in(raster_cache::dir(), path, modified, mime)
+}
+
+/// Dir-parameterized core of [`font_preview`]; `None` (cache disabled)
+/// rasterises in-memory. A cache hit re-reads the source only for the
+/// name lines (best-effort — unreadable source keeps the metadata
+/// lines). Parse failure falls back to the stat block.
+fn font_preview_in(
+    cache_dir: Option<&Path>,
+    path: &Path,
+    modified: SystemTime,
+    mime: &mime::Mime,
+) -> Preview {
+    let mtime = mtime_secs(modified);
+    if let Some(dir) = cache_dir {
+        if let Some(img) = raster_cache::lookup_in(dir, path, mtime, raster_cache::KIND_FONT) {
+            log::debug!("raster cache hit for {}", path.display());
+            let names = std::fs::read(path)
+                .map(|data| font_name_lines(&data))
+                .unwrap_or_default();
+            return Preview::Image {
+                img: Some(img),
+                info: font_info_lines(path, names),
+            };
+        }
+    }
+    let sample = std::fs::read(path)
+        .map_err(anyhow::Error::from)
+        .and_then(|data| native_font_sample(&data));
+    match sample {
+        Ok((names, img)) => {
+            if let Some(dir) = cache_dir {
+                if let Err(e) =
+                    raster_cache::store_in(dir, path, mtime, raster_cache::KIND_FONT, &img)
+                {
+                    log::debug!("raster cache store failed for {}: {e}", path.display());
+                }
+            }
+            Preview::Image {
+                img: Some(img),
+                info: font_info_lines(path, names),
+            }
+        }
+        Err(e) => {
+            log::debug!("font sample failed, falling back to stat: {e}");
+            stat_preview(path, mime)
         }
     }
 }
@@ -2098,6 +2267,115 @@ mod new_type_tests {
         // yield pixels — proof they came from the cache, not a re-render.
         std::fs::remove_file(&path).unwrap();
         match svg_preview_in(Some(cache.path()), &path, modified) {
+            Preview::Image { img, .. } => assert!(img.is_some(), "hit must serve cached pixels"),
+            _ => panic!("expected an image preview from the cache"),
+        }
+    }
+
+    /// OFL-licensed ASCII subset of Noto Sans Regular (see
+    /// `testdata/OFL.txt`) — hermetic, no system-font dependency.
+    const TEST_FONT: &[u8] = include_bytes!("testdata/subset-noto-sans.ttf");
+
+    #[test]
+    fn native_font_sample_rasterises_the_pangram() {
+        let (info, img) = native_font_sample(TEST_FONT).expect("the fixture font must render");
+        assert!(
+            info.iter().any(|l| l.contains("Noto Sans")),
+            "family name expected: {info:?}"
+        );
+        let gray = img.to_luma8();
+        let dark = gray.pixels().filter(|p| p.0[0] < 128).count();
+        assert!(dark > 200, "expected >200 lit pixels, got {dark}");
+        assert!(img.width() <= 960, "sample width stays bounded");
+    }
+
+    #[test]
+    fn font_info_includes_family_and_style() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("sample.ttf");
+        std::fs::write(&path, TEST_FONT).unwrap();
+        let modified = path.metadata().unwrap().modified().unwrap();
+        let mime: mime::Mime = "font/ttf".parse().unwrap();
+        match font_preview_in(None, &path, modified, &mime) {
+            Preview::Image { img, info } => {
+                assert!(img.is_some());
+                let joined = info.join("\n");
+                assert!(joined.contains("Noto Sans"), "{joined}");
+                assert!(joined.contains("Regular"), "{joined}");
+                assert!(joined.contains("Size:"), "{joined}");
+                assert!(joined.contains("Modified:"), "{joined}");
+            }
+            _ => panic!("expected an image preview"),
+        }
+    }
+
+    #[test]
+    fn native_font_sample_on_garbage_is_an_error() {
+        // Err is what routes font_preview to the stat fallback.
+        assert!(native_font_sample(b"not a font").is_err());
+    }
+
+    #[test]
+    fn font_preview_of_a_woff_degrades_to_stat() {
+        // Documented deviation: no MSRV-1.83 pure-Rust woff decoder, so
+        // woff/woff2 land in the font arm and degrade to the stat block.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("web.woff");
+        std::fs::write(&path, b"wOFFxxxxxxxxxxxxxxxxxxxx").unwrap();
+        let modified = path.metadata().unwrap().modified().unwrap();
+        let mime: mime::Mime = "font/woff".parse().unwrap();
+        match font_preview_in(None, &path, modified, &mime) {
+            Preview::Text { lines } => {
+                let joined = lines.join("\n");
+                assert!(joined.contains("Size:"), "{joined}");
+                assert!(joined.contains("MIME type:"), "{joined}");
+            }
+            _ => panic!("expected the stat fallback"),
+        }
+    }
+
+    #[test]
+    fn font_extensions_route_to_the_font_arm() {
+        // mime_guess maps ttf/woff2 to font/*, but otf/woff to the
+        // legacy application/font-* aliases (verified on 2.0.5); the
+        // dispatch must cover both spellings. Nonexistent paths prove
+        // the resolution never reads content.
+        for ext in ["ttf", "otf", "woff", "woff2"] {
+            let path = PathBuf::from(format!("/nonexistent/sample.{ext}"));
+            let mime = get_mime_type(&path);
+            let routed = matches!(
+                (mime.type_().as_str(), mime.subtype().as_str()),
+                ("font", _) | ("application", "font-sfnt") | ("application", "font-woff")
+            );
+            assert!(routed, ".{ext} resolved to {mime}, missing the font arm");
+        }
+    }
+
+    #[test]
+    fn cached_font_preview_stores_on_miss_and_hits_without_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("sample.ttf");
+        std::fs::write(&path, TEST_FONT).unwrap();
+        let modified = path.metadata().unwrap().modified().unwrap();
+        let mime: mime::Mime = "font/ttf".parse().unwrap();
+
+        // miss: rasterise + store
+        match font_preview_in(Some(cache.path()), &path, modified, &mime) {
+            Preview::Image { img, .. } => assert!(img.is_some()),
+            _ => panic!("expected an image preview"),
+        }
+        let entry = cache.path().join(raster_cache::entry_name(
+            &path,
+            mtime_secs(modified),
+            raster_cache::KIND_FONT,
+        ));
+        assert!(entry.is_file(), "miss must store the sample");
+
+        // Delete the SOURCE: the second call must still yield pixels —
+        // proof they came from the cache, not a re-rasterisation.
+        std::fs::remove_file(&path).unwrap();
+        match font_preview_in(Some(cache.path()), &path, modified, &mime) {
             Preview::Image { img, .. } => assert!(img.is_some(), "hit must serve cached pixels"),
             _ => panic!("expected an image preview from the cache"),
         }
