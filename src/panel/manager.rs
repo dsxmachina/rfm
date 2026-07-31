@@ -2256,6 +2256,9 @@ impl PanelManager {
         }
         if let Event::Resize(sx, sy) = event {
             self.layout = MillerColumns::from_size((sx, sy));
+            // A resize may mean a font change: re-derive the cell pixel
+            // geometry (pure ioctl, no stdin involvement).
+            super::graphics::refresh_geometry();
             self.mark_dirty();
         }
         Ok(None)

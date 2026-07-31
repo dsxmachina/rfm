@@ -1864,6 +1864,7 @@ dependencies = [
  "futures",
  "image",
  "infer",
+ "libc",
  "lofty",
  "log",
  "lopdf",

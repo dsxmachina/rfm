@@ -8,7 +8,16 @@
 //! later steps; until then the resolved protocol is `HalfBlock` everywhere
 //! unless detection says otherwise.
 
+use std::os::unix::io::RawFd;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, Instant};
+
+use once_cell::sync::OnceCell;
+
 use crate::config::ImageProtocolChoice;
+
+/// Wall-clock budget for the whole startup probe (D1).
+const PROBE_BUDGET: Duration = Duration::from_millis(250);
 
 /// The graphics protocol the preview column draws images with.
 ///
@@ -211,6 +220,247 @@ pub fn cells_for(px: u32, cell_px: u16) -> u16 {
         return 0;
     }
     px.div_ceil(cell_px as u32).min(u16::MAX as u32) as u16
+}
+
+// --- I/O shell: resolved protocol + geometry, startup probe, ioctl.
+
+/// The protocol resolved at startup. Read through [`protocol`], which
+/// defaults to `HalfBlock` while unset so unit tests of the draw path (and
+/// any accidental pre-init caller) stay on the universal fallback.
+static PROTOCOL: OnceCell<GraphicsProtocol> = OnceCell::new();
+
+/// Cell geometry, packed `cell_w << 16 | cell_h`; `0` means "unknown".
+/// An atomic (not a OnceCell) because a font change mid-session alters the
+/// cell size and [`refresh_geometry`] re-reads it on every terminal resize.
+static GEOMETRY: AtomicU32 = AtomicU32::new(0);
+
+fn pack_geometry(geo: CellGeometry) -> u32 {
+    (geo.cell_w as u32) << 16 | geo.cell_h as u32
+}
+
+fn unpack_geometry(packed: u32) -> Option<CellGeometry> {
+    if packed == 0 {
+        return None;
+    }
+    Some(CellGeometry {
+        cell_w: (packed >> 16) as u16,
+        cell_h: packed as u16,
+    })
+}
+
+/// The graphics protocol to draw image previews with.
+#[allow(dead_code)] // consumed by the debug socket state and the draw dispatch
+pub fn protocol() -> GraphicsProtocol {
+    *PROTOCOL.get().unwrap_or(&GraphicsProtocol::HalfBlock)
+}
+
+/// The current cell size in pixels, if the terminal ever reported one.
+#[allow(dead_code)] // consumed by the emitters (steps 4-6)
+pub fn cell_geometry() -> Option<CellGeometry> {
+    unpack_geometry(GEOMETRY.load(Ordering::Relaxed))
+}
+
+/// Re-read the cell geometry after a terminal resize. Pure ioctl — no stdin
+/// involvement, safe mid-session (a `CSI 14 t` reply would land in the
+/// crossterm EventStream instead). Keeps the old value when the ioctl
+/// reports zeros, so a transient bad report cannot wipe good geometry.
+pub fn refresh_geometry() {
+    if let Some(geo) =
+        winsize_via_ioctl().and_then(|(c, r, x, y)| cell_geometry_from_winsize(c, r, x, y))
+    {
+        GEOMETRY.store(pack_geometry(geo), Ordering::Relaxed);
+    }
+}
+
+/// `TIOCGWINSZ` on stdout: `(cols, rows, xpixel, ypixel)`. The pixel fields
+/// are commonly zero over ssh/serial — callers must treat them as optional.
+fn winsize_via_ioctl() -> Option<(u16, u16, u16, u16)> {
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    // SAFETY: TIOCGWINSZ only fills the passed winsize struct.
+    let ret = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) };
+    if ret == -1 {
+        return None;
+    }
+    Some((ws.ws_col, ws.ws_row, ws.ws_xpixel, ws.ws_ypixel))
+}
+
+/// Read probe replies from `fd` until the DA1 terminator reply arrived or
+/// `deadline` passed, then drain any late bytes with zero-timeout polls so
+/// they cannot leak into the crossterm EventStream as phantom keys (D1).
+/// The fd is a parameter so tests drive it with a socketpair instead of a tty.
+fn read_probe_replies(fd: RawFd, deadline: Instant) -> Vec<u8> {
+    let mut buf = Vec::new();
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let timeout_ms = (remaining.as_millis().min(i32::MAX as u128) as i32).max(1);
+        match poll_in(fd, timeout_ms) {
+            PollResult::Ready => {
+                if !read_chunk(fd, &mut buf) {
+                    break; // EOF/error: nothing more will arrive
+                }
+                // DA1 is answered by essentially every terminal and is sent
+                // last in the probe batch: seeing it means all replies are in.
+                if parse_probe(&buf).da1_seen {
+                    break;
+                }
+            }
+            // poll() counts whole milliseconds and may wake a fraction
+            // before the Instant deadline — loop back to the deadline check
+            // instead of undershooting the budget.
+            PollResult::Timeout => continue,
+            PollResult::Interrupted => continue,
+            PollResult::Error => break,
+        }
+    }
+    // Final zero-timeout drain of late/partial reply bytes.
+    while matches!(poll_in(fd, 0), PollResult::Ready) {
+        if !read_chunk(fd, &mut buf) {
+            break;
+        }
+    }
+    buf
+}
+
+enum PollResult {
+    Ready,
+    Timeout,
+    Interrupted,
+    Error,
+}
+
+fn poll_in(fd: RawFd, timeout_ms: i32) -> PollResult {
+    let mut pfd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: pfd outlives the call; nfds matches the single entry.
+    let ret = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
+    match ret {
+        0 => PollResult::Timeout,
+        r if r > 0 => PollResult::Ready,
+        _ if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted => {
+            PollResult::Interrupted
+        }
+        _ => PollResult::Error,
+    }
+}
+
+/// Append one `read(2)` chunk to `buf`; false on EOF or error.
+fn read_chunk(fd: RawFd, buf: &mut Vec<u8>) -> bool {
+    let mut chunk = [0u8; 256];
+    // SAFETY: chunk is a valid writable buffer of the passed length.
+    let n = unsafe { libc::read(fd, chunk.as_mut_ptr() as *mut libc::c_void, chunk.len()) };
+    if n <= 0 {
+        return false;
+    }
+    buf.extend_from_slice(&chunk[..n as usize]);
+    true
+}
+
+/// Write the probe batch to stdout and read the replies (bounded). The batch
+/// is: a kitty graphics query (`q=0` — this one *wants* the reply; a 1x1
+/// no-op transmission), optionally `CSI 14 t` when pixel geometry is still
+/// missing, and DA1 last as the universal terminator.
+fn send_probe_and_read(want_pixels: bool) -> Vec<u8> {
+    use std::io::Write;
+    let mut batch: Vec<u8> = b"\x1b_Gi=4242,s=1,v=1,a=q,t=d,f=24,q=0;AAAA\x1b\\".to_vec();
+    if want_pixels {
+        batch.extend_from_slice(b"\x1b[14t");
+    }
+    batch.extend_from_slice(b"\x1b[c");
+    let mut out = std::io::stdout();
+    if out.write_all(&batch).and_then(|_| out.flush()).is_err() {
+        return Vec::new();
+    }
+    read_probe_replies(libc::STDIN_FILENO, Instant::now() + PROBE_BUDGET)
+}
+
+/// The full startup decision over injected seams (testable without a tty):
+/// returns the protocol, the cell geometry (if any) and a reason string for
+/// the log. `winsize` is the ioctl seam; `probe` writes the probe batch
+/// (argument: also request `CSI 14 t` pixel size) and returns the reply
+/// bytes. Explicit choices never probe unless they need missing geometry;
+/// sixel without geometry degrades to half-block (D2: a sixel raster must
+/// be pre-sized in pixels, while kitty scales into the cell rectangle).
+fn init_from(
+    choice: ImageProtocolChoice,
+    env: &dyn Fn(&str) -> Option<String>,
+    winsize: &mut dyn FnMut() -> Option<(u16, u16, u16, u16)>,
+    probe: &mut dyn FnMut(bool) -> Vec<u8>,
+) -> (GraphicsProtocol, Option<CellGeometry>, &'static str) {
+    const NO_SIXEL_GEO: &str = "sixel needs pixel geometry, none available";
+    let ws = winsize();
+    let mut geometry = ws.and_then(|(c, r, x, y)| cell_geometry_from_winsize(c, r, x, y));
+    // Combine a CSI-14t pixel reply with the ioctl cols/rows.
+    let geo_from_probe = |outcome: &ProbeOutcome| {
+        let (cols, rows) = ws.map(|(c, r, _, _)| (c, r))?;
+        let (w, h) = outcome.pixel_size?;
+        cell_geometry_from_winsize(cols, rows, w, h)
+    };
+    match choice {
+        ImageProtocolChoice::HalfBlock => {
+            (GraphicsProtocol::HalfBlock, geometry, "explicit config")
+        }
+        ImageProtocolChoice::Kitty | ImageProtocolChoice::Sixel => {
+            if geometry.is_none() {
+                // The only stdin read for an explicit choice: fetch the
+                // pixel size when the ioctl reported zeros.
+                geometry = geo_from_probe(&parse_probe(&probe(true)));
+            }
+            let proto = resolve(choice, None, None);
+            if proto == GraphicsProtocol::Sixel && geometry.is_none() {
+                return (GraphicsProtocol::HalfBlock, None, NO_SIXEL_GEO);
+            }
+            (proto, geometry, "explicit config")
+        }
+        ImageProtocolChoice::Auto => {
+            if let Some(hit) = detect_from_env(env) {
+                return (hit, geometry, "env");
+            }
+            let outcome = parse_probe(&probe(geometry.is_none()));
+            if geometry.is_none() {
+                geometry = geo_from_probe(&outcome);
+            }
+            let reason = if outcome.da1_seen {
+                "probe replies"
+            } else {
+                "probe timeout"
+            };
+            let proto = resolve(ImageProtocolChoice::Auto, None, Some(&outcome));
+            if proto == GraphicsProtocol::Sixel && geometry.is_none() {
+                return (GraphicsProtocol::HalfBlock, None, NO_SIXEL_GEO);
+            }
+            (proto, geometry, reason)
+        }
+    }
+}
+
+/// Resolve the graphics protocol and cell geometry once at startup.
+///
+/// MUST be called after `enable_raw_mode()` and before the crossterm
+/// EventStream exists: raw mode delivers the probe replies unbuffered and
+/// un-echoed, and nothing else is reading stdin yet, so the reply bytes are
+/// consumed here instead of surfacing as phantom key events.
+pub fn init(choice: ImageProtocolChoice) {
+    let (proto, geometry, reason) = init_from(
+        choice,
+        &|key| std::env::var(key).ok(),
+        &mut winsize_via_ioctl,
+        &mut send_probe_and_read,
+    );
+    let _ = PROTOCOL.set(proto);
+    if let Some(geo) = geometry {
+        GEOMETRY.store(pack_geometry(geo), Ordering::Relaxed);
+    }
+    log::debug!(
+        "graphics: probe -> {} ({reason}), cell geometry {:?}",
+        proto.name(),
+        geometry
+    );
 }
 
 #[cfg(test)]
@@ -488,6 +738,149 @@ mod tests {
         assert_eq!(cells_for(0, 8), 0);
         // Guard: a zero cell size never divides.
         assert_eq!(cells_for(240, 0), 0);
+    }
+
+    // --- I/O shell (step 3)
+
+    #[test]
+    fn probe_read_respects_deadline() {
+        use std::io::Write;
+        use std::os::fd::AsRawFd;
+        use std::os::unix::net::UnixStream;
+        use std::time::{Duration, Instant};
+
+        // A reply on the fd returns early with the bytes.
+        let (mut writer, reader) = UnixStream::pair().unwrap();
+        writer.write_all(b"\x1b[?62;4c").unwrap();
+        let start = Instant::now();
+        let buf = read_probe_replies(
+            reader.as_raw_fd(),
+            Instant::now() + Duration::from_millis(250),
+        );
+        assert!(parse_probe(&buf).da1_seen, "reply bytes not read: {buf:?}");
+        assert!(
+            start.elapsed() < Duration::from_millis(200),
+            "did not return early"
+        );
+
+        // A silent peer returns empty at ~deadline, not before, never much after.
+        let (_writer, reader) = UnixStream::pair().unwrap();
+        let deadline = Duration::from_millis(120);
+        let start = Instant::now();
+        let buf = read_probe_replies(reader.as_raw_fd(), Instant::now() + deadline);
+        let elapsed = start.elapsed();
+        assert!(buf.is_empty());
+        assert!(elapsed >= deadline, "returned before deadline: {elapsed:?}");
+        assert!(elapsed < Duration::from_millis(400), "overslept: {elapsed:?}");
+    }
+
+    #[test]
+    fn init_with_explicit_choice_never_reads() {
+        // Explicit config with usable ioctl geometry: no stdin read at all.
+        let (proto, geo, _reason) = init_from(
+            ImageProtocolChoice::Kitty,
+            &|_| None,
+            &mut || Some((100, 50, 800, 1000)),
+            &mut |_| panic!("probe must not run for an explicit choice with geometry"),
+        );
+        assert_eq!(proto, GraphicsProtocol::Kitty);
+        assert_eq!(
+            geo,
+            Some(CellGeometry {
+                cell_w: 8,
+                cell_h: 20
+            })
+        );
+    }
+
+    #[test]
+    fn init_auto_env_hit_skips_probe() {
+        let env = env_of(&[("TMUX", "/tmp/tmux-1000/default,42,0")]);
+        let (proto, _geo, _reason) = init_from(
+            ImageProtocolChoice::Auto,
+            &env,
+            &mut || Some((100, 50, 800, 1000)),
+            &mut |_| panic!("probe must not run on an env hit"),
+        );
+        assert_eq!(proto, GraphicsProtocol::HalfBlock);
+    }
+
+    #[test]
+    fn init_auto_probe_resolves_sixel_with_csi14t_geometry() {
+        // ioctl has cols/rows but zero pixels (ssh case): the probe must ask
+        // for CSI 14 t and its reply supplies the pixel geometry.
+        let (proto, geo, _reason) = init_from(
+            ImageProtocolChoice::Auto,
+            &|_| None,
+            &mut || Some((100, 50, 0, 0)),
+            &mut |want_pixels| {
+                assert!(want_pixels, "zero ioctl pixels must request CSI 14 t");
+                b"\x1b[4;480;800t\x1b[?62;4c".to_vec()
+            },
+        );
+        assert_eq!(proto, GraphicsProtocol::Sixel);
+        assert_eq!(
+            geo,
+            Some(CellGeometry {
+                cell_w: 8,
+                cell_h: 9
+            })
+        );
+    }
+
+    #[test]
+    fn init_sixel_without_geometry_degrades_to_half_block() {
+        // Sixel rasters must be pre-sized to the pane; without any pixel
+        // geometry the protocol cannot work and degrades to half-blocks.
+        let (proto, geo, _reason) = init_from(
+            ImageProtocolChoice::Sixel,
+            &|_| None,
+            &mut || None,
+            &mut |_| Vec::new(), // probe answers nothing
+        );
+        assert_eq!(proto, GraphicsProtocol::HalfBlock);
+        assert_eq!(geo, None);
+        // Kitty scales into the cell rectangle, so it survives missing
+        // geometry (an 8x16 cell is assumed later by the emitter).
+        let (proto, geo, _reason) = init_from(
+            ImageProtocolChoice::Kitty,
+            &|_| None,
+            &mut || None,
+            &mut |_| Vec::new(),
+        );
+        assert_eq!(proto, GraphicsProtocol::Kitty);
+        assert_eq!(geo, None);
+    }
+
+    #[test]
+    fn init_auto_probe_timeout_is_half_block() {
+        let (proto, _geo, reason) = init_from(
+            ImageProtocolChoice::Auto,
+            &|_| None,
+            &mut || Some((100, 50, 800, 1000)),
+            &mut |_| Vec::new(),
+        );
+        assert_eq!(proto, GraphicsProtocol::HalfBlock);
+        assert!(reason.contains("timeout"), "reason was: {reason}");
+    }
+
+    #[test]
+    fn geometry_packing_roundtrips() {
+        let geo = CellGeometry {
+            cell_w: 8,
+            cell_h: 20,
+        };
+        assert_eq!(unpack_geometry(pack_geometry(geo)), Some(geo));
+        // 0 is the "unset" sentinel.
+        assert_eq!(unpack_geometry(0), None);
+    }
+
+    #[test]
+    fn protocol_defaults_to_half_block_uninitialized() {
+        // Unit tests (and any pre-init caller) must see the universal
+        // fallback. NOTE: nothing in the test binary ever calls init(), so
+        // the OnceCell stays empty for the whole test process.
+        assert_eq!(protocol(), GraphicsProtocol::HalfBlock);
     }
 
     #[test]

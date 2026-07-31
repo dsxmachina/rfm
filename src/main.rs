@@ -279,6 +279,13 @@ async fn main() -> anyhow::Result<()> {
 
     enable_raw_mode()?;
 
+    // Resolve the graphics protocol for image previews. Must run here: raw
+    // mode is active (probe replies arrive unbuffered/un-echoed) and nothing
+    // reads stdin yet (the crossterm EventStream is constructed inside
+    // PanelManager::new below), so the probe can consume the reply bytes
+    // without leaking phantom keys.
+    panel::graphics::init(image_protocol);
+
     stdout
         .queue(DisableMouseCapture)?
         .queue(DisableLineWrap)?
