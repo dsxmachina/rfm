@@ -321,6 +321,30 @@ impl DirManager {
     }
 }
 
+/// What kind of preview a path needs.
+///
+/// Mirrors the classification in [`PreviewPanel::from_path`] so the async
+/// preview worker agrees with the synchronous instant path: a path that is
+/// neither a directory nor a *regular* file (FIFO, socket, device node,
+/// broken symlink) is [`PreviewJob::Empty`] and must never be handed to
+/// `FilePreview::new` — see the `Empty` arm in `process_update`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreviewJob {
+    Dir,
+    File,
+    Empty,
+}
+
+fn classify_preview(path: &Path) -> PreviewJob {
+    if path.is_dir() {
+        PreviewJob::Dir
+    } else if path.is_file() {
+        PreviewJob::File
+    } else {
+        PreviewJob::Empty
+    }
+}
+
 impl PreviewManager {
     pub fn new(
         preview_cache: PanelCache<PreviewPanel>,
@@ -383,27 +407,50 @@ impl PreviewManager {
 
     /// Process a single update request
     async fn process_update(&mut self, update: PanelUpdate) {
-        if update.state.path().is_dir() {
-            let dir_path = update.state.path().clone();
-            let result = spawn_blocking(move || dir_content(dir_path)).await;
-            if let Ok(content) = result {
-                let panel = PreviewPanel::Dir(DirPanel::new(content, update.state.path().clone()));
-                if let Err(e) = self
-                    .tx
-                    .send((panel.clone(), update.state.increased()))
-                    .await
-                {
-                    debug!("Cannot send panel-update: {e}");
-                    return;
+        match classify_preview(&update.state.path()) {
+            PreviewJob::Dir => {
+                let dir_path = update.state.path().clone();
+                let result = spawn_blocking(move || dir_content(dir_path)).await;
+                if let Ok(content) = result {
+                    let panel =
+                        PreviewPanel::Dir(DirPanel::new(content, update.state.path().clone()));
+                    if let Err(e) = self
+                        .tx
+                        .send((panel.clone(), update.state.increased()))
+                        .await
+                    {
+                        debug!("Cannot send panel-update: {e}");
+                        return;
+                    }
+                    self.preview_cache.insert(update.state.path(), panel);
                 }
-                self.preview_cache.insert(update.state.path(), panel);
             }
-        } else {
-            // Create preview
-            let file_path = update.state.path().clone();
-            let result = spawn_blocking(move || FilePreview::new(file_path)).await;
-            if let Ok(preview) = result {
-                let panel = PreviewPanel::File(preview);
+            PreviewJob::File => {
+                // Create preview
+                let file_path = update.state.path().clone();
+                let result = spawn_blocking(move || FilePreview::new(file_path)).await;
+                if let Ok(preview) = result {
+                    let panel = PreviewPanel::File(preview);
+                    if let Err(e) = self
+                        .tx
+                        .send((panel.clone(), update.state.increased()))
+                        .await
+                    {
+                        debug!("Cannot send panel-update: {e}");
+                        return;
+                    }
+                    self.preview_cache.insert(update.state.path(), panel);
+                }
+            }
+            PreviewJob::Empty => {
+                // A non-regular, non-directory path (FIFO, socket, device,
+                // broken symlink). It has no preview — send `Empty` so the
+                // `Loading...` placeholder set by `new_panel_delayed` is
+                // replaced. Crucially we NEVER hand it to `FilePreview::new`:
+                // opening a FIFO for reading blocks until a writer appears,
+                // which would wedge this blocking-pool thread forever and
+                // leave the placeholder stuck (test-protocol step 07.17).
+                let panel = PreviewPanel::Empty;
                 if let Err(e) = self
                     .tx
                     .send((panel.clone(), update.state.increased()))
@@ -464,6 +511,39 @@ impl PreviewManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A FIFO (named pipe) is neither a directory nor a regular file. The
+    /// preview worker must classify it as [`PreviewJob::Empty`] and NOT as a
+    /// file: routing it to `FilePreview::new` reads the pipe, which blocks the
+    /// blocking-pool thread forever (no writer), so the `Loading...`
+    /// placeholder set by `new_panel_delayed` is never replaced. Regression
+    /// guard for the stuck-FIFO-preview bug (test-protocol step 07.17).
+    #[test]
+    fn classify_preview_maps_fifo_to_empty_not_file() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let dir = std::env::temp_dir().join(format!("rfm-classify-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let fifo = dir.join("pipe");
+        let cstr = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        let rc = unsafe { libc::mkfifo(cstr.as_ptr(), 0o644) };
+        assert_eq!(rc, 0, "mkfifo failed to create the test FIFO");
+
+        let file = dir.join("f.txt");
+        std::fs::write(&file, b"hi").unwrap();
+
+        assert_eq!(
+            classify_preview(&fifo),
+            PreviewJob::Empty,
+            "a FIFO must be Empty (never opened/read)"
+        );
+        assert_eq!(classify_preview(&file), PreviewJob::File, "regular file");
+        assert_eq!(classify_preview(&dir), PreviewJob::Dir, "directory");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Test helper that implements the same rate-limiting logic as the managers
     struct RateLimitTester {
