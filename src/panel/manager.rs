@@ -1552,6 +1552,7 @@ impl PanelManager {
                 .iter()
                 .map(|(c, m)| (c.to_string(), m.dir.clone()))
                 .collect(),
+            image_protocol: super::graphics::protocol().name().to_string(),
         }
     }
 

@@ -154,6 +154,20 @@ in the sequence; no flag plumbing.
 Log lines shown in the widget expire after DISPLAY_TTL (logger.rs, 10s);
 the 1 s task wakes the UI only when a line actually expires.
 
+Graphics-protocol image previews (`src/panel/graphics.rs`): the protocol
+(kitty | sixel | half-block) is resolved once at startup —
+`graphics::init` in main.rs, right after `enable_raw_mode` and before the
+EventStream exists — via env heuristics plus a 250 ms poll-bounded probe
+(tmux/screen always resolve to half-block; the `image_protocol` config
+key pins it and skips probing). The resolved protocol is on the debug
+socket `state` as `image_protocol`, and the probe decision is a
+`graphics: probe -> <proto> (<reason>)` debug log line. Cell→pixel
+geometry comes from TIOCGWINSZ and is refreshed on `Event::Resize`. The
+kitty/sixel emitters — a second exception to blit-cheapness, with a
+begin_frame/end_frame claim-and-reconcile preserving the z-order
+invariant — are the follow-up steps of the graphics plan; the draw path
+stays half-block-only until they land.
+
 ## Architecture: native preview backends
 
 Previews (`src/panel/preview.rs`) are native-first: each arm of the

@@ -249,7 +249,6 @@ fn unpack_geometry(packed: u32) -> Option<CellGeometry> {
 }
 
 /// The graphics protocol to draw image previews with.
-#[allow(dead_code)] // consumed by the debug socket state and the draw dispatch
 pub fn protocol() -> GraphicsProtocol {
     *PROTOCOL.get().unwrap_or(&GraphicsProtocol::HalfBlock)
 }

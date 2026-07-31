@@ -83,6 +83,9 @@ pub struct StateSnapshot {
     pub redo_depth: usize,
     /// Session-only jump-marks: letter -> directory. Sorted for determinism.
     pub jump_marks: std::collections::BTreeMap<String, PathBuf>,
+    /// Graphics protocol resolved for image previews at startup:
+    /// "kitty" | "sixel" | "half-block"
+    pub image_protocol: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -344,9 +347,11 @@ mod tests {
             undo_depth: 0,
             redo_depth: 0,
             jump_marks: std::collections::BTreeMap::new(),
+            image_protocol: "half-block".into(),
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         assert!(json.contains("\"seq\":42"));
+        assert!(json.contains("\"image_protocol\":\"half-block\""));
         assert!(json.contains("\"mode\":\"normal\""));
         // New tab-aware fields.
         assert!(json.contains("\"view\":\"split\""));
@@ -463,6 +468,7 @@ mod tests {
                         undo_depth: 0,
                         redo_depth: 0,
                         jump_marks: std::collections::BTreeMap::new(),
+                        image_protocol: "half-block".into(),
                     });
                 }
                 DebugRequest::AwaitIdle { reply } => {
