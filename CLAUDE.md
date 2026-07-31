@@ -201,6 +201,45 @@ preview.rs: `cached_image_preview` (image path) and `ffmpeg_thumbnail`
 scratch dir in the tmux pane before launching rfm; the debug-socket
 `log` shows "thumbnail cache hit" lines.
 
+## Architecture: native preview backends
+
+Previews (`src/panel/preview.rs`) are native-first: each arm of the
+dispatch in `FilePreview::new` tries an in-process backend and keeps the
+old shell-out as last-resort fallback, so nothing regresses on exotic
+inputs. Crates (all version-pinned for MSRV 1.83): `zip` (listing via
+the central directory, `by_index_raw` never inflates), `tar` (streaming,
+generic over `Read` — only the first 128 headers are read), `flate2`
+(gzip), `x509-parser` (PEM/DER certs), `lofty` (audio tags/properties),
+`image` (decode + native info lines, no mediainfo), `infer` (content
+sniffing). Video is unchanged (ffmpeg thumbnail → mediainfo); generic
+application/* gets a dependency-free stat block.
+
+Line-based preview conventions: the 128-line cap applies everywhere,
+and `bat_preview`'s `\r`/`\n` scrub (`scrub_line`) is applied to every
+attacker-controlled string — archive member names, audio tags, cert
+fields — one entry, one line.
+
+The gzip arm decompresses one 512-byte block and sniffs the tar magic
+(`ustar` at offset 257, covers POSIX and GNU): tar.gz chains head+rest
+into `native_tar_list`; any other gzip shows its decompressed head as
+text (bounded 64 KiB) — fixing the old everything-gzip-is-a-tar
+mis-dispatch.
+
+MIME detection (`get_mime_type`, `src/engine/opener.rs`): special-cased
+extensions first, then mime_guess; only when there is no extension or
+no real guess (octet-stream) is content sniffed — shebang, then `infer`
+magic numbers, then a mostly-printable-UTF-8 heuristic, else the old
+text/plain fallback. The sniff NEVER opens non-regular files (open() on
+a FIFO blocks until a writer appears and would wedge the draw loop;
+device nodes can block or have side effects) and caches results keyed
+on (path, mtime), because per-entry styling re-sniffs every visible
+extensionless file on each repaint.
+
+Diagnostics: every native-backend failure logs a debug-level
+"... failed, trying <tool>" line before falling back. With
+`--debug-socket` these land in the `log` history — a preview that
+unexpectedly comes from a shell-out is visible there.
+
 ## Architecture: undo/redo
 
 In-session, in-memory only (`src/undo/`, terminal-free + unit-tested).
