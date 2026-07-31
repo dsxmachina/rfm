@@ -1075,6 +1075,62 @@ fn fallback_thumbnail_dir() -> &'static Path {
     })
 }
 
+/// Deadline for every external raster producer (ffmpeg, pdftoppm/mutool).
+const EXTERNAL_RENDER_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Run `cmd` to completion — but never past `deadline`. A hung or
+/// pathological producer (corrupt file, stalled network mount) must
+/// cost one preview slot for `deadline` at most, not forever.
+///
+/// stdout/stderr are piped and drained on threads (`read_to_end`), so
+/// a chatty child can never deadlock against a full 64 KiB pipe while
+/// the main thread only polls `try_wait` (~25ms). On deadline: kill,
+/// then wait — the kill-then-reap discipline from `tar_list` (the kill
+/// fails harmlessly if the child just exited; without the wait every
+/// timeout would leak a zombie) — then join the drain threads (EOF
+/// arrives when the killed child's pipes close) and return
+/// `Err(TimedOut)`. Partial-output cleanup is the *caller's* job: only
+/// it knows which part file its command was writing.
+fn run_bounded(
+    cmd: &mut std::process::Command,
+    deadline: Duration,
+) -> io::Result<std::process::Output> {
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut buf);
+            }
+            buf
+        })
+    }
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+    let end = std::time::Instant::now() + deadline;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) | Err(_) if std::time::Instant::now() >= end => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout.join();
+                let _ = stderr.join();
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("external command exceeded the {deadline:?} deadline"),
+                ));
+            }
+            Ok(None) | Err(_) => std::thread::sleep(Duration::from_millis(25)),
+        }
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
+}
+
 /// Build (or fetch) the `vid120` thumbnail of `path` in `dir` and wrap
 /// it in an image preview. Lookups go through the cache's corrupt-entry
 /// rule: a decode failure deletes the entry and regenerates — never a
@@ -1114,11 +1170,20 @@ fn ffmpeg_thumbnail(dir: &Path, path: impl AsRef<Path>, modified: u64) -> anyhow
         .arg("scale=120:-1")
         .arg(&part);
     cmd.stdin(Stdio::null());
-    let out = cmd.output()?;
-    // ffmpeg fails without writing the thumbnail e.g. for videos
-    // shorter than the 10s seek; report that instead of building a
-    // preview from a file that was never written (the caller falls
-    // back to mediainfo on Err).
+    let out = match run_bounded(&mut cmd, EXTERNAL_RENDER_DEADLINE) {
+        Ok(out) => out,
+        Err(e) => {
+            // Spawn failure or deadline kill: a killed ffmpeg may have
+            // left a half-written part file — drop it before
+            // propagating (the caller falls back to mediainfo).
+            let _ = std::fs::remove_file(&part);
+            return Err(e.into());
+        }
+    };
+    // ffmpeg fails without writing the thumbnail e.g. for corrupt
+    // input; report that instead of building a preview from a file
+    // that was never written (the caller falls back to mediainfo on
+    // Err).
     if !out.status.success() || !part.exists() {
         // A failed run may still have created a partial file; drop it.
         let _ = std::fs::remove_file(&part);
@@ -2331,7 +2396,16 @@ fn pdf_render_first_page_in(
         }
     }
     cmd.stdin(Stdio::null());
-    let out = cmd.output()?;
+    let out = match run_bounded(&mut cmd, EXTERNAL_RENDER_DEADLINE) {
+        Ok(out) => out,
+        Err(e) => {
+            // Spawn failure or deadline kill: a killed renderer may
+            // have left a half-written part file — drop it before
+            // propagating (the caller drops to the text tier).
+            let _ = std::fs::remove_file(&part);
+            return Err(e.into());
+        }
+    };
     if !out.status.success() || !part.exists() {
         // A failed run may still have created a partial file; drop it.
         let _ = std::fs::remove_file(&part);
@@ -3722,6 +3796,63 @@ mod external_cmd_tests {
         prune_older_than(tmp.path(), Duration::from_secs(7 * 24 * 60 * 60));
         assert!(!old.exists(), "the stale file must be pruned");
         assert!(fresh.exists(), "the fresh file must survive");
+    }
+
+    /// `sh -c <script>` with stdin null — the shape both real callers
+    /// (ffmpeg, pdftoppm/mutool) hand to `run_bounded`.
+    fn sh(script: &str) -> std::process::Command {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg(script).stdin(Stdio::null());
+        cmd
+    }
+
+    #[test]
+    fn run_bounded_kills_a_child_that_outlives_the_deadline() {
+        let started = std::time::Instant::now();
+        let result = run_bounded(&mut sh("sleep 30"), Duration::from_millis(200));
+        assert!(result.is_err(), "an overrunning child must surface as Err");
+        // The point is "not 30s": the child was killed at the deadline,
+        // not waited for. 2s is a generous CI margin.
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the call must return promptly after the deadline, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn run_bounded_returns_output_of_a_fast_child() {
+        let out = run_bounded(
+            &mut sh("echo out; echo err 1>&2"),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert!(out.status.success());
+        assert_eq!(out.stdout, b"out\n");
+        assert_eq!(out.stderr, b"err\n");
+    }
+
+    #[test]
+    fn run_bounded_does_not_deadlock_on_a_stderr_flood() {
+        // 200 KiB of stderr — well past the 64 KiB pipe buffer. A naive
+        // try_wait poll without drain threads deadlocks here: the child
+        // blocks on the full pipe, the poll waits on the child, forever
+        // (well, until the deadline — but the output would be lost).
+        let out = run_bounded(
+            &mut sh("head -c 200000 /dev/zero | tr '\\0' x 1>&2"),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert!(out.status.success());
+        assert_eq!(out.stderr.len(), 200000);
+    }
+
+    #[test]
+    fn run_bounded_surfaces_a_nonzero_exit() {
+        // Policy: a non-zero exit is the caller's domain (both call
+        // sites branch on `out.status.success()`), not an Err here.
+        let out = run_bounded(&mut sh("exit 3"), Duration::from_secs(10)).unwrap();
+        assert!(!out.status.success());
     }
 }
 
