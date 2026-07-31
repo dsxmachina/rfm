@@ -5,9 +5,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 pub use executor::CommandExecutor;
-pub use types::{
-    CommandConfigEntry, CommandsConfig, QueueStatus, QueuedCommand, UserCommandConfig,
-};
+pub use types::{CommandsConfig, QueueStatus, QueuedCommand};
 
 /// Whether `zoxide` is on PATH — checked once per run, so on systems
 /// without zoxide the hook is skipped instead of queueing a command

@@ -547,8 +547,7 @@ impl ModalInput for Zoxide {
                     .options
                     .iter()
                     .cycle()
-                    .skip(self.opt_idx)
-                    .next()
+                    .nth(self.opt_idx)
                     .cloned()
                     .unwrap_or_default();
 

@@ -299,8 +299,7 @@ impl Draw for FilePreview {
                         cy
                     };
                     // Reset everything else
-                    let mut idx = 0;
-                    for y in cy..y_range.end {
+                    for (idx, y) in (cy..y_range.end).enumerate() {
                         if let Some(line) = info.get(idx) {
                             let line = line.exact_width(width as usize);
                             let cx = x_range.start.saturating_add(1);
@@ -311,7 +310,6 @@ impl Draw for FilePreview {
                                 queue!(stdout, cursor::MoveTo(cx, y), Print(" "),)?;
                             }
                         }
-                        idx += 1;
                     }
                 } else {
                     queue!(

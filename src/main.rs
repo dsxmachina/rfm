@@ -403,14 +403,12 @@ fn print_all_errors(logger: &LogBuffer) -> anyhow::Result<()> {
         // Write error.log from the retained history (not just the short-lived
         // display buffer), so the report survives the periodic log eviction
         let now = std::time::Instant::now();
-        let log_output: String = logger
-            .history(logger::HISTORY_CAPACITY)
-            .into_iter()
-            .map(|(level, at, msg)| {
-                let age = now.duration_since(at).as_secs();
-                format!("{level} ({age}s ago): {msg}\n")
-            })
-            .collect();
+        let mut log_output = String::new();
+        for (level, at, msg) in logger.history(logger::HISTORY_CAPACITY) {
+            use std::fmt::Write as _;
+            let age = now.duration_since(at).as_secs();
+            let _ = writeln!(log_output, "{level} ({age}s ago): {msg}");
+        }
         let mut log = std::fs::File::create("./error.log").context("failed to create error log")?;
         log.write_all(log_output.as_bytes())
             .context("failed to write to error log")?;

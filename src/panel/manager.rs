@@ -2508,6 +2508,34 @@ mod tests {
     use std::fs::{self, canonicalize};
     use tokio::sync::mpsc;
 
+    #[test]
+    fn expand_command_substitutes_all_paths() {
+        let paths = [
+            PathBuf::from("/home/user/file1.txt"),
+            PathBuf::from("/home/user/file2.txt"),
+        ];
+        let expanded = expand_command("rm $@", &paths, " ");
+        assert_eq!(expanded, "rm /home/user/file1.txt /home/user/file2.txt");
+    }
+
+    #[test]
+    fn expand_command_escapes_paths_with_spaces() {
+        let paths = [PathBuf::from("/home/user/my file.txt")];
+        let expanded = expand_command("cat $@", &paths, " ");
+        // shell_escape must quote the path — it is interpolated into `sh -c`
+        assert_eq!(expanded, "cat '/home/user/my file.txt'");
+    }
+
+    #[test]
+    fn expand_command_joins_with_the_custom_separator() {
+        let paths = [
+            PathBuf::from("/home/user/file1.txt"),
+            PathBuf::from("/home/user/file2.txt"),
+        ];
+        let expanded = expand_command("echo $@ | xargs -0 rm", &paths, "\0");
+        assert!(expanded.contains("\0"));
+    }
+
     /// Everything a fixture-backed [`Tab`] needs to stay alive: the tab plus
     /// the receiving ends of its content channels (dropping them would make the
     /// `ManagedPanel` senders panic on `.expect("Receiver dropped")`).

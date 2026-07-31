@@ -362,6 +362,9 @@ pub enum Command {
     Quit,
     QuitWithoutPath,
     /// User-defined shell command
+    // "user command" is the established term in config and docs; a shorter
+    // variant name (`User`) would be less clear than the lint's gain.
+    #[allow(clippy::enum_variant_names)]
     UserCommand {
         /// Display name
         name: String,
