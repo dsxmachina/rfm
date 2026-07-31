@@ -39,11 +39,11 @@ shell alike.
 apt install zoxide · pacman -S zoxide · nix-env -iA nixpkgs.zoxide
 ```
 
-The keybinding is configured under `[manipulation]` in `keys.toml` (see
-[configuration.md](configuration.md)):
+The keybinding is configured under `[keys.manipulation]` in `config.toml`
+(see [configuration.md](configuration.md)):
 
 ```toml
-[manipulation]
+[keys.manipulation]
 zoxide_query = [ "CD", "Cd", "cD" ]   # "shift+cd" with typos allowed
 ```
 

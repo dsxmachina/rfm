@@ -140,22 +140,6 @@ pub mod color {
         Ok(())
     }
 
-    pub fn colors_from_default() {
-        COLOR_MAIN
-            .set(Color::DarkGreen)
-            .expect("color must be unset");
-        COLOR_MARKED
-            .set(Color::DarkYellow)
-            .expect("color must be unset");
-        COLOR_HIGHLIGHT
-            .set(Color::Red)
-            .expect("color must be unset");
-        COLOR_DIR_PATH
-            .set(Color::DarkBlue)
-            .expect("color must be unset");
-        COLOR_RENAME.set(Color::Blue).expect("color must be unset");
-    }
-
     #[inline]
     pub fn print_vertical_bar() -> PrintStyledContent<&'static str> {
         PrintStyledContent("│".with(color_main()).bold())

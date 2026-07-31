@@ -930,7 +930,7 @@ zip = ["zip"]
 tar = ["tar"]
 extract = ["extract"]
 "#;
-        let cfg: KeyConfig = toml::from_str(toml).expect("parse keys.toml");
+        let cfg: KeyConfig = toml::from_str(toml).expect("parse KeyConfig");
         let mut p = CommandParser::build(&defaults(), &cfg, &Default::default()).0;
         // "ma" is an explicit jump_to binding; the auto-generated
         // SetJumpMark('a') chord must not overwrite it.
@@ -998,7 +998,7 @@ zip = ["zip"]
 tar = ["tar"]
 extract = ["extract"]
 "#;
-        let cfg: KeyConfig = toml::from_str(toml).expect("parse keys.toml");
+        let cfg: KeyConfig = toml::from_str(toml).expect("parse KeyConfig");
         let mut p = CommandParser::build(&defaults(), &cfg, &Default::default()).0;
         assert!(matches!(p.add_event(key('m')), Command::None));
         assert!(matches!(p.add_event(key('a')), Command::SetJumpMark('a')));
@@ -1055,7 +1055,7 @@ new_tab = ["gn"]
 close_tab = ["q", "ctrl-w"]
 focus_tab_1 = ["1"]
 "#;
-        let cfg: KeyConfig = toml::from_str(toml).expect("parse keys.toml");
+        let cfg: KeyConfig = toml::from_str(toml).expect("parse KeyConfig");
         let mut p = CommandParser::build(&defaults(), &cfg, &Default::default()).0;
 
         // focus_tab_1 = ["1"] -> FocusTab(1)
