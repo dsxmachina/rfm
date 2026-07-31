@@ -69,8 +69,10 @@ The semantics:
   to change; everything else — including bindings for features added in
   future versions — keeps working with its default keys.
 - **Your bindings win.** If a default binding (of any command you did not
-  mention) collides with a key sequence you bound yourself — exactly or as a
-  prefix — the default is dropped and a notice is logged at startup. Example:
+  mention) collides exactly with a key sequence you bound yourself, the
+  default is dropped and a notice is logged at startup. (Mere prefix
+  overlaps are fine — the key matcher waits for the longer chord, as it
+  always has.) Example:
   if your config binds `quit = ["q"]`, the default `close_tab = ["q",
   "ctrl-w"]` loses `q` and keeps `ctrl-w`.
 - **`cmd = []` unbinds.** To remove a default binding without replacing it,
@@ -111,6 +113,7 @@ jump = [ "'" ]   # '<letter> returns to it
 use_trash = true       # delete to the freedesktop trash (undoable) instead of
                        # deleting permanently. See usage.md#trash and usage.md#undo--redo.
 fancy_icons = false    # use Nerd Font icons (needs a Nerd Font in your terminal)
+rate_limit_interval_ms = 500   # preview decode rate limit while scrolling
 ```
 
 When `fancy_icons = true`, rfm renders file-type icons from the
@@ -183,9 +186,9 @@ the same user-wins conflict rule as `[keys.*]` bindings.
 
 ## Openers: `[open.*]`
 
-Configures which application opens which file, keyed by mime-type. Nothing is
-configured by default, in which case rfm falls back to your system's default
-application.
+Configures which application opens which file, keyed by mime-type. The only
+built-in entry opens `text/*` files in `vim`; for every mime-type without an
+entry, rfm falls back to your system's default application.
 
 ```toml
 [open.text]
