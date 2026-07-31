@@ -41,8 +41,8 @@ async fn recv_debug(rx: &mut Option<mpsc::Receiver<DebugRequest>>) -> Option<Deb
 }
 
 use super::mode::{
-    Cleanup, CreateItemMode, DirConsole, ModalInput, ModalRegion, ModeOp, RenameMode, SearchMode,
-    TrashEntry, TrashView, Zoxide,
+    Cleanup, CreateItemMode, DirConsole, FlowKind, ModalInput, ModalRegion, ModeOp, RenameMode,
+    SearchMode, TrashEntry, TrashView, Zoxide,
 };
 use super::*;
 
@@ -1770,10 +1770,13 @@ impl PanelManager {
                 self.mode = Mode::Modal(Box::new(view));
                 self.reload_all();
             }
-            ModeOp::FlowResolved { .. } | ModeOp::FlowAborted { .. } => {
-                // Placeholder: per-kind result dispatch lands with the first
-                // flow consumer; for now the flow just closes.
+            ModeOp::FlowResolved { kind, answers } => {
                 self.mode = Mode::Normal;
+                self.resolve_flow(kind, answers);
+            }
+            ModeOp::FlowAborted { kind } => {
+                self.mode = Mode::Normal;
+                info!("{kind:?} dismissed");
             }
             ModeOp::Exit { cleanup } => {
                 self.apply_cleanup(cleanup);
@@ -1782,6 +1785,18 @@ impl PanelManager {
         }
         // Every modal key event repaints (draw() perma-redraws now).
         self.mark_dirty();
+    }
+
+    /// Dispatches a completed decision flow's answers per [`FlowKind`].
+    ///
+    /// `answers[i]` is the chosen choice index of the flow's item `i`;
+    /// what an index *means* is the consumer's contract with its builder.
+    fn resolve_flow(&mut self, kind: FlowKind, answers: Vec<usize>) {
+        match kind {
+            // Stub until the upgrade-notice consumer lands (decision-flow
+            // plan, Task 5).
+            FlowKind::UpgradeNotice => info!("upgrade notice resolved: {answers:?}"),
+        }
     }
 
     /// Applies [`ModeOp::Rename`]: renames the selected entry to `to`

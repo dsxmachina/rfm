@@ -66,6 +66,16 @@ impl DecisionFlow {
                 item.choices.iter().all(|c| c.key != 'j' && c.key != 'q'),
                 "'j'/'q' are reserved for navigation/close"
             );
+            if let Some(d) = item.default {
+                assert!(d < item.choices.len(), "default index out of choice range");
+            }
+            debug_assert!(
+                item.choices
+                    .iter()
+                    .enumerate()
+                    .all(|(i, c)| item.choices[..i].iter().all(|prev| prev.key != c.key)),
+                "duplicate choice keys within one item"
+            );
         }
         let answers = vec![None; items.len()];
         Self {
@@ -101,6 +111,12 @@ impl DecisionFlow {
     /// the flow resolves.
     fn answer(&mut self, choice: usize) -> ModeOp {
         self.answers[self.cursor] = Some(choice);
+        self.advance_or_resolve()
+    }
+
+    /// Move the cursor to the next unanswered item (wrapping search from
+    /// cursor+1); with none left the flow resolves.
+    fn advance_or_resolve(&mut self) -> ModeOp {
         let n = self.items.len();
         let next = (1..=n)
             .map(|d| (self.cursor + d) % n)
@@ -114,6 +130,23 @@ impl DecisionFlow {
         }
     }
 
+    /// Copy the current item's answer to every other unanswered item with
+    /// the same choice set ([`same_choice_set`]); noop while the current
+    /// item is unanswered. Resolves when that completes the flow.
+    fn apply_to_all(&mut self) -> ModeOp {
+        let Some(choice) = self.answers[self.cursor] else {
+            return ModeOp::None;
+        };
+        for i in 0..self.items.len() {
+            if self.answers[i].is_none()
+                && same_choice_set(&self.items[i].choices, &self.items[self.cursor].choices)
+            {
+                self.answers[i] = Some(choice);
+            }
+        }
+        self.advance_or_resolve()
+    }
+
     /// All items answered → hand the unwrapped answers to the manager.
     fn resolve(&self) -> ModeOp {
         ModeOp::FlowResolved {
@@ -121,6 +154,12 @@ impl DecisionFlow {
             answers: self.answers.iter().map(|a| a.expect("all answered")).collect(),
         }
     }
+}
+
+/// Two items take the same answers iff their `(key, label)` sequences are
+/// identical — the basis for apply-to-all (`'A'`).
+fn same_choice_set(a: &[Choice], b: &[Choice]) -> bool {
+    a == b
 }
 
 impl Draw for DecisionFlow {
@@ -160,6 +199,7 @@ impl ModalInput for DecisionFlow {
                 self.cursor = self.cursor.saturating_sub(1);
                 ModeOp::None
             }
+            KeyCode::Char('A') => self.apply_to_all(),
             KeyCode::Enter => match self.items[self.cursor].default {
                 Some(d) => self.answer(d),
                 None => ModeOp::None,
@@ -319,12 +359,154 @@ mod tests {
     #[test]
     fn answered_item_can_be_revisited_and_changed() {
         let mut f = two_items();
-        f.handle_key(key(KeyCode::Char('a'))); // answer item 0, cursor → 1
-        f.handle_key(key(KeyCode::Char('k'))); // 'k' is not a choice of item 1 → noop
-        f.handle_key(key(KeyCode::Char('k'))); // still noop; go back instead:
-        f.handle_key(key(KeyCode::Char('k'))); // (kept noop on purpose — see below)
-        f.handle_key(key(KeyCode::Up));
-        f.handle_key(key(KeyCode::Char('k'))); // re-answer item 0
+        f.handle_key(key(KeyCode::Char('a'))); // answer item 0, auto-advance to 1
+        f.handle_key(key(KeyCode::Up)); // navigate back to item 0
+        f.handle_key(key(KeyCode::Char('k'))); // re-answer item 0 with choice 0
         assert_eq!(f.answers()[0], Some(0));
+    }
+
+    #[test]
+    fn auto_advance_wraps_to_earlier_unanswered_item() {
+        let mut f = two_items();
+        f.handle_key(key(KeyCode::Char('j'))); // down to item 1
+        let op = f.handle_key(key(KeyCode::Char('n'))); // answer item 1
+        assert!(matches!(op, ModeOp::None)); // item 0 still open, no resolve
+        assert_eq!(f.cursor(), 0); // wrapped, not clamped off the end
+    }
+
+    #[test]
+    fn enter_without_default_is_noop() {
+        let mut f = two_items();
+        f.items_mut_for_test()[0].default = None;
+        let op = f.handle_key(key(KeyCode::Enter));
+        assert!(matches!(op, ModeOp::None));
+        assert_eq!(f.answers(), &[None, None]);
+    }
+
+    #[test]
+    fn esc_preserves_explicit_answers_and_fills_only_the_rest() {
+        let mut f = two_items();
+        f.handle_key(key(KeyCode::Char('a'))); // item 0 → choice 1 (not its default 0)
+        let op = f.handle_key(key(KeyCode::Esc));
+        // Explicit answer kept; only item 1 falls back to its default.
+        assert!(matches!(op, ModeOp::FlowResolved { answers, .. } if answers == vec![1, 1]));
+    }
+
+    #[test]
+    fn q_closes_like_esc() {
+        let mut f = two_items();
+        let op = f.handle_key(key(KeyCode::Char('q')));
+        assert!(matches!(op, ModeOp::FlowResolved { answers, .. } if answers == vec![0, 1]));
+    }
+
+    /// Three items where #0 and #2 share the keep/adopt choice set and #1
+    /// carries a different (yes/no) one.
+    fn three_items_two_kinds() -> DecisionFlow {
+        DecisionFlow::new(
+            FlowKind::UpgradeNotice,
+            "test".into(),
+            vec![
+                DecisionItem {
+                    prompt: "first".into(),
+                    detail: vec![],
+                    choices: vec![
+                        Choice {
+                            key: 'k',
+                            label: "keep".into(),
+                        },
+                        Choice {
+                            key: 'a',
+                            label: "adopt".into(),
+                        },
+                    ],
+                    default: Some(0),
+                },
+                DecisionItem {
+                    prompt: "second".into(),
+                    detail: vec![],
+                    choices: vec![
+                        Choice {
+                            key: 'y',
+                            label: "yes".into(),
+                        },
+                        Choice {
+                            key: 'n',
+                            label: "no".into(),
+                        },
+                    ],
+                    default: Some(1),
+                },
+                DecisionItem {
+                    prompt: "third".into(),
+                    detail: vec![],
+                    choices: vec![
+                        Choice {
+                            key: 'k',
+                            label: "keep".into(),
+                        },
+                        Choice {
+                            key: 'a',
+                            label: "adopt".into(),
+                        },
+                    ],
+                    default: Some(0),
+                },
+            ],
+        )
+    }
+
+    /// Three items all sharing one keep/adopt choice set.
+    fn three_items_same_kind() -> DecisionFlow {
+        let shared = vec![
+            Choice {
+                key: 'k',
+                label: "keep".into(),
+            },
+            Choice {
+                key: 'a',
+                label: "adopt".into(),
+            },
+        ];
+        DecisionFlow::new(
+            FlowKind::UpgradeNotice,
+            "test".into(),
+            ["first", "second", "third"]
+                .into_iter()
+                .map(|p| DecisionItem {
+                    prompt: p.into(),
+                    detail: vec![],
+                    choices: shared.clone(),
+                    default: Some(0),
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn apply_to_all_answers_remaining_items_with_same_choice_set() {
+        // three items; #0 and #2 share a choice set, #1 differs
+        let mut f = three_items_two_kinds();
+        f.handle_key(key(KeyCode::Char('a'))); // answer #0 with choice 1
+        f.handle_key(key(KeyCode::Up)); // back to #0
+        let op = f.handle_key(key(KeyCode::Char('A'))); // apply to all
+        assert_eq!(f.answers()[2], Some(1)); // same-set item answered
+        assert_eq!(f.answers()[1], None); // different set untouched
+        assert!(matches!(op, ModeOp::None)); // #1 still unanswered
+    }
+
+    #[test]
+    fn apply_to_all_can_resolve_the_flow() {
+        let mut f = three_items_same_kind(); // all share one choice set
+        f.handle_key(key(KeyCode::Char('a')));
+        f.handle_key(key(KeyCode::Up));
+        let op = f.handle_key(key(KeyCode::Char('A')));
+        assert!(matches!(op, ModeOp::FlowResolved { .. }));
+    }
+
+    #[test]
+    fn apply_to_all_without_answer_on_current_is_noop() {
+        let mut f = three_items_same_kind();
+        let op = f.handle_key(key(KeyCode::Char('A')));
+        assert!(matches!(op, ModeOp::None));
     }
 }
