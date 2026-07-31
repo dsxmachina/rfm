@@ -374,7 +374,7 @@ impl Tab {
     ///
     /// Returns `true` if it moved (i.e. the left panel was non-empty), so the
     /// manager can unmark and `mark_dirty`.
-    fn move_left(&mut self) -> bool {
+    fn move_left(&mut self, drive_preview: bool) -> bool {
         // If the left panel is empty, we cannot move left:
         if self.left.panel().selected_path().is_none() {
             return false;
@@ -414,6 +414,16 @@ impl Tab {
                 info!("set-left-panel selection");
                 self.left.panel_mut().select_path(&center_path, None);
             }
+        }
+        // The Miller shift set the preview to the come-from directory, which is
+        // the correct preview only while the restored selection still points at
+        // it. When that directory was deleted underneath us (the parent panel
+        // reloaded and the cursor fell onto a sibling), the selection now
+        // differs — re-drive the preview so it follows the selection instead of
+        // showing the stale come-from dir. `new_panel_delayed` short-circuits
+        // when the path is unchanged, so the common case stays a no-op.
+        if drive_preview {
+            self.refresh_preview();
         }
         true
     }
@@ -1200,7 +1210,8 @@ impl PanelManager {
 
     fn move_left(&mut self) {
         trace!("move-left");
-        if self.active_mut().move_left() {
+        let drive = self.preview_visible();
+        if self.active_mut().move_left(drive) {
             self.unmark_left_right();
             // All panels needs to be redrawn
             self.mark_dirty();
@@ -2708,12 +2719,41 @@ mod tests {
         assert_eq!(center_path(&f.tab), sub);
 
         // Go back left.
-        assert!(f.tab.move_left());
+        assert!(f.tab.move_left(true));
         // We are back at root, and `sub` is re-selected from forward-history.
         assert_eq!(center_path(&f.tab), root);
         assert_eq!(center_selected(&f.tab), Some(sub));
         // forward-history was consumed.
         assert!(f.tab.fwd_history.is_empty());
+    }
+
+    #[test]
+    fn move_left_refreshes_preview_when_selection_moved_off_the_come_from_dir() {
+        // Regression for the stale-preview-after-leaving-a-deleted-cwd bug
+        // (test-protocol step 12.8). Descend into `sub`, then move the parent
+        // panel's selection off `sub` — exactly what the watcher reload does
+        // when `sub` is deleted underneath us. On `move_left` the Miller shift
+        // sets the preview to the come-from dir (`sub`), but the restored
+        // selection is now a *different* entry, so the preview must be
+        // re-driven to match it instead of continuing to show stale `sub`.
+        let mut f = fixture();
+        let root = f.root.clone();
+        let sub = root.join("sub");
+        let zempty = root.join("zempty");
+
+        assert!(matches!(f.tab.move_right(true), MoveRight::Descended(_)));
+        assert_eq!(center_path(&f.tab), sub);
+
+        // Parent selection moves off `sub` (reload semantics).
+        f.tab.left.panel_mut().select_path(&zempty, None);
+
+        assert!(f.tab.move_left(true));
+        assert_eq!(center_selected(&f.tab), Some(zempty.clone()));
+        assert_eq!(
+            f.tab.right.panel().path(),
+            zempty.as_path(),
+            "preview must follow the restored selection, not the stale come-from dir"
+        );
     }
 
     #[test]
@@ -2724,12 +2764,12 @@ mod tests {
         let mut f = fixture();
         // Bound the loop generously; the tempdir depth is small.
         let mut moved = 0;
-        while f.tab.move_left() {
+        while f.tab.move_left(true) {
             moved += 1;
             assert!(moved < 100, "move_left did not terminate");
         }
         // We reached a point where move_left reports "did not move".
-        assert!(!f.tab.move_left());
+        assert!(!f.tab.move_left(true));
         // Center is at the filesystem root (has no parent, or parent == self).
         let here = center_path(&f.tab);
         assert!(
@@ -2800,7 +2840,7 @@ mod tests {
         assert!(f.tab.rev_history.is_empty());
 
         // Climb back to root; this pushes the highlighted child to rev_history.
-        assert!(f.tab.move_left());
+        assert!(f.tab.move_left(true));
         assert_eq!(center_path(&f.tab), root);
         assert_eq!(center_selected(&f.tab), Some(sub.clone()));
         assert_eq!(f.tab.rev_history, vec![inner2.clone()]);
