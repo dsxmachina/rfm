@@ -283,6 +283,11 @@ impl FilePreview {
             // answer, so infer resolves the `SQLite format 3\0` magic —
             // a .db that is not SQLite routes elsewhere (correct).
             ("application", "vnd.sqlite3") => sqlite_preview(&path, &mime),
+            // Tiered pdf preview (image -> text -> stat). The `%PDF`
+            // magic also routes extensionless files here via the
+            // sniff; mime 0.3 keeps subtype "pdf" whole — no suffix
+            // trap like svg+xml/epub+zip.
+            ("application", "pdf") => pdf_preview(&path, modified, &mime),
             // Text based application/* types
             ("application", "x-sh")
             | ("application", "json")
@@ -2015,6 +2020,48 @@ fn pdf_render_first_page_in(
         img: Some(img),
         info: pdf_image_info(path),
     })
+}
+
+/// Tiered PDF arm: optional external image tier (pdf_render on AND a
+/// renderer installed AND somewhere to write — `video_thumbnail_dir`'s
+/// policy: cache dir / temp fallback / `None` when `preview_cache =
+/// false`, a privacy promise the external render must honor, since a
+/// render IS a write) → native text tier → stat block. A PDF never
+/// shows a bare error panel.
+fn pdf_preview(path: &Path, modified: SystemTime, mime: &mime::Mime) -> Preview {
+    let renderer = if pdf_render_enabled() {
+        pdf_renderer()
+    } else {
+        None
+    };
+    pdf_preview_in(renderer, video_thumbnail_dir(), path, modified, mime)
+}
+
+/// Testably parameterized core of [`pdf_preview`]; every downgrade
+/// logs a debug-level "falling back" line (socket `log` history).
+fn pdf_preview_in(
+    renderer: Option<PdfRenderer>,
+    thumb_dir: Option<&Path>,
+    path: &Path,
+    modified: SystemTime,
+    mime: &mime::Mime,
+) -> Preview {
+    if let (Some(renderer), Some(dir)) = (renderer, thumb_dir) {
+        match pdf_render_first_page_in(dir, renderer, path, mtime_secs(modified)) {
+            Ok(preview) => return preview,
+            Err(e) => log::debug!("pdf render failed, falling back to text tier: {e}"),
+        }
+    }
+    match pdf_text_tier(path) {
+        Ok(preview) => preview,
+        Err(e) => {
+            log::debug!(
+                "pdf text tier failed, falling back to stat: {}: {e}",
+                path.display()
+            );
+            stat_preview(path, mime)
+        }
+    }
 }
 
 /// Dependency-free stat block for generic application/* files: path,
@@ -4423,6 +4470,67 @@ mod pdf_tests {
         let img_entry = raster_cache::entry_name(pdf, 100, raster_cache::KIND_IMAGE);
         assert_ne!(pdf_entry, img_entry);
         assert!(pdf_entry.ends_with("-pdf-p1-960.jpg"), "{pdf_entry}");
+    }
+
+    #[test]
+    fn pdf_preview_uses_text_tier_when_render_disabled() {
+        // renderer None == pdf_render off (or no tool): the composed
+        // preview is the text tier, and nothing touches a cache dir.
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = make_pdf(tmp.path(), "report.pdf", "Tiered", 3);
+        let modified = pdf.metadata().unwrap().modified().unwrap();
+        let mime: mime::Mime = "application/pdf".parse().unwrap();
+        match pdf_preview_in(None, None, &pdf, modified, &mime) {
+            Preview::Text { lines } => {
+                assert!(
+                    lines.iter().any(|l| l.contains("PDF · 3 pages")),
+                    "{lines:?}"
+                );
+            }
+            _ => panic!("expected the text tier"),
+        }
+    }
+
+    #[test]
+    fn pdf_preview_of_garbage_falls_back_to_stat() {
+        // Composition floor: a PDF never shows a bare error panel —
+        // garbage degrades text tier -> stat block.
+        let tmp = tempfile::tempdir().unwrap();
+        let garbage = tmp.path().join("broken.pdf");
+        std::fs::write(&garbage, b"%PDF-1.4\nnot a pdf").unwrap();
+        let modified = garbage.metadata().unwrap().modified().unwrap();
+        let mime: mime::Mime = "application/pdf".parse().unwrap();
+        match pdf_preview_in(None, None, &garbage, modified, &mime) {
+            Preview::Text { lines } => {
+                let joined = lines.join("\n");
+                assert!(joined.contains("Size:"), "{joined}");
+                assert!(joined.contains("MIME type:"), "{joined}");
+            }
+            _ => panic!("expected the stat fallback"),
+        }
+    }
+
+    #[test]
+    fn file_preview_dispatches_pdf_to_the_text_tier() {
+        // End-to-end: FilePreview::new on a .pdf must produce the
+        // text-tier lines, not the plain stat block the old
+        // ("application", _) catch-all served. Extensionless %PDF
+        // routing is covered by opener.rs's
+        // extensionless_pdf_bytes_get_application_pdf.
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = make_pdf(tmp.path(), "whatever.pdf", "Dispatched", 1);
+        match FilePreview::new(pdf).preview {
+            Preview::Text { lines } => {
+                let joined = lines.join("\n");
+                assert!(joined.contains("PDF · 1 page"), "{joined}");
+                assert!(joined.contains("Dispatched"), "{joined}");
+                assert!(
+                    !joined.contains("MIME type:"),
+                    "must not land on the stat catch-all: {joined}"
+                );
+            }
+            _ => panic!("expected a text preview"),
+        }
     }
 
     #[test]
