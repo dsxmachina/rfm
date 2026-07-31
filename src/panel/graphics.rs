@@ -207,7 +207,6 @@ pub fn cell_geometry_from_winsize(cols: u16, rows: u16, xpx: u16, ypx: u16) -> O
 
 /// The pixel box covered by a span of cells — what the raster is fitted into.
 /// Used by the graphics emitters (steps 4–6).
-#[allow(dead_code)]
 pub fn pixel_box(cols: u16, rows: u16, geo: CellGeometry) -> (u32, u32) {
     (
         cols as u32 * geo.cell_w as u32,
@@ -218,7 +217,6 @@ pub fn pixel_box(cols: u16, rows: u16, geo: CellGeometry) -> (u32, u32) {
 /// Cells needed to cover `px` pixels (ceil division) — used for the kitty
 /// `c=`/`r=` placement and the erase region (steps 4–6). A zero cell size
 /// yields zero cells instead of dividing.
-#[allow(dead_code)]
 pub fn cells_for(px: u32, cell_px: u16) -> u16 {
     if cell_px == 0 {
         return 0;
@@ -228,7 +226,6 @@ pub fn cells_for(px: u32, cell_px: u16) -> u16 {
 
 /// Kitty `c=`/`r=` placement for a raster: ceil to cells, clamped to the
 /// pane span so the image can never bleed into a neighbouring panel.
-#[allow(dead_code)] // consumed by the draw-path dispatch (step 6)
 pub fn placement_cells(
     px_w: u32,
     px_h: u32,
@@ -294,14 +291,12 @@ pub enum Emitted {
 /// Mark the start of a draw pass (top of `PanelManager::draw`, D4).
 /// `image_allowed`: single view and no console overlay — a kitty placement
 /// floats above cells, so overlays must force the half-block fallback.
-#[allow(dead_code)] // consumed by the draw-path dispatch (step 6)
 pub fn begin_frame(image_allowed: bool) {
     FRAME_ALLOWED.store(image_allowed, Ordering::Relaxed);
     *CLAIMED.lock() = None;
 }
 
 /// Whether the current frame may draw via a graphics protocol.
-#[allow(dead_code)] // consumed by the draw-path dispatch (step 6)
 pub fn frame_allows_image() -> bool {
     FRAME_ALLOWED.load(Ordering::Relaxed)
 }
@@ -310,7 +305,6 @@ pub fn frame_allows_image() -> bool {
 /// `EndSynchronizedUpdate`): a live placement whose key was not claimed this
 /// frame is stale — the selection moved, an overlay opened, the view split —
 /// and is erased. This one hook covers every stale-image case (D4).
-#[allow(dead_code)] // consumed by the draw-path dispatch (step 6)
 pub fn end_frame(w: &mut impl Write) -> io::Result<()> {
     let claimed = CLAIMED.lock().take();
     let mut live = LIVE.lock();
@@ -348,7 +342,6 @@ pub fn erase_live(w: &mut impl Write) -> io::Result<()> {
 /// Sized `c=`/`r=` cells so the terminal scales into exactly the pane
 /// rectangle (exact clipping, D6). `q=2` everywhere: the terminal must
 /// never answer into the event stream.
-#[allow(dead_code)] // consumed by the draw-path dispatch (step 6)
 pub fn emit_kitty(
     w: &mut impl Write,
     key: EmitKey,
@@ -535,7 +528,6 @@ pub fn protocol() -> GraphicsProtocol {
 }
 
 /// The current cell size in pixels, if the terminal ever reported one.
-#[allow(dead_code)] // consumed by the emitters (steps 4-6)
 pub fn cell_geometry() -> Option<CellGeometry> {
     unpack_geometry(GEOMETRY.load(Ordering::Relaxed))
 }

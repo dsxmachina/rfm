@@ -860,14 +860,31 @@ impl PanelManager {
         }
         self.stdout.execute(BeginSynchronizedUpdate)?;
         self.stdout.queue(cursor::Hide)?;
+        // A graphics placement floats above cells, so it is only allowed
+        // when the preview column is actually the topmost thing there:
+        // single view, no console overlay (D4). Otherwise the preview
+        // falls back to half-blocks for this frame.
+        super::graphics::begin_frame(
+            matches!(self.view, ViewMode::Single) && !self.overlay_active(),
+        );
         self.draw_footer()?;
         self.draw_header()?;
         self.draw_panels()?;
         self.draw_console()?;
         self.draw_log()?;
+        // Reconcile: erase any graphics placement no draw claimed this
+        // frame (selection moved, overlay opened, split toggled, ...).
+        super::graphics::end_frame(&mut self.stdout)?;
         self.stdout.execute(EndSynchronizedUpdate)?;
         self.dirty = false;
         Ok(())
+    }
+
+    /// Whether a modal mode is drawing over the panel area (the centered
+    /// console overlay — trash view, dir consoles). Footer-line modals do
+    /// not cover the preview column.
+    fn overlay_active(&self) -> bool {
+        matches!(&self.mode, Mode::Modal(m) if m.region() == ModalRegion::ConsoleOverlay)
     }
 
     /// The y-range panels may actually draw in: the layout's `y_range` minus

@@ -14,7 +14,10 @@ use crate::{
     util::{truncate_with_color_codes, ExactWidth},
 };
 
-use super::{raster_cache, BasePanel, DirPanel, Draw, PanelContent};
+use super::{
+    graphics::{self, GraphicsProtocol},
+    raster_cache, BasePanel, DirPanel, Draw, PanelContent,
+};
 use crossterm::{
     cursor, queue,
     style::{self, Colors, Print, ResetColor, SetColors},
@@ -67,6 +70,70 @@ fn resized_rgb<'a>(
     &cache.as_ref().unwrap().rgb
 }
 
+/// Cell rows the image may occupy in a graphics-protocol draw: the full
+/// height when there are no info lines, else two thirds — mirroring the
+/// half-block branch's `2*height` / `4*height/3` pixel budget (2 px per
+/// cell row). Info lines stay ordinary cell text below the image.
+fn image_rows(height: u16, has_info: bool) -> u16 {
+    if has_info {
+        2 * height / 3
+    } else {
+        height
+    }
+}
+
+/// Cell size assumed when the terminal never reported pixel geometry (D2).
+/// Kitty scales the raster into the `c=`/`r=` cell rectangle, so placement
+/// stays exact even if the guess is off — only the pre-scale sharpness
+/// varies.
+const ASSUMED_CELL: graphics::CellGeometry = graphics::CellGeometry {
+    cell_w: 8,
+    cell_h: 16,
+};
+
+/// Draw the image via the kitty graphics protocol. Returns the cell rows
+/// used, so the caller's info-line/blanking tail runs unchanged below the
+/// image. Any error falls back to the half-block loop for this frame.
+#[allow(clippy::too_many_arguments)]
+fn draw_kitty(
+    stdout: &mut Stdout,
+    resize_cache: &mut Option<ResizeCache>,
+    src: &DynamicImage,
+    has_info: bool,
+    x_range: &Range<u16>,
+    y_range: &Range<u16>,
+    path: &Path,
+    modified: SystemTime,
+) -> Result<u16> {
+    let width = x_range.end.saturating_sub(x_range.start.saturating_add(1));
+    let height = y_range.end.saturating_sub(y_range.start);
+    let rows_budget = image_rows(height, has_info);
+    if width == 0 || rows_budget == 0 {
+        return Ok(0);
+    }
+    let geo = graphics::cell_geometry().unwrap_or(ASSUMED_CELL);
+    // The raster is fitted into the pane's pixel box; the resize cache is
+    // keyed on these requested pixel dims (D8).
+    let (px_w, px_h) = graphics::pixel_box(width, rows_budget, geo);
+    let rgb = resized_rgb(resize_cache, src, px_w, px_h);
+    // Placement in cells from the *actual* raster size (thumbnail keeps the
+    // aspect ratio), clamped to the pane span for exact clipping.
+    let (cols, rows) = graphics::placement_cells(rgb.width(), rgb.height(), geo, width, rows_budget);
+    if cols == 0 || rows == 0 {
+        return Ok(0);
+    }
+    let origin = (x_range.start.saturating_add(1), y_range.start);
+    let key = graphics::EmitKey {
+        path: path.to_path_buf(),
+        mtime_secs: mtime_secs(modified),
+        px_w,
+        px_h,
+        origin_cell: origin,
+    };
+    graphics::emit_kitty(stdout, key, rgb, cols, rows)?;
+    Ok(rows)
+}
+
 #[derive(Debug, Clone)]
 pub struct FilePreview {
     path: PathBuf,
@@ -104,59 +171,91 @@ impl Draw for FilePreview {
             preview,
             resize_cache,
             path,
+            modified,
             ..
         } = self;
         match preview {
             Preview::Image { img, info } => {
                 // load image
                 if img.is_some() {
-                    // Generate thumbnail
-                    let thumbnail_height = if info.is_empty() {
-                        2 * height
-                    } else {
-                        4 * height / 3
-                    };
                     let src = img.as_ref().unwrap();
-                    // Rebuild the resized RGB image only when the requested
-                    // cell dimensions change (or on first draw).
-                    let img = resized_rgb(resize_cache, src, width as u32, thumbnail_height as u32);
-                    log::debug!(
-                        "img: {}x{}, wxh: {}x{}",
-                        img.width(),
-                        img.height(),
-                        width,
-                        height,
-                    );
-                    let mut cy = y_range.start;
-                    for y in (0..img.height() as usize).step_by(2) {
-                        for x in 0..width {
-                            // cursor x
-                            let cx = x_range.start.saturating_add(x).saturating_add(1);
-                            queue!(stdout, cursor::MoveTo(cx, cy))?;
-                            let px_hi = img.get_pixel_checked(x as u32, y as u32);
-                            let px_lo = img.get_pixel_checked(x as u32, (y + 1) as u32);
-                            if let (Some(px_hi), Some(px_lo)) = (px_hi, px_lo) {
-                                let color = Colors::new(
-                                    style::Color::Rgb {
-                                        r: px_lo.0[0],
-                                        g: px_lo.0[1],
-                                        b: px_lo.0[2],
-                                    },
-                                    style::Color::Rgb {
-                                        r: px_hi.0[0],
-                                        g: px_hi.0[1],
-                                        b: px_hi.0[2],
-                                    },
-                                );
-                                queue!(stdout, SetColors(color), Print("▄"),)?;
-                            } else {
-                                queue!(stdout, ResetColor, Print(" "),)?;
+                    // Graphics-protocol tier: real pixels via kitty when the
+                    // frame allows a placement (single view, no overlay).
+                    // Any emit failure falls back to half-blocks for this
+                    // frame — a preview always renders *something*.
+                    let mut graphics_cy = None;
+                    if graphics::protocol() == GraphicsProtocol::Kitty
+                        && graphics::frame_allows_image()
+                    {
+                        match draw_kitty(
+                            stdout,
+                            resize_cache,
+                            src,
+                            !info.is_empty(),
+                            &x_range,
+                            &y_range,
+                            path,
+                            *modified,
+                        ) {
+                            Ok(rows) => graphics_cy = Some(y_range.start.saturating_add(rows)),
+                            Err(e) => {
+                                log::debug!("graphics: emit failed, half-block fallback: {e}")
                             }
                         }
-                        // Increase column
-                        cy += 1;
                     }
-                    queue!(stdout, ResetColor)?;
+                    let cy = if let Some(cy) = graphics_cy {
+                        cy
+                    } else {
+                        // Half-block fallback: two vertical pixels per cell
+                        // via the `▄` glyph. Generate thumbnail
+                        let thumbnail_height = if info.is_empty() {
+                            2 * height
+                        } else {
+                            4 * height / 3
+                        };
+                        // Rebuild the resized RGB image only when the requested
+                        // cell dimensions change (or on first draw).
+                        let img =
+                            resized_rgb(resize_cache, src, width as u32, thumbnail_height as u32);
+                        log::debug!(
+                            "img: {}x{}, wxh: {}x{}",
+                            img.width(),
+                            img.height(),
+                            width,
+                            height,
+                        );
+                        let mut cy = y_range.start;
+                        for y in (0..img.height() as usize).step_by(2) {
+                            for x in 0..width {
+                                // cursor x
+                                let cx = x_range.start.saturating_add(x).saturating_add(1);
+                                queue!(stdout, cursor::MoveTo(cx, cy))?;
+                                let px_hi = img.get_pixel_checked(x as u32, y as u32);
+                                let px_lo = img.get_pixel_checked(x as u32, (y + 1) as u32);
+                                if let (Some(px_hi), Some(px_lo)) = (px_hi, px_lo) {
+                                    let color = Colors::new(
+                                        style::Color::Rgb {
+                                            r: px_lo.0[0],
+                                            g: px_lo.0[1],
+                                            b: px_lo.0[2],
+                                        },
+                                        style::Color::Rgb {
+                                            r: px_hi.0[0],
+                                            g: px_hi.0[1],
+                                            b: px_hi.0[2],
+                                        },
+                                    );
+                                    queue!(stdout, SetColors(color), Print("▄"),)?;
+                                } else {
+                                    queue!(stdout, ResetColor, Print(" "),)?;
+                                }
+                            }
+                            // Increase column
+                            cy += 1;
+                        }
+                        queue!(stdout, ResetColor)?;
+                        cy
+                    };
                     // Reset everything else
                     let mut idx = 0;
                     for y in cy..y_range.end {
@@ -4830,5 +4929,32 @@ mod render_cache_tests {
         p.resized_rgb(20, 30);
         p.resized_rgb(21, 30);
         assert_eq!(p.resize_count(), 2);
+    }
+
+    #[test]
+    fn resized_rgb_pixel_keying_reuses_cache() {
+        // The cache is keyed on the *requested* dimensions — the unit is the
+        // caller's business (D8). Graphics tiers request the pixel box
+        // (cells x cell-pixel-size) instead of cell-derived dims; the
+        // protocol never changes mid-session, so the single-entry cache
+        // still never thrashes at pixel scale.
+        let mut p = tiny_preview();
+        p.resized_rgb(240, 320); // 30x20 cells at 8x16 px
+        p.resized_rgb(240, 320);
+        assert_eq!(p.resize_count(), 1, "same pixel box must hit the cache");
+        // A resize changes the pixel box -> recompute.
+        p.resized_rgb(256, 320);
+        assert_eq!(p.resize_count(), 2);
+    }
+
+    #[test]
+    fn graphics_row_budget_matches_half_block_split() {
+        // The graphics image gets the full height when there are no info
+        // lines, else 2/3 of it — mirroring the half-block branch's
+        // 2*height / 4*height/3 *pixel* budget (2 px per cell row).
+        assert_eq!(image_rows(30, false), 30);
+        assert_eq!(image_rows(30, true), 20);
+        assert_eq!(image_rows(1, true), 0);
+        assert_eq!(image_rows(0, false), 0);
     }
 }
