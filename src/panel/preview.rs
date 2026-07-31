@@ -530,6 +530,24 @@ fn image_info_lines(
     ]
 }
 
+/// Decode an image upright: the decoder's EXIF orientation (parsed
+/// natively by the JPEG/TIFF/WebP decoders in image 0.25; every other
+/// format reports `NoTransforms` for free) is applied to the raster
+/// before it is thumbnailed or cached, so cached rasters are upright by
+/// construction and the hit path never re-applies rotation. Unreadable
+/// EXIF degrades to a no-op, never a decode failure.
+fn decode_upright(path: &Path) -> Option<DynamicImage> {
+    use image::{metadata::Orientation, ImageDecoder};
+    let mut decoder = image::ImageReader::open(path).ok()?.into_decoder().ok()?;
+    // Must be read BEFORE from_decoder consumes the decoder.
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(Orientation::NoTransforms);
+    let mut img = DynamicImage::from_decoder(decoder).ok()?;
+    img.apply_orientation(orientation);
+    Some(img)
+}
+
 /// Image arm: decode once, derive the info lines from the decode itself
 /// (dimensions are read before the thumbnail shrink).
 fn native_image_preview(path: &Path, mime: &mime::Mime) -> Preview {
@@ -538,10 +556,7 @@ fn native_image_preview(path: &Path, mime: &mime::Mime) -> Preview {
     let modified = meta
         .and_then(|m| m.modified().ok())
         .unwrap_or(SystemTime::UNIX_EPOCH);
-    match image::ImageReader::open(path)
-        .ok()
-        .and_then(|r| r.decode().ok())
-    {
+    match decode_upright(path) {
         Some(img) => {
             let info = image_info_lines(
                 img.width(),
@@ -620,10 +635,23 @@ fn cached_image_preview_in(
 /// dimensions via a header-only read (falling back to the cached
 /// thumbnail's), color from the cached thumbnail (always Rgb8 after the
 /// JPEG round-trip — accepted display drift), size/mtime from metadata.
+/// The header dims are raw sensor dims — swapped for a transposing EXIF
+/// orientation so the hit path agrees with the (upright) miss path.
 fn cached_image_info(path: &Path, cached: &DynamicImage, subtype: &str) -> Vec<String> {
+    use image::{metadata::Orientation, ImageDecoder};
     let (width, height) = image::ImageReader::open(path)
         .ok()
-        .and_then(|r| r.into_dimensions().ok())
+        .and_then(|r| r.into_decoder().ok())
+        .map(|mut d| {
+            let (w, h) = d.dimensions();
+            match d.orientation().unwrap_or(Orientation::NoTransforms) {
+                Orientation::Rotate90
+                | Orientation::Rotate270
+                | Orientation::Rotate90FlipH
+                | Orientation::Rotate270FlipH => (h, w),
+                _ => (w, h),
+            }
+        })
         .unwrap_or_else(|| (cached.width(), cached.height()));
     let meta = path.metadata().ok();
     let byte_size = meta.as_ref().map(|m| m.len()).unwrap_or_default();
@@ -2831,6 +2859,164 @@ mod native_backend_tests {
             0,
             "no cache entry for an undecodable image"
         );
+    }
+
+    /// Writes `dir/name`: `img` JPEG-encoded with a minimal EXIF APP1
+    /// segment (little-endian TIFF header + a one-entry IFD0 carrying
+    /// tag 0x0112 = `orientation`) spliced in right after SOI — the
+    /// hermetic stand-in for a phone photo.
+    fn jpeg_with_orientation(
+        dir: &Path,
+        name: &str,
+        img: image::RgbImage,
+        orientation: u16,
+    ) -> PathBuf {
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+            .encode_image(&img)
+            .unwrap();
+        assert_eq!(&jpeg[..2], &[0xFF, 0xD8], "encoder must emit SOI first");
+        // APP1 payload: "Exif\0\0" (6) + TIFF header (8) + entry count
+        // (2) + one 12-byte IFD entry + next-IFD offset (4) = 32 bytes;
+        // the length field counts itself, so 34.
+        let mut app1: Vec<u8> = vec![0xFF, 0xE1, 0x00, 0x22];
+        app1.extend_from_slice(b"Exif\0\0");
+        app1.extend_from_slice(&[0x49, 0x49, 0x2A, 0x00]); // "II", 42 LE
+        app1.extend_from_slice(&8u32.to_le_bytes()); // IFD0 at offset 8
+        app1.extend_from_slice(&1u16.to_le_bytes()); // one entry
+        app1.extend_from_slice(&0x0112u16.to_le_bytes()); // Orientation
+        app1.extend_from_slice(&3u16.to_le_bytes()); // type SHORT
+        app1.extend_from_slice(&1u32.to_le_bytes()); // count
+        app1.extend_from_slice(&orientation.to_le_bytes());
+        app1.extend_from_slice(&[0, 0]); // value padding
+        app1.extend_from_slice(&0u32.to_le_bytes()); // no next IFD
+        let mut spliced = Vec::with_capacity(jpeg.len() + app1.len());
+        spliced.extend_from_slice(&jpeg[..2]);
+        spliced.extend_from_slice(&app1);
+        spliced.extend_from_slice(&jpeg[2..]);
+        let path = dir.join(name);
+        std::fs::write(&path, spliced).unwrap();
+        path
+    }
+
+    #[test]
+    fn native_image_preview_applies_exif_orientation() {
+        // orientation=6 (Rotate90): a 20×10 source must preview upright
+        // as 10×20, and the info line must report the UPRIGHT dims.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = jpeg_with_orientation(
+            tmp.path(),
+            "rotated.jpg",
+            image::RgbImage::new(20, 10),
+            6,
+        );
+        let mime: mime::Mime = "image/jpeg".parse().unwrap();
+        match native_image_preview(&path, &mime) {
+            Preview::Image { img, info } => {
+                let img = img.unwrap();
+                assert_eq!((img.width(), img.height()), (10, 20), "raster upright");
+                assert!(info.iter().any(|l| l.contains("10 × 20")), "{info:?}");
+            }
+            _ => panic!("expected an image preview"),
+        }
+    }
+
+    #[test]
+    fn native_image_preview_orientation_1_is_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = jpeg_with_orientation(
+            tmp.path(),
+            "upright.jpg",
+            image::RgbImage::new(20, 10),
+            1,
+        );
+        let mime: mime::Mime = "image/jpeg".parse().unwrap();
+        match native_image_preview(&path, &mime) {
+            Preview::Image { img, .. } => {
+                let img = img.unwrap();
+                assert_eq!((img.width(), img.height()), (20, 10));
+            }
+            _ => panic!("expected an image preview"),
+        }
+    }
+
+    #[test]
+    fn native_image_preview_flips_mirrored_orientations() {
+        // orientation=2 (FlipHorizontal): a white|black 2×1 must come
+        // out black|white. Luminance survives JPEG; exact values don't.
+        let mut src = image::RgbImage::new(2, 1);
+        src.put_pixel(0, 0, image::Rgb([255, 255, 255]));
+        src.put_pixel(1, 0, image::Rgb([0, 0, 0]));
+        let tmp = tempfile::tempdir().unwrap();
+        let path = jpeg_with_orientation(tmp.path(), "mirrored.jpg", src, 2);
+        let mime: mime::Mime = "image/jpeg".parse().unwrap();
+        match native_image_preview(&path, &mime) {
+            Preview::Image { img, .. } => {
+                let rgb = img.unwrap().to_rgb8();
+                let left = rgb.get_pixel(0, 0).0[0];
+                let right = rgb.get_pixel(1, 0).0[0];
+                assert!(
+                    left < right,
+                    "flip must swap pixel order: left={left} right={right}"
+                );
+            }
+            _ => panic!("expected an image preview"),
+        }
+    }
+
+    #[test]
+    fn a_png_without_exif_is_untouched() {
+        // Guards the cheap skip: decoders without EXIF report
+        // NoTransforms and the raster keeps its raw dimensions.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("plain.png");
+        image::RgbImage::new(20, 10).save(&path).unwrap();
+        let mime: mime::Mime = "image/png".parse().unwrap();
+        match native_image_preview(&path, &mime) {
+            Preview::Image { img, .. } => {
+                let img = img.unwrap();
+                assert_eq!((img.width(), img.height()), (20, 10));
+            }
+            _ => panic!("expected an image preview"),
+        }
+    }
+
+    #[test]
+    fn cached_image_preview_stores_the_upright_raster() {
+        // The cached raster itself must be upright (correct by
+        // construction — the hit path must never re-apply rotation),
+        // and the hit's info line must report upright dims too.
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let path = jpeg_with_orientation(
+            tmp.path(),
+            "rotated.jpg",
+            image::RgbImage::new(20, 10),
+            6,
+        );
+        let mime: mime::Mime = "image/jpeg".parse().unwrap();
+        let modified = path.metadata().unwrap().modified().unwrap();
+
+        // miss: decode + store
+        cached_image_preview_in(Some(cache.path()), &path, modified, &mime);
+        let cached = raster_cache::lookup_in(
+            cache.path(),
+            &path,
+            mtime_secs(modified),
+            raster_cache::KIND_IMAGE,
+        )
+        .expect("miss must store the thumbnail");
+        assert_eq!((cached.width(), cached.height()), (10, 20), "cache upright");
+
+        // hit: still upright, info reports upright dims
+        match cached_image_preview_in(Some(cache.path()), &path, modified, &mime) {
+            Preview::Image { img, info } => {
+                let img = img.unwrap();
+                assert_eq!((img.width(), img.height()), (10, 20));
+                assert!(info.iter().any(|l| l.contains("10 × 20")), "{info:?}");
+            }
+            _ => panic!("expected an image preview"),
+        }
     }
 
     /// Builds `dir/archive.zip` containing `files` via the zip crate.
