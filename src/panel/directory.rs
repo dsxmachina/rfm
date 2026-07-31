@@ -44,6 +44,12 @@ pub struct StyledEntry {
     /// Whether the selection cursor should be muted (inactive split panel).
     /// Only meaningful together with `negative`.
     dimmed: bool,
+    /// Optional live-search highlight as `(char_start, char_len)` within
+    /// `name`. When set (and non-empty) the matched substring is drawn bold in
+    /// the highlight color *inline*, so it stays aligned regardless of how wide
+    /// the terminal renders the file icon. Only honored on the normal
+    /// (non-`negative`) render path — search rows are never the selection.
+    highlight: Option<(usize, usize)>,
 }
 
 impl StyledEntry {
@@ -58,6 +64,7 @@ impl StyledEntry {
         bold: bool,
         negative: bool,
         dimmed: bool,
+        highlight: Option<(usize, usize)>,
     ) -> Self {
         Self {
             lead,
@@ -69,7 +76,37 @@ impl StyledEntry {
             bold,
             negative,
             dimmed,
+            highlight,
         }
+    }
+
+    /// Converts the `(char_start, char_len)` [`Self::highlight`] into a byte
+    /// range within `name`, clamped to the name's bounds. Returns `None` when
+    /// there is no highlight, it is empty, or it starts past the end of the
+    /// (possibly truncated) name.
+    fn highlight_byte_range(&self) -> Option<(usize, usize)> {
+        let (char_start, char_len) = self.highlight?;
+        if char_len == 0 {
+            return None;
+        }
+        let total = self.name.chars().count();
+        if char_start >= total {
+            return None;
+        }
+        let char_end = char_start.saturating_add(char_len).min(total);
+        let byte_start = self
+            .name
+            .char_indices()
+            .nth(char_start)
+            .map(|(b, _)| b)
+            .unwrap_or(self.name.len());
+        let byte_end = self
+            .name
+            .char_indices()
+            .nth(char_end)
+            .map(|(b, _)| b)
+            .unwrap_or(self.name.len());
+        Some((byte_start, byte_end))
     }
 }
 
@@ -112,9 +149,27 @@ impl Command for StyledEntry {
             SetForegroundColor(self.symbol_color).write_ansi(f)?;
             write!(f, "{}", self.symbol)?;
 
-            // Name and suffix with text color
+            // Name (with optional inline search highlight) and suffix.
             SetForegroundColor(self.text_color).write_ansi(f)?;
-            write!(f, "{} {} ", self.name, self.suffix)?;
+            match self.highlight_byte_range() {
+                Some((start, end)) => {
+                    // Draw the name in three inline slices so the highlight
+                    // flows with the same cursor advancement as everything else
+                    // and cannot land on the wrong cell (the icon-width bug).
+                    write!(f, "{}", &self.name[..start])?;
+                    SetForegroundColor(color_highlight()).write_ansi(f)?;
+                    SetAttribute(Attribute::Bold).write_ansi(f)?;
+                    write!(f, "{}", &self.name[start..end])?;
+                    // Restore the normal name style for the remainder.
+                    SetForegroundColor(self.text_color).write_ansi(f)?;
+                    if !self.bold {
+                        SetAttribute(Attribute::NormalIntensity).write_ansi(f)?;
+                    }
+                    write!(f, "{}", &self.name[end..])?;
+                }
+                None => write!(f, "{}", self.name)?,
+            }
+            write!(f, " {} ", self.suffix)?;
 
             SetAttribute(Attribute::Reset).write_ansi(f)?;
         }
@@ -193,6 +248,22 @@ impl DirElem {
     /// The symbol is colored based on mime-type, while the filename uses a neutral color.
     /// If the element has not been normalized yet, we do so before we create the styled content.
     pub fn print_styled(&mut self, selected: bool, active: bool, max_len: u16) -> StyledEntry {
+        self.print_styled_search(selected, active, max_len, None)
+    }
+
+    /// Like [`Self::print_styled`] but, when `search` is `Some(pattern)`
+    /// (a lowercase substring known to match), the matched span of the
+    /// displayed name is recorded as an inline highlight on the returned
+    /// [`StyledEntry`]. `pattern` is matched case-insensitively against the
+    /// (already truncated) display name; a match truncated off-screen simply
+    /// yields no highlight.
+    pub fn print_styled_search(
+        &mut self,
+        selected: bool,
+        active: bool,
+        max_len: u16,
+        search: Option<&str>,
+    ) -> StyledEntry {
         // Only print normalized items
         self.normalize();
 
@@ -243,6 +314,17 @@ impl DirElem {
 
         // Mute the cursor only on the selected row of an inactive (split) panel.
         let dimmed = selected && !active;
+
+        // Locate the search match within the displayed (truncated) name so the
+        // renderer can highlight it inline.
+        let highlight = search.and_then(|pattern| {
+            let name_lc = name.to_lowercase();
+            name_lc.find(pattern).map(|byte_off| {
+                let char_start = name_lc[..byte_off].chars().count();
+                (char_start, pattern.chars().count())
+            })
+        });
+
         StyledEntry::new(
             lead,
             symbol,
@@ -253,6 +335,7 @@ impl DirElem {
             bold,
             selected,
             dimmed,
+            highlight,
         )
     }
 
@@ -465,24 +548,18 @@ impl DirPanel {
                 if y > height {
                     break;
                 }
-                if let Some(offset) = entry.name_lowercase().find(pattern) {
-                    queue!(
-                        stdout,
-                        cursor::MoveTo(x_range.start, y),
-                        print_vertical_bar(),
-                        entry.print_styled(false, active, width),
-                    )?;
-                    let pattern_x = x_range.start + 4 + offset as u16;
-                    if pattern_x <= width {
-                        queue!(
-                            stdout,
-                            cursor::MoveTo(pattern_x, y),
-                            PrintStyledContent(pattern.clone().with(color_highlight()).bold())
-                        )?;
-                    }
-                } else {
-                    continue;
-                }
+                // Highlight the match inline (see `print_styled_search`): the
+                // matched substring flows with the same cursor advancement as
+                // the rest of the row, so it stays aligned no matter how many
+                // cells the terminal spends on the file icon. The previous
+                // absolute-positioned overlay assumed a 2-cell icon and shifted
+                // one column right on 1-cell terminals, corrupting the name.
+                queue!(
+                    stdout,
+                    cursor::MoveTo(x_range.start, y),
+                    print_vertical_bar(),
+                    entry.print_styled_search(false, active, width, Some(pattern.as_str())),
+                )?;
                 y_offset += 1;
             }
             if y_offset == 0 {
@@ -1169,5 +1246,98 @@ impl DirPanel {
         } else {
             (self.non_hidden_idx.saturating_add(1), self.non_hidden.len())
         }
+    }
+}
+
+#[cfg(test)]
+mod styled_entry_tests {
+    use super::*;
+    use crossterm::style::Color;
+
+    /// The highlight render path calls `color_highlight()`, which reads a
+    /// global set once at startup. Seed it for the test (ignored if another
+    /// test already set it).
+    fn ensure_highlight_color() {
+        let _ = crate::config::color::COLOR_HIGHLIGHT.set(Color::Red);
+    }
+
+    /// Remove every `ESC [ ... m` SGR sequence, leaving only visible glyphs.
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::new();
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' {
+                for d in chars.by_ref() {
+                    if d == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    fn entry(highlight: Option<(usize, usize)>) -> StyledEntry {
+        StyledEntry::new(
+            ' ',
+            "\u{1F5B9}".to_string(), // 🖹 file icon
+            Color::Grey,
+            "report-2.txt".to_string(),
+            "0 B".to_string(),
+            Color::Grey,
+            false,
+            false, // not selected → normal (non-negative) render path
+            false,
+            highlight,
+        )
+    }
+
+    /// The live-search highlight must recolor the matched substring WITHOUT
+    /// changing which characters are visible. The old overlay drew the pattern
+    /// at a hard-coded column and shifted it one cell right when the file icon
+    /// rendered as a single cell, corrupting the name (report-2.txt →
+    /// rreport2.txt). Regression guard for test-protocol step 05.2.
+    #[test]
+    fn search_highlight_preserves_visible_characters() {
+        ensure_highlight_color();
+        let mut plain = String::new();
+        entry(None).write_ansi(&mut plain).unwrap();
+        let mut highlighted = String::new();
+        entry(Some((0, 6))).write_ansi(&mut highlighted).unwrap();
+
+        assert_eq!(
+            strip_ansi(&plain),
+            strip_ansi(&highlighted),
+            "highlighting must not alter the visible characters"
+        );
+        assert_ne!(
+            plain, highlighted,
+            "highlighting must actually apply styling to the match"
+        );
+    }
+
+    /// A highlight range that runs past the (truncated) name must not panic or
+    /// corrupt output — it is clamped to the name's char length.
+    #[test]
+    fn search_highlight_out_of_range_is_clamped() {
+        ensure_highlight_color();
+        let mut out = String::new();
+        StyledEntry::new(
+            ' ',
+            "\u{1F5B9}".to_string(),
+            Color::Grey,
+            "ab".to_string(),
+            "0 B".to_string(),
+            Color::Grey,
+            false,
+            false,
+            false,
+            Some((1, 50)),
+        )
+        .write_ansi(&mut out)
+        .unwrap();
+        assert!(strip_ansi(&out).contains("ab"), "visible name intact: {out:?}");
     }
 }
