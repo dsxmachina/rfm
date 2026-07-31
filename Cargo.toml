@@ -31,6 +31,11 @@ image = "0.24.9"
 # uuid, whose newest versions need rustc >=1.85 - pinned to 1.12.1 in
 # Cargo.lock.
 infer = "0.22"
+# NOT a new crate: libc 0.2 (0.2.189 in Cargo.lock) is already a mandatory
+# transitive dependency of crossterm/tokio/notify on every unix build.
+# Declared directly for TIOCGWINSZ pixel geometry and the poll()-bounded
+# graphics-protocol probe read (crossterm 0.26 has no pixel-size API).
+libc = "0.2"
 log = { version ="0.4.22", features = ["std"] }
 # lofty 0.22.3 bumps MSRV to 1.85; cap below it (its ogg_pager dep 0.7.1
 # does too - pinned to 0.7.0 in Cargo.lock).

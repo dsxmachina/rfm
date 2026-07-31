@@ -115,6 +115,8 @@ preview_cache = true   # persist image/video preview thumbnails in
                        # $XDG_CACHE_HOME/rfm/thumbnails so they survive restarts
 pdf_render = false     # render page 1 of a PDF as an image (needs pdftoppm or
                        # mutool); off by default — PDFs use the pure-Rust text tier
+image_protocol = "auto" # graphics protocol for image previews:
+                       # "auto" | "kitty" | "sixel" | "half-block"
 fancy_icons = false    # use Nerd Font icons (needs a Nerd Font in your terminal)
 rate_limit_interval_ms = 500   # preview decode rate limit while scrolling
 ```
@@ -139,6 +141,24 @@ if neither is installed rfm silently stays on the text tier. Rendering writes
 into the same thumbnail cache as image/video previews, so `preview_cache = false`
 skips the image tier entirely (an external render is a disk write) and PDFs fall
 back to the text tier.
+
+`image_protocol` selects how image previews are drawn. With `"auto"` (the
+default), rfm detects the best supported protocol at startup: environment
+heuristics first (kitty, WezTerm, Ghostty), then a short (< 250 ms) terminal
+probe for the kitty graphics protocol and sixel support. Anything uncertain
+falls back to `"half-block"`, the universal cell-based renderer that works in
+every truecolor terminal. Inside tmux/screen, `"auto"` always resolves to
+`"half-block"` — multiplexers swallow graphics escapes. The explicit values
+`"kitty"` and `"sixel"` pin a protocol and skip probing; they are the escape
+hatch for terminals that misreport their capabilities. They are honored even
+inside tmux, but rfm does not wrap its output in tmux's passthrough sequences:
+pinned `"kitty"` inside tmux leaves the preview region blank regardless of
+`allow-passthrough` (tmux consumes raw APC sequences either way), and pinned
+`"sixel"` renders only when tmux itself was built with sixel support
+(`--enable-sixel`). `"half-block"` disables graphics protocols entirely.
+When the startup probe runs (auto in an unrecognized terminal, or an explicit
+kitty/sixel pin without pixel geometry), keystrokes typed during its short
+(< 250 ms) window are consumed together with the probe replies.
 
 When `fancy_icons = true`, rfm renders file-type icons from the
 [Nerd Fonts](https://www.nerdfonts.com/) project (like yazi). Your terminal must

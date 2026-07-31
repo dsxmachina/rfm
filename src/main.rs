@@ -183,6 +183,9 @@ async fn main() -> anyhow::Result<()> {
     // Whether the external pdf image tier (pdftoppm/mutool) may run
     // (config key `pdf_render`; default OFF — opt-in).
     let pdf_render = loaded.config.general.pdf_render;
+    // Graphics protocol for image previews (config key `image_protocol`;
+    // default `auto` — detect at startup, fall back to half-blocks).
+    let image_protocol = loaded.config.general.image_protocol;
     let rate_limit_interval_ms = loaded.config.general.rate_limit_interval_ms;
     let fancy_icons = loaded.config.general.fancy_icons;
     info!("Using rate-limit of {rate_limit_interval_ms}ms");
@@ -222,6 +225,13 @@ async fn main() -> anyhow::Result<()> {
     let opener = OpenEngine::with_config(loaded.config.open);
 
     enable_raw_mode()?;
+
+    // Resolve the graphics protocol for image previews. Must run here: raw
+    // mode is active (probe replies arrive unbuffered/un-echoed) and nothing
+    // reads stdin yet (the crossterm EventStream is constructed inside
+    // PanelManager::new below), so the probe can consume the reply bytes
+    // without leaking phantom keys.
+    panel::graphics::init(image_protocol);
 
     stdout
         .queue(DisableMouseCapture)?

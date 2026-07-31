@@ -984,14 +984,33 @@ impl PanelManager {
         }
         self.stdout.execute(BeginSynchronizedUpdate)?;
         self.stdout.queue(cursor::Hide)?;
+        // A graphics placement floats above cells, so it is only allowed
+        // when the preview column is actually the topmost thing there:
+        // single view, no console overlay (D4). Otherwise the preview
+        // falls back to half-blocks for this frame.
+        super::graphics::begin_frame(
+            matches!(self.view, ViewMode::Single) && !self.overlay_active(),
+        );
         self.draw_footer()?;
         self.draw_header()?;
         self.draw_panels()?;
         self.draw_console()?;
         self.draw_log()?;
+        // Reconcile: drop any graphics placement no draw claimed this
+        // frame (selection moved, overlay opened, split toggled, ...).
+        // Kitty is deleted by id; sixel cells were already repainted by
+        // this frame's full repaint — the reconcile never writes cells.
+        super::graphics::end_frame(&mut self.stdout)?;
         self.stdout.execute(EndSynchronizedUpdate)?;
         self.dirty = false;
         Ok(())
+    }
+
+    /// Whether a modal mode is drawing over the panel area (the centered
+    /// console overlay — trash view, dir consoles). Footer-line modals do
+    /// not cover the preview column.
+    fn overlay_active(&self) -> bool {
+        matches!(&self.mode, Mode::Modal(m) if m.region() == ModalRegion::ConsoleOverlay)
     }
 
     /// The y-range panels may actually draw in: the layout's `y_range` minus
@@ -1676,6 +1695,7 @@ impl PanelManager {
                 .iter()
                 .map(|(c, m)| (c.to_string(), m.dir.clone()))
                 .collect(),
+            image_protocol: super::graphics::protocol().name().to_string(),
         }
     }
 
@@ -2472,6 +2492,9 @@ impl PanelManager {
         }
         if let Event::Resize(sx, sy) = event {
             self.layout = MillerColumns::from_size((sx, sy));
+            // A resize may mean a font change: re-derive the cell pixel
+            // geometry (pure ioctl, no stdin involvement).
+            super::graphics::refresh_geometry();
             self.mark_dirty();
         }
         Ok(None)

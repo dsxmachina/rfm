@@ -22,6 +22,7 @@ use tokio::sync::mpsc;
 use crate::{content::PanelCache, engine::commands::Move};
 
 mod directory;
+pub mod graphics;
 mod input;
 pub mod manager;
 pub mod mode;

@@ -59,6 +59,25 @@ fn default_true() -> bool {
     true
 }
 
+/// Which terminal graphics protocol the image preview may use.
+///
+/// `Auto` (the default) resolves at startup: env heuristics first, then a
+/// bounded terminal probe; on any uncertainty it falls back to `HalfBlock`,
+/// the universal cell-based renderer. Explicit values pin the protocol and
+/// skip probing — the escape hatch for terminals that misreport. (They are
+/// honored inside tmux too, but rfm emits raw sequences without tmux's
+/// passthrough wrapping, so a pinned protocol only renders there if tmux
+/// itself supports it.)
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ImageProtocolChoice {
+    #[default]
+    Auto,
+    Kitty,
+    Sixel,
+    HalfBlock,
+}
+
 #[derive(Deserialize, Debug)]
 pub struct GeneralConfig {
     /// Move deleted files to the freedesktop trash (undoable) instead of
@@ -74,6 +93,11 @@ pub struct GeneralConfig {
     /// install stays pure-Rust — PDFs then get the native text tier.
     #[serde(default)]
     pub pdf_render: bool,
+    /// Graphics protocol for image previews: auto | kitty | sixel |
+    /// half-block. Defaults to `auto` (detect at startup, fall back to
+    /// half-blocks on any uncertainty).
+    #[serde(default)]
+    pub image_protocol: ImageProtocolChoice,
     /// Rate limit interval for preview updates in milliseconds
     #[serde(default = "default_rate_limit_interval")]
     pub rate_limit_interval_ms: u64,
@@ -108,6 +132,28 @@ mod defaults_tests {
         assert!(g.preview_cache);
         let g: GeneralConfig = toml::from_str("preview_cache = false").unwrap();
         assert!(!g.preview_cache);
+    }
+
+    #[test]
+    fn image_protocol_defaults_to_auto() {
+        let g: GeneralConfig = toml::from_str("").unwrap();
+        assert_eq!(g.image_protocol, ImageProtocolChoice::Auto);
+    }
+
+    #[test]
+    fn image_protocol_parses_all_values() {
+        for (raw, want) in [
+            ("auto", ImageProtocolChoice::Auto),
+            ("kitty", ImageProtocolChoice::Kitty),
+            ("sixel", ImageProtocolChoice::Sixel),
+            ("half-block", ImageProtocolChoice::HalfBlock),
+        ] {
+            let g: GeneralConfig = toml::from_str(&format!("image_protocol = \"{raw}\""))
+                .unwrap_or_else(|e| panic!("'{raw}' must parse: {e}"));
+            assert_eq!(g.image_protocol, want, "for input '{raw}'");
+        }
+        // serde rename is exact: no aliasing of the kebab-case value
+        assert!(toml::from_str::<GeneralConfig>("image_protocol = \"halfblock\"").is_err());
     }
 
     #[test]
