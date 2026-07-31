@@ -198,11 +198,20 @@ pinned `>=0.36, <0.37` with `default-features = false, features =
 single-threaded, which the guard's `thread_local!` budget relies on).
 lopdf's stream decompression is unbounded, so `load_pdf_guarded` arms a
 per-document budget (`PDF_DECOMP_BUDGET`, 64 MiB) and a
-`load_filtered` guard filter that size-verifies every compressed
-stream BEFORE lopdf inflates it (counting zlib decode / pessimistic
-1032:1 for LZW+chains; over budget → object dropped, budget zeroed);
-the source itself is bounded by a `PDF_SOURCE_MAX` (32 MiB) pre-check
-and lines by `PDF_LINE_MAX`. The image tier is gated by `pdf_render`
+`load_filtered` guard filter that size-verifies every *object-loop*
+stream BEFORE lopdf inflates it (counting zlib decode for a sole
+FlateDecode / pessimistic `1032^k:1` for LZW or a k-stage inflating
+chain — the single 1032 multiply undercounts a flate-of-flate bomb;
+over budget → object dropped, budget zeroed). The guard filter does
+NOT cover cross-reference STREAMS (`/Type /XRef /Filter /FlateDecode`,
+plus any `/Prev` / `/XRefStm` chain): lopdf inflates those in
+`decode_xref_stream` during xref parsing, BEFORE any FilterFunc exists,
+so a 48 KiB ratio-bomb xref stream would OOM the process on plain
+cursor navigation. `pdf_xref_streams_within_budget` pre-scans the raw
+bytes and rejects the file before handing it to lopdf (same
+counting/pessimistic charge; conservative — classic `xref` tables and
+ambiguous cases pass through). The source itself is bounded by a
+`PDF_SOURCE_MAX` (32 MiB) pre-check and lines by `PDF_LINE_MAX`. The image tier is gated by `pdf_render`
 (config, default OFF — hard off, no auto-enable) + a two-candidate
 probe (`pdftoppm -v`, else `mutool -v`; accepted on spawn AND (success
 OR "version" in output)); it renders into the raster cache under kind

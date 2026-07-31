@@ -105,8 +105,13 @@ impl log::Log for LogBuffer {
         }
         drop(history);
         // The display buffer (log widget) only shows Info and above; debug
-        // and trace detail is retained in the history for the debug socket
-        if record.level() <= Level::Info {
+        // and trace detail is retained in the history for the debug socket.
+        // A dependency's own Warn/Error (e.g. lopdf's "Using standard
+        // encoding as a fallback!" on a perfectly valid PDF) is noise on
+        // the user-facing widget — keep it in history but never display it;
+        // only rfm's own Warn/Error, plus foreign Info, surface on screen.
+        let displayable = record.level() == Level::Info || record.target().starts_with("rfm");
+        if record.level() <= Level::Info && displayable {
             let mut inner = self.buffer.lock();
             inner.push_back((record.level(), Instant::now(), line));
             if inner.len() > self.capacity {
@@ -169,6 +174,30 @@ mod tests {
         assert_eq!(
             history,
             vec!["foreign info".to_string(), "own detail".to_string()]
+        );
+    }
+
+    #[test]
+    fn dependency_warnings_stay_out_of_the_display_widget() {
+        // lopdf emits Warn on some perfectly valid PDFs ("Using standard
+        // encoding as a fallback!"). It must be retained in history but
+        // never reach the on-screen widget; rfm's own Warn still shows.
+        let buffer = LogBuffer::default();
+        log_line_from(&buffer, Level::Warn, "lopdf fallback", "lopdf::encodings");
+        log_line_from(&buffer, Level::Warn, "rfm warning", "rfm::panel::preview");
+
+        let displayed: Vec<String> = buffer.get().into_iter().map(|(_, msg)| msg).collect();
+        assert_eq!(displayed, vec!["rfm warning".to_string()]);
+
+        let history: Vec<String> = buffer
+            .history(10)
+            .into_iter()
+            .map(|(_, _, msg)| msg)
+            .collect();
+        assert_eq!(
+            history,
+            vec!["lopdf fallback".to_string(), "rfm warning".to_string()],
+            "the dependency warning must still be in history"
         );
     }
 

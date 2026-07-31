@@ -1714,48 +1714,69 @@ thread_local! {
     static PDF_BUDGET: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// How many bytes lopdf would materialize when decompressing `stream`,
-/// bounded probes only — never more than `budget + 1` counting bytes.
-/// `None` means unmeasurable-or-over-budget: drop the stream.
+/// Max single-stage deflate/LZW expansion ratio (1032:1).
+const MAX_INFLATE_RATIO: u64 = 1032;
+
+/// True for a filter name that inflates its input (deflate / LZW).
+fn is_inflating_filter(name: &[u8]) -> bool {
+    name == b"FlateDecode" || name == b"LZWDecode"
+}
+
+/// Counting-decompress `content` as zlib through a `Take`'d sink,
+/// never reading past `budget + 1` output bytes. A mid-stream zlib
+/// error bounds lopdf's own partial `read_to_end` at the same offset,
+/// so the returned count matches what lopdf would materialize.
+fn flate_output_len(content: &[u8], budget: u64) -> u64 {
+    let mut n: u64 = 0;
+    let mut decoder = flate2::read::ZlibDecoder::new(content).take(budget.saturating_add(1));
+    let mut buf = [0u8; 16 * 1024];
+    loop {
+        match decoder.read(&mut buf) {
+            Ok(0) => break,
+            Ok(k) => n += k as u64,
+            Err(_) => break,
+        }
+    }
+    n
+}
+
+/// How many bytes lopdf would materialize when decompressing `content`
+/// through `filters`, bounded probes only — never more than
+/// `budget + 1` counting bytes. `None` means over budget: drop it.
 ///
-/// - FlateDecode (sole filter): counting-decompress through a Take'd
-///   sink; a mid-stream zlib error bounds lopdf's own partial
-///   `read_to_end` at the same byte, so the count stays correct.
-/// - LZWDecode, or any chain still containing an inflating filter
-///   (e.g. ASCII85+Flate — the raw bytes cannot be counting-decoded):
-///   charge pessimistically at the max deflate/LZW ratio (1032:1).
+/// - FlateDecode (sole filter): counting-decompress exactly.
+/// - Any other chain containing an inflating filter (LZWDecode, or a
+///   multi-stage chain like [FlateDecode FlateDecode] / [ASCII85Decode
+///   FlateDecode] whose raw bytes cannot be counting-decoded): charge
+///   pessimistically at `MAX_INFLATE_RATIO ^ k`, where `k` is the
+///   number of inflating stages. A k-deep flate chain inflates up to
+///   1032^k (each stage decompresses the previous stage's output), so
+///   a single 1032:1 multiply undercounts — this raises it to the true
+///   upper bound (non-inflating stages like ASCII85 only shrink).
 /// - DCT/ASCII85/plain pass at zero: lopdf never inflates DCT,
 ///   ASCII85 shrinks, and plain content is bounded by PDF_SOURCE_MAX.
-fn pdf_stream_charge(stream: &lopdf::Stream, budget: u64) -> Option<u64> {
-    const MAX_INFLATE_RATIO: u64 = 1032;
-    let filters = match stream.filters() {
-        Ok(filters) => filters,
-        // No/unreadable Filter entry: plain content, nothing inflates.
-        Err(_) => return Some(0),
-    };
-    let inflating = |f: &&[u8]| matches!(**f, ref n if n == b"FlateDecode" || n == b"LZWDecode");
-    if filters.first().map(|f| *f == b"FlateDecode").unwrap_or(false) && filters.len() == 1 {
-        let mut n: u64 = 0;
-        let mut decoder = flate2::read::ZlibDecoder::new(stream.content.as_slice())
-            .take(budget.saturating_add(1));
-        let mut buf = [0u8; 16 * 1024];
-        loop {
-            match decoder.read(&mut buf) {
-                Ok(0) => break,
-                Ok(k) => n += k as u64,
-                // Broken zlib: lopdf's own read_to_end fails at the
-                // same offset, materializing only the bytes counted so
-                // far — charge those.
-                Err(_) => break,
-            }
-        }
+fn inflation_charge(content: &[u8], filters: &[&[u8]], budget: u64) -> Option<u64> {
+    if filters.len() == 1 && filters[0] == b"FlateDecode" {
+        let n = flate_output_len(content, budget);
         return (n <= budget).then_some(n);
     }
-    if filters.iter().any(inflating) {
-        let charge = (stream.content.len() as u64).saturating_mul(MAX_INFLATE_RATIO);
+    let stages = filters.iter().filter(|f| is_inflating_filter(f)).count() as u32;
+    if stages > 0 {
+        let ratio = MAX_INFLATE_RATIO.checked_pow(stages).unwrap_or(u64::MAX);
+        let charge = (content.len() as u64).saturating_mul(ratio);
         return (charge <= budget).then_some(charge);
     }
     Some(0)
+}
+
+/// How many bytes lopdf would materialize when decompressing `stream`.
+/// `None` means over budget: drop the stream. See [`inflation_charge`].
+fn pdf_stream_charge(stream: &lopdf::Stream, budget: u64) -> Option<u64> {
+    match stream.filters() {
+        Ok(filters) => inflation_charge(&stream.content, &filters, budget),
+        // No/unreadable Filter entry: plain content, nothing inflates.
+        Err(_) => Some(0),
+    }
 }
 
 /// lopdf's decompress_zlib/_lzw are unbounded read_to_ends — verify
@@ -1786,6 +1807,120 @@ fn pdf_guard_filter(
     Some((id, object.clone()))
 }
 
+/// The `pdf_guard_filter` above bounds every *object-loop* stream, but
+/// lopdf inflates PDF-1.5+ cross-reference STREAMS (`/Type /XRef` with
+/// `/Filter /FlateDecode`) far earlier — inside `xref_and_trailer ->
+/// decode_xref_stream -> Stream::decompress` (an unbounded
+/// `read_to_end`) — before any `FilterFunc` exists in the flow. That
+/// path (and the `/Prev` / `/XRefStm` chain of linked xref streams) is
+/// therefore exempt from `PDF_BUDGET`; a small file whose xref stream
+/// inflates to GiBs (compression-ratio bomb + huge `/Size`) would OOM
+/// the process on plain cursor navigation. Since `load_filtered`'s
+/// guard cannot reach it, we pre-scan the raw bytes and reject the file
+/// before handing it to lopdf.
+///
+/// Conservative by construction: it returns `true` (let lopdf proceed)
+/// for every ambiguous or classic-`xref`-table case, and only `false`
+/// when a compressed xref stream is positively measured over budget.
+/// It scans every stream object carrying the `/XRef` type marker —
+/// which covers whichever ones the `startxref`/`/Prev`/`/XRefStm` chain
+/// actually reaches — and charges each with the same
+/// counting-decompress / pessimistic-ratio logic as the object guard.
+fn pdf_xref_streams_within_budget(bytes: &[u8], budget: u64) -> bool {
+    let mut cursor = 0usize;
+    while let Some(rel) = find_bytes(&bytes[cursor..], b"stream") {
+        let kw = cursor + rel;
+        cursor = kw + b"stream".len();
+        // Skip the "stream" inside "endstream".
+        if kw >= 3 && &bytes[kw - 3..kw] == b"end" {
+            continue;
+        }
+        // The stream's dictionary lies between its `N G obj` marker and
+        // the `stream` keyword. The nearest preceding `obj` is this
+        // object's own declaration.
+        let dict_start = rfind_bytes(&bytes[..kw], b"obj")
+            .map(|p| p + 3)
+            .unwrap_or(0);
+        let dict = &bytes[dict_start..kw];
+        if find_bytes(dict, b"/XRef").is_none() {
+            continue; // not a cross-reference stream (ObjStm, content, …)
+        }
+        // Stream data: after the keyword's EOL, up to `endstream`.
+        let mut data_start = kw + b"stream".len();
+        if bytes.get(data_start) == Some(&b'\r') {
+            data_start += 1;
+        }
+        if bytes.get(data_start) == Some(&b'\n') {
+            data_start += 1;
+        }
+        let data_end = find_bytes(&bytes[data_start..], b"endstream")
+            .map(|r| data_start + r)
+            .unwrap_or(bytes.len());
+        let content = &bytes[data_start..data_end.max(data_start)];
+        let filters = xref_stream_filters(dict);
+        if inflation_charge(content, &filters, budget).is_none() {
+            log::debug!("pdf cross-reference stream exceeds the decompression budget, rejecting");
+            return false;
+        }
+    }
+    true
+}
+
+/// The `/Filter` names of an xref-stream dictionary (raw dict bytes).
+/// Empty when there is no `/Filter` (an uncompressed xref stream —
+/// bounded by the source itself). Handles both `/Filter /FlateDecode`
+/// and `/Filter [/FlateDecode …]`.
+fn xref_stream_filters(dict: &[u8]) -> Vec<&[u8]> {
+    let Some(rel) = find_bytes(dict, b"/Filter") else {
+        return Vec::new();
+    };
+    let mut rest = &dict[rel + b"/Filter".len()..];
+    // Skip whitespace.
+    while rest.first().is_some_and(|b| b.is_ascii_whitespace()) {
+        rest = &rest[1..];
+    }
+    let mut names = Vec::new();
+    if rest.first() == Some(&b'[') {
+        rest = &rest[1..];
+        while let Some(pos) = rest.iter().position(|&b| b == b'/' || b == b']') {
+            if rest[pos] == b']' {
+                break;
+            }
+            rest = &rest[pos + 1..];
+            let end = rest
+                .iter()
+                .position(|&b| b.is_ascii_whitespace() || b == b'/' || b == b']' || b == b'[')
+                .unwrap_or(rest.len());
+            names.push(&rest[..end]);
+            rest = &rest[end..];
+        }
+    } else if rest.first() == Some(&b'/') {
+        rest = &rest[1..];
+        let end = rest
+            .iter()
+            .position(|&b| b.is_ascii_whitespace() || b == b'/' || b == b'[' || b == b'>')
+            .unwrap_or(rest.len());
+        names.push(&rest[..end]);
+    }
+    names
+}
+
+/// First index of `needle` in `haystack`.
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Last index of `needle` in `haystack`.
+fn rfind_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).rposition(|w| w == needle)
+}
+
 /// Bounded lopdf load: size pre-check, budget arm, guarded parse.
 fn load_pdf_guarded(path: &Path) -> anyhow::Result<lopdf::Document> {
     load_pdf_guarded_bounded(path, PDF_SOURCE_MAX, PDF_DECOMP_BUDGET)
@@ -1804,6 +1939,13 @@ fn load_pdf_guarded_bounded(
     anyhow::ensure!(
         len <= source_max,
         "pdf too large for the text tier ({len} bytes)"
+    );
+    // Cross-reference streams are inflated by lopdf BEFORE the object
+    // guard runs; bound them here or a 48 KiB file can OOM the process.
+    let bytes = read_bounded(path, source_max)?;
+    anyhow::ensure!(
+        pdf_xref_streams_within_budget(&bytes, budget),
+        "pdf cross-reference stream exceeds the decompression budget"
     );
     PDF_BUDGET.with(|b| b.set(budget));
     Ok(lopdf::Document::load_filtered(path, pdf_guard_filter)?)
@@ -1860,7 +2002,10 @@ fn native_pdf_lines(doc: &lopdf::Document, path: &Path) -> Vec<String> {
     let n_pages = doc.get_pages().len();
     let pages_word = if n_pages == 1 { "page" } else { "pages" };
     if doc.is_encrypted() {
-        let mut lines = vec![format!("encrypted PDF ({n_pages} {pages_word})"), String::new()];
+        let mut lines = vec![
+            format!("encrypted PDF ({n_pages} {pages_word})"),
+            String::new(),
+        ];
         lines.extend(size_modified_lines(path));
         return lines;
     }
@@ -4113,8 +4258,7 @@ mod pdf_tests {
         let count = pages.len() as i64;
         for ops in pages {
             let content = Content { operations: ops };
-            let content_id =
-                doc.add_object(Stream::new(dictionary! {}, content.encode().unwrap()));
+            let content_id = doc.add_object(Stream::new(dictionary! {}, content.encode().unwrap()));
             let page_id = doc.add_object(dictionary! {
                 "Type" => "Page",
                 "Parent" => pages_id,
@@ -4184,8 +4328,7 @@ mod pdf_tests {
         let mut doc = build_pdf("Bomb", vec![page_ops(1)]);
         let mut inflated = b"BT /F1 24 Tf (BOMB MARKER) Tj ET\n".to_vec();
         inflated.resize(inflated_len, b' ');
-        let mut enc =
-            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
         enc.write_all(&inflated).unwrap();
         let compressed = enc.finish().unwrap();
         let bomb_id = doc.add_object(
@@ -4275,10 +4418,7 @@ mod pdf_tests {
         let pdf = save_pdf(tmp.path(), "long.pdf", build_pdf("Long", vec![ops]));
         let lines = text_tier_lines(&pdf);
         assert!(lines.len() <= 128, "cap must hold, got {}", lines.len());
-        assert!(
-            lines.iter().any(|l| l.contains("body line 0")),
-            "{lines:?}"
-        );
+        assert!(lines.iter().any(|l| l.contains("body line 0")), "{lines:?}");
         assert!(
             lines.iter().all(|l| !l.contains("body line 199")),
             "the tail past the cap must be dropped"
@@ -4546,6 +4686,122 @@ mod pdf_tests {
             Ok(_) => panic!("expected a text preview"),
             Err(_) => {} // an error is a valid terminating outcome
         }
+    }
+
+    fn zlib_compress(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        enc.write_all(data).unwrap();
+        enc.finish().unwrap()
+    }
+
+    /// Hand-assemble a minimal PDF-1.5 whose cross-reference is a
+    /// `/Filter /FlateDecode` xref STREAM (which lopdf's `save_to` never
+    /// emits — it writes classic tables). The xref stream inflates to
+    /// `xref_padding` bytes of trailing filler beyond the 25 real entry
+    /// bytes; a large `xref_padding` is a compression-ratio bomb that
+    /// lopdf inflates during xref parsing, BEFORE the object guard runs.
+    fn make_xref_stream_pdf(dir: &Path, name: &str, xref_padding: usize) -> PathBuf {
+        // W = [1 2 1]: type(1) offset(2) gen(1). Objects fit under 64 KiB
+        // so 2-byte offsets suffice.
+        fn entry(v: &mut Vec<u8>, t: u8, off: u32, gen: u8) {
+            v.push(t);
+            v.push((off >> 8) as u8);
+            v.push(off as u8);
+            v.push(gen);
+        }
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(b"%PDF-1.5\n%\xE2\xE3\xCF\xD3\n");
+        let mut off = [0usize; 5];
+        off[1] = buf.len();
+        buf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+        off[2] = buf.len();
+        buf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+        off[3] = buf.len();
+        buf.extend_from_slice(
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>\nendobj\n",
+        );
+        // Object 4 is the xref stream itself.
+        off[4] = buf.len();
+        let mut xref = Vec::new();
+        entry(&mut xref, 0, 0, 255); // object 0: the free-list head
+        for &obj_off in &off[1..=4] {
+            entry(&mut xref, 1, obj_off as u32, 0);
+        }
+        xref.resize(xref.len() + xref_padding, 0);
+        let compressed = zlib_compress(&xref);
+        let dict = format!(
+            "<< /Type /XRef /Size 5 /Index [0 5] /W [1 2 1] /Root 1 0 R /Length {} /Filter /FlateDecode >>",
+            compressed.len()
+        );
+        buf.extend_from_slice(format!("4 0 obj\n{dict}\nstream\n").as_bytes());
+        buf.extend_from_slice(&compressed);
+        buf.extend_from_slice(b"\nendstream\nendobj\n");
+        buf.extend_from_slice(format!("startxref\n{}\n%%EOF", off[4]).as_bytes());
+        let path = dir.join(name);
+        std::fs::write(&path, buf).unwrap();
+        path
+    }
+
+    #[test]
+    fn valid_xref_stream_pdf_loads() {
+        // Guards against over-rejection: a legitimate (tiny) xref stream
+        // must still parse through the pre-scan and into lopdf.
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = make_xref_stream_pdf(tmp.path(), "modern.pdf", 0);
+        let doc = load_pdf_guarded_bounded(&pdf, PDF_SOURCE_MAX, PDF_DECOMP_BUDGET)
+            .expect("a valid xref-stream pdf must load");
+        assert_eq!(doc.get_pages().len(), 1);
+    }
+
+    #[test]
+    fn xref_stream_flate_bomb_is_rejected_before_lopdf_inflates_it() {
+        // The bomb inflates to ~4 MiB from a few hundred compressed
+        // bytes; under a 1 MiB budget the pre-scan must reject the file
+        // WITHOUT handing it to lopdf (whose xref parsing would inflate
+        // it fully — the object guard never sees an xref stream). This
+        // is the compressed-xref-stream OOM class from cursor nav.
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = make_xref_stream_pdf(tmp.path(), "bomb.pdf", 4 * 1024 * 1024);
+        // Sanity: on-disk size stays tiny (a real ratio bomb).
+        assert!(
+            std::fs::metadata(&pdf).unwrap().len() < 64 * 1024,
+            "the compressed bomb must be small on disk"
+        );
+        let res = load_pdf_guarded_bounded(&pdf, PDF_SOURCE_MAX, 1024 * 1024);
+        assert!(
+            res.is_err(),
+            "the xref-stream decompression bomb must be rejected"
+        );
+    }
+
+    #[test]
+    fn chained_flate_filters_are_charged_super_linearly() {
+        // A stream with /Filter [/FlateDecode /FlateDecode] inflates up
+        // to 1032^2 : 1, not 1032 : 1. The pre-fix single multiply
+        // (content.len() * 1032) kept ~980 bytes under the 64 MiB
+        // budget; the true bound 980 * 1032^2 ~= 1 GiB is over budget,
+        // so the charge must report None (drop the stream).
+        let content = vec![0u8; 980];
+        let stream = Stream::new(
+            dictionary! {
+                "Filter" => vec![Object::from("FlateDecode"), Object::from("FlateDecode")],
+            },
+            content,
+        )
+        .with_compression(false);
+        assert!(
+            pdf_stream_charge(&stream, PDF_DECOMP_BUDGET).is_none(),
+            "a two-stage flate chain must be charged 1032^2, over budget"
+        );
+        // A single FlateDecode of the same size is still counted exactly
+        // (and here decodes to near-nothing, well under budget).
+        let single = Stream::new(
+            dictionary! { "Filter" => "FlateDecode" },
+            zlib_compress(b"hello"),
+        )
+        .with_compression(false);
+        assert!(pdf_stream_charge(&single, PDF_DECOMP_BUDGET).is_some());
     }
 }
 
