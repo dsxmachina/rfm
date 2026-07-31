@@ -207,10 +207,10 @@ mod tests {
             "[open]\nsize = 1\n",
         ));
         let user = v(concat!(
-            "custom_key = 5\n", // (a) user-only key, absent from defaults
-            "[keys.movement]\nundo = []\n", // (d) emptied array vs default ["u"]
+            "custom_key = 5\n",                // (a) user-only key, absent from defaults
+            "[keys.movement]\nundo = []\n",    // (d) emptied array vs default ["u"]
             "[general]\nfancy_icons = true\n", // (b) nested table override
-            "open = \"scalar\"\n", // (c) user scalar where default has a table
+            "open = \"scalar\"\n",             // (c) user scalar where default has a table
         ));
 
         let mut effective = defaults.clone();

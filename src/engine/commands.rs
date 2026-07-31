@@ -472,21 +472,69 @@ impl CommandParser {
         // The fixed field table: (user field, default field, command).
         // `jump_to` and the jump-mark prefixes are handled separately below.
         let table = [
-            (&user.general.search, &defaults.general.search, Command::Search),
+            (
+                &user.general.search,
+                &defaults.general.search,
+                Command::Search,
+            ),
             (&user.general.mark, &defaults.general.mark, Command::Mark),
             (&user.general.next, &defaults.general.next, Command::Next),
-            (&user.general.previous, &defaults.general.previous, Command::Previous),
-            (&user.general.toggle_hidden, &defaults.general.toggle_hidden, Command::ToggleHidden),
-            (&user.general.toggle_log, &defaults.general.toggle_log, Command::ToggleLog),
-            (&user.general.view_trash, &defaults.general.view_trash, Command::ViewTrash),
+            (
+                &user.general.previous,
+                &defaults.general.previous,
+                Command::Previous,
+            ),
+            (
+                &user.general.toggle_hidden,
+                &defaults.general.toggle_hidden,
+                Command::ToggleHidden,
+            ),
+            (
+                &user.general.toggle_log,
+                &defaults.general.toggle_log,
+                Command::ToggleLog,
+            ),
+            (
+                &user.general.view_trash,
+                &defaults.general.view_trash,
+                Command::ViewTrash,
+            ),
             (&user.general.quit, &defaults.general.quit, Command::Quit),
-            (&user.general.quit_no_cd, &defaults.general.quit_no_cd, Command::QuitWithoutPath),
-            (&user.movement.up, &defaults.movement.up, Command::Move(Move::Up)),
-            (&user.movement.down, &defaults.movement.down, Command::Move(Move::Down)),
-            (&user.movement.left, &defaults.movement.left, Command::Move(Move::Left)),
-            (&user.movement.right, &defaults.movement.right, Command::Move(Move::Right)),
-            (&user.movement.top, &defaults.movement.top, Command::Move(Move::Top)),
-            (&user.movement.bottom, &defaults.movement.bottom, Command::Move(Move::Bottom)),
+            (
+                &user.general.quit_no_cd,
+                &defaults.general.quit_no_cd,
+                Command::QuitWithoutPath,
+            ),
+            (
+                &user.movement.up,
+                &defaults.movement.up,
+                Command::Move(Move::Up),
+            ),
+            (
+                &user.movement.down,
+                &defaults.movement.down,
+                Command::Move(Move::Down),
+            ),
+            (
+                &user.movement.left,
+                &defaults.movement.left,
+                Command::Move(Move::Left),
+            ),
+            (
+                &user.movement.right,
+                &defaults.movement.right,
+                Command::Move(Move::Right),
+            ),
+            (
+                &user.movement.top,
+                &defaults.movement.top,
+                Command::Move(Move::Top),
+            ),
+            (
+                &user.movement.bottom,
+                &defaults.movement.bottom,
+                Command::Move(Move::Bottom),
+            ),
             (
                 &user.movement.page_forward,
                 &defaults.movement.page_forward,
@@ -522,12 +570,36 @@ impl CommandParser {
                 &defaults.manipulation.zoxide_query,
                 Command::Cd { zoxide: true },
             ),
-            (&user.manipulation.rename, &defaults.manipulation.rename, Command::Rename),
-            (&user.manipulation.mkdir, &defaults.manipulation.mkdir, Command::Mkdir),
-            (&user.manipulation.touch, &defaults.manipulation.touch, Command::Touch),
-            (&user.manipulation.cut, &defaults.manipulation.cut, Command::Cut),
-            (&user.manipulation.copy, &defaults.manipulation.copy, Command::Copy),
-            (&user.manipulation.delete, &defaults.manipulation.delete, Command::Delete),
+            (
+                &user.manipulation.rename,
+                &defaults.manipulation.rename,
+                Command::Rename,
+            ),
+            (
+                &user.manipulation.mkdir,
+                &defaults.manipulation.mkdir,
+                Command::Mkdir,
+            ),
+            (
+                &user.manipulation.touch,
+                &defaults.manipulation.touch,
+                Command::Touch,
+            ),
+            (
+                &user.manipulation.cut,
+                &defaults.manipulation.cut,
+                Command::Cut,
+            ),
+            (
+                &user.manipulation.copy,
+                &defaults.manipulation.copy,
+                Command::Copy,
+            ),
+            (
+                &user.manipulation.delete,
+                &defaults.manipulation.delete,
+                Command::Delete,
+            ),
             (
                 &user.manipulation.paste,
                 &defaults.manipulation.paste,
@@ -538,19 +610,67 @@ impl CommandParser {
                 &defaults.manipulation.paste_overwrite,
                 Command::Paste { overwrite: true },
             ),
-            (&user.manipulation.zip, &defaults.manipulation.zip, Command::Zip),
-            (&user.manipulation.tar, &defaults.manipulation.tar, Command::Tar),
-            (&user.manipulation.extract, &defaults.manipulation.extract, Command::Extract),
-            (&user.manipulation.undo, &defaults.manipulation.undo, Command::Undo),
-            (&user.manipulation.redo, &defaults.manipulation.redo, Command::Redo),
-            (&user.tabs.toggle_split, &defaults.tabs.toggle_split, Command::ToggleSplit),
-            (&user.tabs.focus_next, &defaults.tabs.focus_next, Command::FocusNext),
+            (
+                &user.manipulation.zip,
+                &defaults.manipulation.zip,
+                Command::Zip,
+            ),
+            (
+                &user.manipulation.tar,
+                &defaults.manipulation.tar,
+                Command::Tar,
+            ),
+            (
+                &user.manipulation.extract,
+                &defaults.manipulation.extract,
+                Command::Extract,
+            ),
+            (
+                &user.manipulation.undo,
+                &defaults.manipulation.undo,
+                Command::Undo,
+            ),
+            (
+                &user.manipulation.redo,
+                &defaults.manipulation.redo,
+                Command::Redo,
+            ),
+            (
+                &user.tabs.toggle_split,
+                &defaults.tabs.toggle_split,
+                Command::ToggleSplit,
+            ),
+            (
+                &user.tabs.focus_next,
+                &defaults.tabs.focus_next,
+                Command::FocusNext,
+            ),
             (&user.tabs.new_tab, &defaults.tabs.new_tab, Command::NewTab),
-            (&user.tabs.close_tab, &defaults.tabs.close_tab, Command::CloseTab),
-            (&user.tabs.focus_tab_1, &defaults.tabs.focus_tab_1, Command::FocusTab(1)),
-            (&user.tabs.focus_tab_2, &defaults.tabs.focus_tab_2, Command::FocusTab(2)),
-            (&user.tabs.focus_tab_3, &defaults.tabs.focus_tab_3, Command::FocusTab(3)),
-            (&user.tabs.focus_tab_4, &defaults.tabs.focus_tab_4, Command::FocusTab(4)),
+            (
+                &user.tabs.close_tab,
+                &defaults.tabs.close_tab,
+                Command::CloseTab,
+            ),
+            (
+                &user.tabs.focus_tab_1,
+                &defaults.tabs.focus_tab_1,
+                Command::FocusTab(1),
+            ),
+            (
+                &user.tabs.focus_tab_2,
+                &defaults.tabs.focus_tab_2,
+                Command::FocusTab(2),
+            ),
+            (
+                &user.tabs.focus_tab_3,
+                &defaults.tabs.focus_tab_3,
+                Command::FocusTab(3),
+            ),
+            (
+                &user.tabs.focus_tab_4,
+                &defaults.tabs.focus_tab_4,
+                Command::FocusTab(4),
+            ),
         ];
 
         // --- Pass 1: user bindings claim key space. `Some(vec![])` is an
@@ -1103,7 +1223,6 @@ focus_tab_1 = ["1"]
         assert!(matches!(p.add_event(key('g')), Command::None));
         assert!(matches!(p.add_event(key('n')), Command::NewTab));
     }
-
 }
 
 #[cfg(test)]
@@ -1193,8 +1312,11 @@ mod builder_tests {
         );
         let (mut p, dropped) = CommandParser::build(&defaults(), &KeyConfig::default(), &cmds);
         assert!(dropped.iter().any(|d| d.binding == "f" && d.from_user));
-        assert!(matches!(press2(&mut p, 'f', 'f'), Command::UserCommand { .. })); // chord reachable now
-        // "/" and "search" (other search defaults, no prefix relation) must survive:
+        assert!(matches!(
+            press2(&mut p, 'f', 'f'),
+            Command::UserCommand { .. }
+        )); // chord reachable now
+            // "/" and "search" (other search defaults, no prefix relation) must survive:
         assert!(matches!(press(&mut p, '/'), Command::Search));
     }
 

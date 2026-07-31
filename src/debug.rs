@@ -147,7 +147,10 @@ pub enum DebugCommand {
     AwaitIdle,
     /// `entries [<tab>] left|center`. `tab` is a 0-based index; `None` targets
     /// the focused tab.
-    Entries { tab: Option<usize>, pane: PaneId },
+    Entries {
+        tab: Option<usize>,
+        pane: PaneId,
+    },
     Log(Option<usize>),
 }
 
@@ -357,7 +360,10 @@ mod tests {
         assert!(json.contains("\"view\":\"split\""));
         assert!(json.contains("\"focused\":1"));
         assert!(json.contains("\"tabs\":["));
-        assert!(json.contains("/tmp/one"), "tabs array missing tab 0: {json}");
+        assert!(
+            json.contains("/tmp/one"),
+            "tabs array missing tab 0: {json}"
+        );
         // Backward-compat scalar fields still present, mirroring focused tab.
         assert!(json.contains("\"cwd\":\"/tmp/fixture\""));
         assert!(json.contains("\"selection\":\"b.txt\""));

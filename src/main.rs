@@ -321,7 +321,11 @@ async fn main() -> anyhow::Result<()> {
     let state_dir = util::xdg_state_home().map(|p| p.join("rfm")).ok();
     let version = env!("CARGO_PKG_VERSION");
     if let Some(dir) = &state_dir {
-        if config::app_state::read(dir).upgrade_notice_seen_for.as_deref() != Some(version) {
+        if config::app_state::read(dir)
+            .upgrade_notice_seen_for
+            .as_deref()
+            != Some(version)
+        {
             panel_manager.maybe_show_upgrade_notice(
                 &dropped,
                 loaded.legacy_folded,

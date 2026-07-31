@@ -157,7 +157,9 @@ pub fn migrate(config_dir: &Path) -> anyhow::Result<Vec<String>> {
     // differs from the embedded defaults (None → empty file, just the header).
     let diff = diff_from_defaults(&default_tree(), &user_tree);
     let body = match &diff {
-        Some(tree) => toml::to_string_pretty(tree).context("cannot serialize the migrated config")?,
+        Some(tree) => {
+            toml::to_string_pretty(tree).context("cannot serialize the migrated config")?
+        }
         None => String::new(),
     };
 
@@ -424,7 +426,11 @@ mod tests {
     #[test]
     fn new_format_keys_table_beats_legacy_keys_toml() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.toml"), "[keys.movement]\nup = [\"a\"]").unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[keys.movement]\nup = [\"a\"]",
+        )
+        .unwrap();
         std::fs::write(dir.path().join("keys.toml"), "[movement]\nup = [\"b\"]").unwrap();
         let loaded = load(dir.path());
         assert_eq!(loaded.parser_input.movement.up, Some(vec!["a".into()]));
@@ -503,15 +509,16 @@ mod tests {
     #[test]
     fn unknown_key_warns_but_loads() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.toml"), "[general]\nuse_trsah = false").unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[general]\nuse_trsah = false",
+        )
+        .unwrap();
         let loaded = load(dir.path());
         assert!(loaded.config.general.use_trash); // typo ≠ applied
-        assert!(loaded
-            .warnings
-            .iter()
-            .any(|w| w.contains("use_trsah")
-                && w.contains("did you mean")
-                && w.contains("`use_trash`")));
+        assert!(loaded.warnings.iter().any(|w| w.contains("use_trsah")
+            && w.contains("did you mean")
+            && w.contains("`use_trash`")));
     }
 
     #[test]
@@ -558,7 +565,11 @@ mod tests {
     #[test]
     fn migrate_refuses_to_clobber_existing_backup() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.toml"), "[general]\nfancy_icons = true").unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[general]\nfancy_icons = true",
+        )
+        .unwrap();
         std::fs::write(dir.path().join("keys.toml"), "[movement]\nup = [\"x\"]").unwrap();
         migrate(dir.path()).unwrap();
         let after_first = dir_snapshot(dir.path());
@@ -581,7 +592,11 @@ mod tests {
     fn migrate_load_equivalence() {
         // load(migrate(dir)) ≡ load(dir) — the invariant from the design doc
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.toml"), "[general]\nfancy_icons = true").unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[general]\nfancy_icons = true",
+        )
+        .unwrap();
         std::fs::write(dir.path().join("keys.toml"), "[movement]\nup = [\"x\"]").unwrap();
         let before = load(dir.path());
         migrate(dir.path()).unwrap();

@@ -18,8 +18,7 @@ use unicode_display_width::width as unicode_width;
 
 use super::{ModalInput, ModalRegion, ModeOp};
 use crate::config::color::{
-    color_highlight, color_main, color_marked, print_horizontal_bar, print_horz_bot,
-    print_horz_top,
+    color_highlight, color_main, color_marked, print_horizontal_bar, print_horz_bot, print_horz_top,
 };
 use crate::panel::Draw;
 use crate::util::ExactWidth;
@@ -164,7 +163,11 @@ impl DecisionFlow {
     fn resolve(&self) -> ModeOp {
         ModeOp::FlowResolved {
             kind: self.kind,
-            answers: self.answers.iter().map(|a| a.expect("all answered")).collect(),
+            answers: self
+                .answers
+                .iter()
+                .map(|a| a.expect("all answered"))
+                .collect(),
         }
     }
 }
@@ -331,8 +334,8 @@ impl Draw for DecisionFlow {
                 Row::Prompt(i) => {
                     // Answered items carry a right-aligned `✓ <label>` badge;
                     // the prompt yields it the room.
-                    let badge = self.answers[*i]
-                        .map(|c| format!("✓ {}", self.items[*i].choices[c].label));
+                    let badge =
+                        self.answers[*i].map(|c| format!("✓ {}", self.items[*i].choices[c].label));
                     let badge_w = badge.as_deref().map_or(0, |b| unicode_width(b) as usize);
                     let prompt_w = if badge_w > 0 {
                         content_w.saturating_sub(badge_w + 2)

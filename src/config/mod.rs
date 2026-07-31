@@ -167,7 +167,6 @@ mod defaults_tests {
     }
 }
 
-
 pub mod color {
     use anyhow::{anyhow, Context, Result};
     use crossterm::style::{Color, PrintStyledContent, Stylize};

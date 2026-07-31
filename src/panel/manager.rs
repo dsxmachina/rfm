@@ -349,8 +349,7 @@ impl Tab {
             }
 
             if drive_preview {
-                let center_selected =
-                    self.center.panel().selected_path().map(|p| p.to_path_buf());
+                let center_selected = self.center.panel().selected_path().map(|p| p.to_path_buf());
                 self.right.new_panel_delayed(center_selected.as_deref());
 
                 if let Some(path) = self.rev_history.last() {
@@ -884,10 +883,7 @@ impl PanelManager {
                         style::PrintStyledContent(label.with(color_main()).reverse().bold()),
                     )?;
                 } else {
-                    queue!(
-                        self.stdout,
-                        style::PrintStyledContent(label.dark_grey()),
-                    )?;
+                    queue!(self.stdout, style::PrintStyledContent(label.dark_grey()),)?;
                 }
             }
         }
@@ -1094,9 +1090,12 @@ impl PanelManager {
             let idx = base + offset;
             let active = idx == self.focused;
             let tab = &mut self.tabs[idx];
-            tab.center
-                .panel_mut()
-                .draw_active(&mut self.stdout, x_range, height.clone(), active)?;
+            tab.center.panel_mut().draw_active(
+                &mut self.stdout,
+                x_range,
+                height.clone(),
+                active,
+            )?;
         }
 
         // Vertical divider between the two halves (muted).
@@ -1318,7 +1317,10 @@ impl PanelManager {
                     original: file.to_path_buf(),
                 }),
                 None => {
-                    warn!("trashed {} but could not locate it for undo", file.display());
+                    warn!(
+                        "trashed {} but could not locate it for undo",
+                        file.display()
+                    );
                     None
                 }
             }
@@ -1888,7 +1890,10 @@ impl PanelManager {
                     .into_iter()
                     .partition(|i| std::path::Path::new(&i.id).exists());
                 if !gone.is_empty() {
-                    warn!("{} trash entrie(s) vanished before restore; skipped", gone.len());
+                    warn!(
+                        "{} trash entrie(s) vanished before restore; skipped",
+                        gone.len()
+                    );
                 }
                 let n = live.len();
                 if n > 0 {
@@ -2037,10 +2042,7 @@ impl PanelManager {
                     "rename {} → {to}",
                     from.file_name().unwrap_or_default().to_string_lossy(),
                 ));
-                tx.push(FsChange::Move {
-                    from,
-                    to: to_path,
-                });
+                tx.push(FsChange::Move { from, to: to_path });
                 self.undo.record(tx);
             }
         }
@@ -2097,9 +2099,7 @@ impl PanelManager {
         match cleanup {
             Cleanup::None => {}
             Cleanup::Search => self.active_mut().center.panel_mut().clear_search(),
-            Cleanup::RenamePreview => {
-                self.active_mut().center.panel_mut().clear_rename_preview()
-            }
+            Cleanup::RenamePreview => self.active_mut().center.panel_mut().clear_rename_preview(),
             Cleanup::CreatePreview => self.active_mut().center.panel_mut().clear_new_element(),
             Cleanup::CdTo(path) => self.jump(path),
         }
