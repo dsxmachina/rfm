@@ -54,6 +54,17 @@
 #
 use_trash = true
 
+# Persist image/video preview thumbnails in $XDG_CACHE_HOME/rfm/thumbnails
+# (usually ~/.cache/rfm/thumbnails) so they survive restarts. Entries are
+# pruned automatically at startup (older than 30 days, capped at 256 MiB);
+# "rm -rf ~/.cache/rfm" is always safe.
+#
+# When disabled, image previews stay in memory only; video thumbnails still
+# go through a temp directory (usually tmpfs, cleaned after 7 days), since
+# ffmpeg needs a file to write to.
+#
+preview_cache = true
+
 # Use Nerd Font icons for file types.
 #
 # When enabled, rfm will use icons from the Nerd Fonts project (like yazi does).
@@ -278,7 +289,7 @@ paste            = [ "paste", "pp", "ctrl-v" ] # paste previously cut or copied 
 paste_overwrite  = [ "po", "ctrl-V" ]          # paste items and overwrite existing elements
 zip              = [ "zip" ]                   # create a zip archive from selected items (requires 'zip')
 tar              = [ "tar" ]                   # create a tar archive from selected items (requires 'tar')
-extract          = [ "extract", "unzip" ]      # extract archive in place (requires archive program)
+extract          = [ "extract" ]               # extract archive in place (requires archive program)
 #
 # Undo/redo works within the running session only (the stack is not persisted).
 # Undoable: rename, cut/copy-paste, mkdir, touch, bulk-rename, zip/tar (redo of an

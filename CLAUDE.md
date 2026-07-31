@@ -53,7 +53,7 @@ Reading the replies correctly:
   reply lists ALL entries (incl. hidden) with a per-entry `selected`
   flag. Never index one with the other.
 - `state.marked` holds absolute paths; `entries` has per-entry `marked`
-  booleans. Mark key is Space (default keys.toml), and marking
+  booleans. Mark key is Space (default binding), and marking
   auto-advances the cursor to the next entry.
 - `seq` advances by multiple ticks per keypress (~5 for one `j`).
   Never assume +1 deltas. Reliable invariants: seq is stable while
@@ -86,6 +86,9 @@ Caveats:
   spaces and `&` (e.g. "a directory with spaces", "Bilder & Videos").
 - Isolate zoxide in tests with `_ZO_DATA_DIR=$(mktemp -d)` in the tmux
   pane before launching rfm; seed with `zoxide add <path>`.
+- Integration tests around the upgrade notice must export
+  `XDG_STATE_HOME=$(mktemp -d)` in the tmux pane before launching rfm —
+  the real state file records the notice as seen and suppresses it.
 
 ## Architecture: modal modes
 
@@ -94,7 +97,28 @@ consoles currently share `console.rs`; split pending). Adapters are
 pure state machines: `handle_key → ModeOp`, testable without a
 terminal. All effects and the derived redraws are applied centrally in
 `PanelManager::apply_mode_op` (manager.rs). The mode strings the debug
-socket reports come from `ModalInput::name()`.
+socket reports come from `ModalInput::name()`. `decision-flow`
+(`decision_flow.rs`) is the generic multi-item choice overlay (y/n/per-item
+keys, `A` = apply answer to all same-choice items, Esc accepts defaults);
+today it backs the one-time upgrade notice, and is the foundation for
+future guided flows.
+
+## Architecture: configuration
+
+One sparse-override `~/.config/rfm/config.toml`; the complete annotated
+defaults live in `examples/default-config.toml` (rust-embed) — simultaneously
+the behavior, the `--dump-config` output and the docs, guarded by
+`config::defaults_tests`. Merge pipeline in `src/config/`: `load.rs::load()`
+parses both as `toml::Value`, folds legacy `keys.toml`/`open.toml` in-memory
+under `[keys]`/`[open]` (never rewrites disk; `--migrate-config` →
+`load.rs::migrate()` does, with `*.bak` + refuse-to-clobber), deep-merges
+user over defaults (`merge.rs`: tables merge, scalars/arrays replace),
+deserializes typed with per-section error dropping + unknown-key typo
+warnings. Keybinding conflicts: `CommandParser::build(defaults, user)` is
+two-pass, user wins, dropped defaults are logged and returned. Startup shows
+a one-time upgrade notice (decision-flow overlay) when defaults were dropped
+against user bindings or legacy files were folded; the seen-version lives in
+`$XDG_STATE_HOME/rfm/state.toml`.
 
 ## Architecture: tabs & split view
 
@@ -134,10 +158,10 @@ takes an optional 0-based tab index (defaults to focused).
 
 Keys: `!`=toggle_split, `Tab`=focus_next, `gn`=new_tab, `q`/`ctrl-w`=close_tab
 (closing the *last* tab quits rfm, returning `CloseCmd::QuitWithPath`),
-`1`-`4`=focus_tab_N. These are OPT-IN in keys.toml (like undo/redo) —
-pre-existing user configs won't have them; the shipped `examples/keys.toml`
-includes them. Note `q` closes the focused tab (and quits on the last one);
-`Q` / `exit` always quit outright.
+`1`-`4`=focus_tab_N. Defaults in `[keys.tabs]` — active for everyone (incl.
+old configs) unless a user binding collides (user wins, default dropped with
+a logged notice). Note `q` closes the focused tab (and quits on the last
+one); `Q` / `exit` always quit outright.
 
 ## Architecture: rendering
 
@@ -197,8 +221,8 @@ commands/opener/extract are untracked (ignored). zip/tar are `no_redo`
 `FsChange::undo/redo` take `&mut self` so `Trash::redo` can re-trash and
 re-capture the fresh `TrashItem` (shared `capture_trashed` in `src/undo/`),
 keeping the delete↔undo↔redo cycle consistent.
-Keys: `u` / `ctrl-r` (opt-in `undo`/`redo` in keys.toml — pre-existing user
-configs won't have them until added).
+Keys: `u` / `ctrl-r` (`undo`/`redo` defaults in `[keys.manipulation]`,
+default-on for old configs too, user-wins on collision).
 
 ## Architecture: trash
 

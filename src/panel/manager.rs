@@ -14,7 +14,7 @@ use crate::{
     command_queue::{zoxide_add_dir, QueueStatus, QueuedCommand},
     config::color::{color_dir_path, color_main},
     debug::{ClipboardInfo, DebugRequest, EntryInfo, LogEntry, PaneId, StateSnapshot, TabSnapshot},
-    engine::commands::{CloseCmd, Command, CommandParser},
+    engine::commands::{CloseCmd, Command, CommandParser, DroppedDefault},
     engine::OpenEngine,
     logger::LogBuffer,
     undo::{capture_trashed, FsChange, Transaction, UndoOutcome, UndoStack},
@@ -41,8 +41,9 @@ async fn recv_debug(rx: &mut Option<mpsc::Receiver<DebugRequest>>) -> Option<Deb
 }
 
 use super::mode::{
-    Cleanup, CreateItemMode, DirConsole, ModalInput, ModalRegion, ModeOp, RenameMode, SearchMode,
-    TrashEntry, TrashView, Zoxide,
+    decision_flow::{Choice, DecisionFlow, DecisionItem},
+    Cleanup, CreateItemMode, DirConsole, FlowKind, ModalInput, ModalRegion, ModeOp, RenameMode,
+    SearchMode, TrashEntry, TrashView, Zoxide,
 };
 use super::*;
 
@@ -107,6 +108,125 @@ fn focus_after_close(focused: usize, len_after_removal: usize) -> usize {
 /// Whether another tab may be opened without exceeding [`MAX_TABS`].
 fn can_add_tab(len: usize) -> bool {
     len < MAX_TABS
+}
+
+/// One default-vs-user keybinding conflict of the upgrade notice, kept for
+/// resolution time (the item order mirrors the flow's leading items).
+struct UpgradeConflict {
+    /// The colliding binding pattern (e.g. "q").
+    binding: String,
+    /// Display of the default command that lost (e.g. "close tab").
+    command: String,
+    /// Display of the user command that claimed the binding (e.g. "quit").
+    kept: String,
+}
+
+/// Everything [`PanelManager::resolve_flow`] needs once the upgrade-notice
+/// flow completes: the conflicts behind the leading items, whether the final
+/// migrate item was appended, and where to migrate/persist.
+struct UpgradeNoticeCtx {
+    conflicts: Vec<UpgradeConflict>,
+    has_migrate: bool,
+    config_dir: PathBuf,
+    state_dir: PathBuf,
+}
+
+/// Choice indices of an upgrade-notice conflict item. The builder writes them
+/// into the items and the resolver reads the answers against them — both
+/// sides MUST use these constants, never bare numbers.
+const CHOICE_KEEP: usize = 0;
+const CHOICE_ADOPT: usize = 1;
+/// Choice indices of the trailing migrate item.
+const CHOICE_MIGRATE_NOW: usize = 0;
+const CHOICE_NOT_NOW: usize = 1;
+
+/// The actionable "adopt new" instruction, shared between the conflict item's
+/// detail line (builder) and the reminder logged on an adopt answer
+/// (resolver) so the two can never drift apart.
+fn adopt_hint(kept: &str, binding: &str, command: &str) -> String {
+    format!("rebind your `{kept}` and add `{binding}` back to {command} — see rfm --dump-config")
+}
+
+/// Builds the one-time upgrade-notice flow from this start's config findings:
+/// one keep/adopt item per default binding dropped in favor of a *user*
+/// binding (default-vs-default drops are not user-actionable and skipped),
+/// plus a final migrate item when legacy `keys.toml`/`open.toml` were folded
+/// in. `None` when there is nothing to review.
+///
+/// Also returns the [`UpgradeConflict`]s the leading items were derived from,
+/// in item order: [`PanelManager::resolve_flow`] re-pairs the answers with
+/// this Vec purely by position, so this function is the single site deciding
+/// both which drops become items and in what order.
+fn build_upgrade_notice(
+    dropped: &[DroppedDefault],
+    legacy_folded: bool,
+) -> Option<(DecisionFlow, Vec<UpgradeConflict>)> {
+    // The conflicts come first; the flow items are derived from them 1:1.
+    let conflicts: Vec<UpgradeConflict> = dropped
+        .iter()
+        .filter(|d| d.from_user)
+        .map(|d| UpgradeConflict {
+            binding: d.binding.clone(),
+            command: d.command.clone(),
+            kept: d.kept.clone(),
+        })
+        .collect();
+    let mut items: Vec<DecisionItem> = conflicts
+        .iter()
+        .map(|c| DecisionItem {
+            prompt: format!(
+                "default `{}` → {} conflicts with your `{}`",
+                c.binding, c.command, c.kept
+            ),
+            detail: vec![
+                "keep: nothing to do".to_string(),
+                format!("adopt: {}", adopt_hint(&c.kept, &c.binding, &c.command)),
+            ],
+            choices: vec![
+                Choice {
+                    key: 'y',
+                    label: "keep yours".into(),
+                },
+                Choice {
+                    key: 'a',
+                    label: "adopt new".into(),
+                },
+            ],
+            default: Some(CHOICE_KEEP),
+        })
+        .collect();
+    if legacy_folded {
+        items.push(DecisionItem {
+            prompt: "migrate keys.toml/open.toml into one config.toml?".into(),
+            detail: vec![
+                "folds your legacy files into a minimal config.toml; originals become *.bak"
+                    .to_string(),
+            ],
+            choices: vec![
+                Choice {
+                    key: 'm',
+                    label: "migrate now".into(),
+                },
+                Choice {
+                    key: 'n',
+                    label: "not now".into(),
+                },
+            ],
+            default: Some(CHOICE_NOT_NOW),
+        });
+    }
+    if items.is_empty() {
+        return None;
+    }
+    let flow = DecisionFlow::new(
+        FlowKind::UpgradeNotice,
+        format!(
+            "rfm {} — configuration changes to review",
+            env!("CARGO_PKG_VERSION")
+        ),
+        items,
+    );
+    Some((flow, conflicts))
 }
 
 /// One independent Miller-columns stack: its own cwd, selection and
@@ -370,6 +490,9 @@ pub struct PanelManager {
     /// Clipboard
     clipboard: Option<Clipboard>,
 
+    /// Context of a currently shown upgrade notice; taken on resolution.
+    upgrade_ctx: Option<UpgradeNoticeCtx>,
+
     /// Undo/redo stack
     undo: UndoStack,
 
@@ -460,6 +583,7 @@ impl PanelManager {
             mode: Mode::Normal,
             logger,
             clipboard: None,
+            upgrade_ctx: None,
             layout,
             opener,
             undo: UndoStack::new(),
@@ -1770,6 +1894,21 @@ impl PanelManager {
                 self.mode = Mode::Modal(Box::new(view));
                 self.reload_all();
             }
+            ModeOp::FlowResolved { kind, answers } => {
+                self.mode = Mode::Normal;
+                self.resolve_flow(kind, answers);
+            }
+            ModeOp::FlowAborted { kind } => {
+                self.mode = Mode::Normal;
+                // Deliberately does NOT persist the seen-version state — an
+                // aborted upgrade notice re-asks on the next start. (Today
+                // unreachable for UpgradeNotice: all its items carry defaults,
+                // so Esc resolves instead of aborting.)
+                if kind == FlowKind::UpgradeNotice {
+                    self.upgrade_ctx = None;
+                }
+                info!("{kind:?} dismissed");
+            }
             ModeOp::Exit { cleanup } => {
                 self.apply_cleanup(cleanup);
                 self.mode = Mode::Normal;
@@ -1777,6 +1916,83 @@ impl PanelManager {
         }
         // Every modal key event repaints (draw() perma-redraws now).
         self.mark_dirty();
+    }
+
+    /// Shows the one-time upgrade notice when [`build_upgrade_notice`] finds
+    /// anything to review; otherwise a no-op. The caller has already checked
+    /// the seen-version gate (state.toml).
+    pub fn maybe_show_upgrade_notice(
+        &mut self,
+        dropped: &[DroppedDefault],
+        legacy_folded: bool,
+        config_dir: PathBuf,
+        state_dir: PathBuf,
+    ) {
+        let Some((flow, conflicts)) = build_upgrade_notice(dropped, legacy_folded) else {
+            return;
+        };
+        self.upgrade_ctx = Some(UpgradeNoticeCtx {
+            conflicts,
+            has_migrate: legacy_folded,
+            config_dir,
+            state_dir,
+        });
+        self.mode = Mode::Modal(Box::new(flow));
+        self.mark_dirty();
+    }
+
+    /// Dispatches a completed decision flow's answers per [`FlowKind`].
+    ///
+    /// `answers[i]` is the chosen choice index of the flow's item `i`;
+    /// what an index *means* is the consumer's contract with its builder.
+    fn resolve_flow(&mut self, kind: FlowKind, answers: Vec<usize>) {
+        match kind {
+            FlowKind::UpgradeNotice => {
+                let Some(ctx) = self.upgrade_ctx.take() else {
+                    warn!("upgrade notice resolved without its context — ignoring");
+                    return;
+                };
+                debug_assert_eq!(
+                    answers.len(),
+                    ctx.conflicts.len() + usize::from(ctx.has_migrate),
+                    "upgrade-notice answers out of sync with its context"
+                );
+                let mut answers = answers.into_iter();
+                // Leading items mirror ctx.conflicts (build_upgrade_notice
+                // derives one from the other, in order).
+                for (conflict, answer) in ctx.conflicts.iter().zip(answers.by_ref()) {
+                    if answer == CHOICE_ADOPT {
+                        info!(
+                            "adopt `{}` → {}: {}",
+                            conflict.binding,
+                            conflict.command,
+                            adopt_hint(&conflict.kept, &conflict.binding, &conflict.command)
+                        );
+                    }
+                }
+                // The trailing migrate item, when present.
+                if ctx.has_migrate && answers.next() == Some(CHOICE_MIGRATE_NOW) {
+                    match crate::config::load::migrate(&ctx.config_dir) {
+                        Ok(lines) => {
+                            for line in lines {
+                                info!("{line}");
+                            }
+                            info!("restart rfm to load the unified config");
+                        }
+                        Err(e) => warn!("migration failed: {e:#}"),
+                    }
+                }
+                // Resolved (however answered) → never ask for this version
+                // again. Write failure degrades to a warning: state is
+                // best-effort, the notice may simply ask again next start.
+                let state = crate::config::app_state::AppState {
+                    upgrade_notice_seen_for: Some(env!("CARGO_PKG_VERSION").into()),
+                };
+                if let Err(e) = crate::config::app_state::write(&ctx.state_dir, &state) {
+                    warn!("cannot persist upgrade-notice state: {e:#} — it may show again");
+                }
+            }
+        }
     }
 
     /// Applies [`ModeOp::Rename`]: renames the selected entry to `to`
@@ -2612,5 +2828,85 @@ mod tests {
         // At the cap, no more tabs may be added.
         assert!(!can_add_tab(MAX_TABS));
         assert!(!can_add_tab(MAX_TABS + 1));
+    }
+
+    mod upgrade_notice {
+        use super::super::build_upgrade_notice;
+        use crate::engine::commands::DroppedDefault;
+
+        #[test]
+        fn no_inputs_no_flow() {
+            assert!(build_upgrade_notice(&[], false).is_none());
+        }
+
+        /// Pins the positional contract `resolve_flow` relies on: the flow's
+        /// leading items mirror the returned conflicts 1:1 (same order), and
+        /// the migrate item — when present — is strictly last.
+        #[test]
+        fn conflicts_precede_migrate_item() {
+            let dropped = [
+                DroppedDefault {
+                    command: "close tab".into(),
+                    binding: "q".into(),
+                    kept: "quit".into(),
+                    from_user: true,
+                },
+                DroppedDefault {
+                    command: "toggle split".into(),
+                    binding: "!".into(),
+                    kept: "up".into(),
+                    from_user: true,
+                },
+            ];
+            let (flow, conflicts) = build_upgrade_notice(&dropped, true).unwrap();
+            assert_eq!(flow.items().len(), 3);
+            assert_eq!(conflicts.len(), 2);
+            for (item, conflict) in flow.items().iter().zip(&conflicts) {
+                assert!(item.prompt.contains(&conflict.binding));
+                assert!(item.prompt.contains(&conflict.command));
+                assert!(item.prompt.contains(&conflict.kept));
+            }
+            assert!(flow.items().last().unwrap().prompt.contains("migrate"));
+        }
+
+        #[test]
+        fn dropped_default_becomes_keep_or_adopt_item_with_keep_default() {
+            let d = DroppedDefault {
+                command: "close tab".into(),
+                binding: "q".into(),
+                kept: "quit".into(),
+                from_user: true,
+            };
+            let (flow, conflicts) = build_upgrade_notice(&[d], false).unwrap();
+            assert_eq!(conflicts.len(), 1);
+            let item = &flow.items()[0];
+            assert!(item.prompt.contains('q') && item.prompt.contains("close tab"));
+            assert_eq!(item.default, Some(0)); // keep yours
+            assert_eq!(item.choices[0].key, 'y'); // keep *y*ours
+            assert_eq!(item.choices[1].key, 'a'); // *a*dopt
+        }
+
+        #[test]
+        fn legacy_fold_appends_migrate_item_defaulting_to_not_now() {
+            let (flow, conflicts) = build_upgrade_notice(&[], true).unwrap();
+            assert!(conflicts.is_empty());
+            let last = flow.items().last().unwrap();
+            assert!(last.prompt.contains("migrate"));
+            assert_eq!(
+                last.choices[last.default.unwrap()].label.to_lowercase(),
+                "not now"
+            );
+        }
+
+        #[test]
+        fn default_vs_default_drops_are_not_user_actionable_and_skipped() {
+            let d = DroppedDefault {
+                command: "close tab".into(),
+                binding: "q".into(),
+                kept: "quit".into(),
+                from_user: false,
+            };
+            assert!(build_upgrade_notice(&[d], false).is_none());
+        }
     }
 }

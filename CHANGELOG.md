@@ -5,6 +5,49 @@ All notable changes to rfm are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Unified configuration** — one `~/.config/rfm/config.toml` with sparse
+  overrides replaces the `config.toml` / `keys.toml` / `open.toml` trio. rfm
+  always starts from its complete built-in defaults and applies only the
+  lines you write; an empty file is valid. The old `keys.toml` sections move
+  under `[keys.*]`, `open.toml` under `[open.*]`.
+- **Defaults-on keybindings with user-wins conflicts** — every feature's
+  default keys (tabs, undo/redo, jump-marks, trash view, …) are now active
+  for everyone, no longer opt-in. A default that collides with one of your
+  own bindings (exactly or as a prefix, in either direction) is dropped with
+  a logged notice; `cmd = []` explicitly unbinds a command.
+- **`rfm --dump-config`** — prints the complete annotated default
+  configuration (the reference to copy override lines from).
+- **`rfm --migrate-config`** — explicit, opt-in migration: writes your
+  effective configuration as a minimal diff-from-defaults `config.toml` and
+  renames the legacy files to `*.bak` (refusing to overwrite a previous
+  run's backups).
+- Config robustness: unknown keys warn with a "did you mean …?" suggestion;
+  parse errors drop only the offending section (with its exact TOML path)
+  instead of discarding the whole file.
+- **One-time upgrade notice** — the first start after an upgrade shows an
+  interactive overlay reviewing what changed for *you*: keep/adopt per
+  dropped default keybinding, plus a migrate offer when legacy files are
+  still folded in. Asked once per version; built on a generic decision-flow
+  overlay that will power future guided flows.
+
+> **Upgrading:** nothing to do. Old three-file configs keep working
+> unchanged — `keys.toml` / `open.toml` are folded in at load time, purely
+> in-memory; nothing on disk is rewritten unless you run
+> `rfm --migrate-config` yourself. Old configs now automatically gain the
+> default keybindings of new features (previously silently unbound), with
+> your own bindings always taking precedence.
+
+### Removed
+
+- The `examples/config.toml` / `examples/keys.toml` / `examples/open.toml`
+  sample trio; the reference is now `rfm --dump-config`
+  (`examples/default-config.toml` in the repo). First run writes a short
+  commented stub instead of full default files.
+
 ## [0.4.3] - 2026-07-30
 
 A robustness patch: rfm now degrades gracefully when the external programs it
@@ -66,7 +109,7 @@ custom commands.
 
 > **Upgrading:** the new keybindings (tabs, undo/redo, jump-marks, trash view)
 > are **opt-in** — existing `keys.toml` files won't have them until you add them.
-> See the updated [`examples/keys.toml`](examples/keys.toml) for the full set, and
+> See the updated `examples/keys.toml` (since replaced by `rfm --dump-config`) for the full set, and
 > the new [docs/](docs/) directory for details.
 
 ### Added

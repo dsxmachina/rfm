@@ -1,3 +1,7 @@
+pub mod app_state;
+pub mod load;
+pub mod merge;
+
 use serde::Deserialize;
 
 use crate::command_queue::CommandsConfig;
@@ -11,6 +15,40 @@ pub struct Config {
     pub styles: StyleConfig,
     #[serde(default)]
     pub commands: CommandsConfig,
+    // deserialize target for per-section [keys.*] error handling; the parser
+    // reads the overlay + defaults instead
+    #[allow(dead_code)]
+    #[serde(default)]
+    pub keys: crate::engine::commands::KeyConfig,
+    #[serde(default)]
+    pub open: crate::engine::opener::OpenerConfig,
+}
+
+/// The embedded `examples/` directory — shipped default/example config files.
+#[derive(rust_embed::Embed)]
+#[folder = "examples/"]
+struct Examples;
+
+/// The single source of truth for rfm's defaults: the complete, annotated
+/// default configuration file embedded at compile time.
+const DEFAULT_CONFIG_FILE: &str = "default-config.toml";
+
+static DEFAULT_CONFIG: once_cell::sync::Lazy<String> = once_cell::sync::Lazy::new(|| {
+    let file = Examples::get(DEFAULT_CONFIG_FILE).expect("embedded default-config.toml");
+    String::from_utf8(file.data.into_owned()).expect("default-config.toml must be valid UTF-8")
+});
+
+/// The embedded default configuration as a string (e.g. for `--dump-config`
+/// and first-run file creation).
+pub fn default_config_str() -> &'static str {
+    &DEFAULT_CONFIG
+}
+
+/// The embedded default configuration parsed into a TOML tree.
+pub fn default_tree() -> toml::Value {
+    default_config_str()
+        .parse()
+        .expect("embedded default-config.toml must parse as TOML")
 }
 
 fn default_rate_limit_interval() -> u64 {
@@ -39,6 +77,27 @@ pub struct GeneralConfig {
     pub fancy_icons: bool,
 }
 
+#[cfg(test)]
+mod defaults_tests {
+    use super::*;
+
+    #[test]
+    fn embedded_defaults_deserialize() {
+        let config: Config = default_tree().try_into().unwrap();
+        // spot checks
+        assert!(config.general.use_trash);
+        assert_eq!(config.general.rate_limit_interval_ms, 500);
+    }
+
+    /// Completeness guard: every binding field must be present (Some) in the
+    /// defaults file — adding a Command without documenting it fails here.
+    #[test]
+    fn defaults_cover_every_binding_field() {
+        let config: Config = default_tree().try_into().unwrap();
+        config.keys.assert_complete(); // panics with the field name if None
+    }
+}
+
 pub mod color {
     use anyhow::{anyhow, Context, Result};
     use crossterm::style::{Color, PrintStyledContent, Stylize};
@@ -51,14 +110,18 @@ pub mod color {
     pub static COLOR_DIR_PATH: OnceCell<Color> = OnceCell::new();
     pub static COLOR_RENAME: OnceCell<Color> = OnceCell::new();
 
+    fn default_rename_color() -> String {
+        "blue".into()
+    }
+
     #[derive(Deserialize, Debug)]
     pub struct ColorConfig {
         main: String,
         marked: String,
         highlight: String,
         dir_path: String,
-        #[serde(default)]
-        rename: Option<String>,
+        #[serde(default = "default_rename_color")]
+        rename: String,
     }
 
     fn extract_color(string: String) -> Result<Color> {
@@ -76,35 +139,13 @@ pub mod color {
         let highlight =
             extract_color(config.highlight).context("Failed to set 'highlight' color")?;
         let dir_path = extract_color(config.dir_path).context("Failed to set 'dir_path' color")?;
-        let rename = config
-            .rename
-            .map(extract_color)
-            .transpose()
-            .context("Failed to set 'rename' color")?
-            .unwrap_or(Color::Blue);
+        let rename = extract_color(config.rename).context("Failed to set 'rename' color")?;
         COLOR_MAIN.set(main).expect("color must be unset");
-        COLOR_MAIN.get_or_init(|| main);
         COLOR_MARKED.set(marked).expect("color must be unset");
         COLOR_HIGHLIGHT.set(highlight).expect("color must be unset");
         COLOR_DIR_PATH.set(dir_path).expect("color must be unset");
         COLOR_RENAME.set(rename).expect("color must be unset");
         Ok(())
-    }
-
-    pub fn colors_from_default() {
-        COLOR_MAIN
-            .set(Color::DarkGreen)
-            .expect("color must be unset");
-        COLOR_MARKED
-            .set(Color::DarkYellow)
-            .expect("color must be unset");
-        COLOR_HIGHLIGHT
-            .set(Color::Red)
-            .expect("color must be unset");
-        COLOR_DIR_PATH
-            .set(Color::DarkBlue)
-            .expect("color must be unset");
-        COLOR_RENAME.set(Color::Blue).expect("color must be unset");
     }
 
     #[inline]

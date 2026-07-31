@@ -424,6 +424,20 @@ fn xdg_cache_home_from(
     }
 }
 
+/// Query the XDG State Home (usually ~/.local/state) according to
+/// https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
+pub fn xdg_state_home() -> anyhow::Result<PathBuf> {
+    match std::env::var("XDG_STATE_HOME") {
+        Ok(xdg_state) => Ok(PathBuf::from(xdg_state)),
+        Err(_) => match std::env::var("HOME") {
+            Ok(home) => Ok(PathBuf::from(home).join(".local").join("state")),
+            Err(_) => Err(anyhow!(
+                "Neither the XDG_STATE_HOME nor the HOME environment variable was set."
+            ))?,
+        },
+    }
+}
+
 /// Returns the permissions and metadata for some selected path, if any.
 ///
 /// The output is ready to be printed in the footer of the filemanager.
