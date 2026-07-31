@@ -225,7 +225,8 @@ impl FilePreview {
         let preview = match (mime.type_().as_str(), mime.subtype().as_str()) {
             // Before the raster arm: image/svg+xml used to mis-land on
             // the bitmap decode (which cannot read SVG). Covers .svgz
-            // too — usvg auto-detects the gzip magic. NOTE: mime 0.3
+            // too — the arm inflates the gzip layer itself, bounded
+            // (usvg's auto-decompression has no output cap). NOTE: mime 0.3
             // splits "svg+xml" into subtype "svg" + suffix "xml", so
             // the subtype to match is "svg".
             ("image", "svg") => svg_preview(&path, modified),
@@ -512,14 +513,43 @@ fn native_svg_render(data: &[u8]) -> Option<DynamicImage> {
     Some(image::DynamicImage::ImageRgba8(img))
 }
 
-/// Bounded read of an SVG source: 4 MiB covers any sane SVG while a
-/// mislabeled multi-GB file cannot exhaust memory.
-fn read_svg_bounded(path: &Path) -> io::Result<Vec<u8>> {
+/// Whole-file read, bounded at `max` bytes. Callers pick a cap any
+/// sane instance of their format stays under (4 MiB SVG, 64 MiB font)
+/// so a mislabeled multi-GB file cannot exhaust memory; a truncated
+/// read simply fails the downstream parse and takes that arm's
+/// fallback.
+fn read_bounded(path: &Path, max: u64) -> io::Result<Vec<u8>> {
     let mut data = Vec::new();
-    File::open(path)?
-        .take(4 * 1024 * 1024)
-        .read_to_end(&mut data)?;
+    File::open(path)?.take(max).read_to_end(&mut data)?;
     Ok(data)
+}
+
+/// 4 MiB covers any sane SVG source (compressed or not).
+const SVG_SOURCE_MAX: u64 = 4 * 1024 * 1024;
+/// Fonts are small; even the big CJK faces stay well under 64 MiB.
+const FONT_SOURCE_MAX: u64 = 64 * 1024 * 1024;
+/// A .svgz may legitimately inflate ~10-50x; 32 MiB of XML is far past
+/// any real SVG.
+const SVGZ_INFLATED_MAX: u64 = 32 * 1024 * 1024;
+
+/// usvg auto-detects the gzip magic (.svgz and .svg alike) and
+/// inflates it with NO output bound (`decompress_svgz` is a plain
+/// `read_to_end`), so the source-read cap alone would not stop a
+/// crafted ~4 MiB svgz from inflating to gigabytes inside the
+/// renderer — and an allocation failure aborts the process, skipping
+/// the designed text fallback. Inflate the gzip layer ourselves,
+/// bounded: over-budget or broken gzip is `None` (→ text fallback);
+/// plain XML passes through untouched.
+fn inflate_svgz_bounded(data: Vec<u8>) -> Option<Vec<u8>> {
+    if !data.starts_with(&[0x1f, 0x8b]) {
+        return Some(data);
+    }
+    let mut inflated = Vec::new();
+    flate2::read::GzDecoder::new(&data[..])
+        .take(SVGZ_INFLATED_MAX + 1)
+        .read_to_end(&mut inflated)
+        .ok()?;
+    (inflated.len() as u64 <= SVGZ_INFLATED_MAX).then_some(inflated)
 }
 
 /// Info footer for a rendered SVG: the render's dimensions (the source
@@ -560,8 +590,9 @@ fn svg_preview_in(cache_dir: Option<&Path>, path: &Path, modified: SystemTime) -
             };
         }
     }
-    let rendered = read_svg_bounded(path)
+    let rendered = read_bounded(path, SVG_SOURCE_MAX)
         .ok()
+        .and_then(inflate_svgz_bounded)
         .and_then(|data| native_svg_render(&data));
     match rendered {
         Some(img) => {
@@ -634,7 +665,13 @@ fn native_font_sample(data: &[u8]) -> anyhow::Result<(Vec<String>, DynamicImage)
     let line_height = scaled.height() + scaled.line_gap();
     let margin = 8.0f32;
     let width: u32 = 960;
-    let height = (2.0 * line_height + 2.0 * margin).ceil() as u32;
+    // The metrics come straight from the (attacker-controlled) face: a
+    // crafted ascent over a tiny units_per_em would demand an
+    // arbitrarily tall canvas. Clamp — 512 px is far above any sane
+    // 2-row sample at 24 px.
+    let height_px = 2.0 * line_height + 2.0 * margin;
+    anyhow::ensure!(height_px.is_finite(), "non-finite font metrics");
+    let height = height_px.ceil().clamp(16.0, 512.0) as u32;
     let mut img = image::GrayImage::from_pixel(width, height, image::Luma([255u8]));
     for (row, text) in FONT_SAMPLE_LINES.iter().enumerate() {
         let baseline = margin + scaled.ascent() + row as f32 * line_height;
@@ -700,7 +737,10 @@ fn font_preview(path: &Path, modified: SystemTime, mime: &mime::Mime) -> Preview
 /// Dir-parameterized core of [`font_preview`]; `None` (cache disabled)
 /// rasterises in-memory. A cache hit re-reads the source only for the
 /// name lines (best-effort — unreadable source keeps the metadata
-/// lines). Parse failure falls back to the stat block.
+/// lines). Parse failure falls back to the stat block. Both reads are
+/// bounded ([`FONT_SOURCE_MAX`]): the sniff routes arbitrary binaries
+/// here (the ttf magic is ambiguous), and a mislabeled multi-GB file
+/// must not be slurped whole — same rationale as the SVG arm.
 fn font_preview_in(
     cache_dir: Option<&Path>,
     path: &Path,
@@ -711,7 +751,7 @@ fn font_preview_in(
     if let Some(dir) = cache_dir {
         if let Some(img) = raster_cache::lookup_in(dir, path, mtime, raster_cache::KIND_FONT) {
             log::debug!("raster cache hit for {}", path.display());
-            let names = std::fs::read(path)
+            let names = read_bounded(path, FONT_SOURCE_MAX)
                 .map(|data| font_name_lines(&data))
                 .unwrap_or_default();
             return Preview::Image {
@@ -720,7 +760,7 @@ fn font_preview_in(
             };
         }
     }
-    let sample = std::fs::read(path)
+    let sample = read_bounded(path, FONT_SOURCE_MAX)
         .map_err(anyhow::Error::from)
         .and_then(|data| native_font_sample(&data));
     match sample {
@@ -1036,7 +1076,14 @@ fn native_tar_list<R: io::Read>(reader: R) -> anyhow::Result<Vec<String>> {
     let mut archive = tar::Archive::new(reader);
     let mut lines = Vec::new();
     for entry in archive.entries()?.take(128) {
-        let entry = entry?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            // A stream truncated mid-scan (the compressed arms cap
+            // their decompression budget at TAR_SCAN_MAX) ends the
+            // listing; only a stream yielding nothing is an error.
+            Err(_) if !lines.is_empty() => break,
+            Err(e) => return Err(e.into()),
+        };
         let header = entry.header();
         // Tar headers carry the permission bits only; the file type
         // lives in the entry-type flag. OR it back in so unix_mode
@@ -1096,8 +1143,15 @@ fn native_compressed_preview(mut decoder: impl Read) -> anyhow::Result<Preview> 
     }
     let rest = io::Cursor::new(head[..filled].to_vec()).chain(decoder);
     if filled >= 262 && &head[257..262] == b"ustar" {
+        // tar over a non-Seek stream reaches the next header by
+        // read-and-discarding the content in between: a crafted first
+        // entry declaring a huge size would otherwise force the codec
+        // to decompress that entire span (a CPU/time DoS on the
+        // preview task — memory stays bounded) just to reach header
+        // #2. The budget truncates the listing instead.
+        const TAR_SCAN_MAX: u64 = 64 * 1024 * 1024;
         return Ok(Preview::Text {
-            lines: native_tar_list(rest)?,
+            lines: native_tar_list(rest.take(TAR_SCAN_MAX))?,
         });
     }
     // Not a tar: show the decompressed head as text (bounded).
@@ -1117,7 +1171,11 @@ fn native_compressed_preview(mut decoder: impl Read) -> anyhow::Result<Preview> 
 fn zst_preview(path: &Path) -> Preview {
     let native = File::open(path)
         .map_err(anyhow::Error::from)
-        .and_then(|f| Ok(ruzstd::decoding::StreamingDecoder::new(io::BufReader::new(f))?))
+        .and_then(|f| {
+            Ok(ruzstd::decoding::StreamingDecoder::new(
+                io::BufReader::new(f),
+            )?)
+        })
         .and_then(native_compressed_preview);
     match native {
         Ok(preview) => preview,
@@ -1159,10 +1217,44 @@ fn bz2_preview(path: &Path) -> Preview {
     }
 }
 
+/// sevenz-rust trusts the 32-byte start header completely: it
+/// allocates `vec![0; next_header_size]` BEFORE reading a single
+/// header byte, so a crafted tiny .7z declaring a multi-TB header
+/// aborts the whole process — an allocation failure is not an `Err`
+/// the `7z l` fallback could catch. Validate the start header against
+/// the real file length first; implausible files become a normal
+/// `Err` (→ fallback). The 1 MiB cap is far past the metadata of any
+/// archive whose first 128 entries we would list — genuinely bigger
+/// headers just take the `7z l` fallback. (Varint counts INSIDE a
+/// CRC-valid header, e.g. num_files, are still trusted by the crate;
+/// bounding those would mean reimplementing its header parser.)
+fn plausible_sevenz_start_header(path: &Path) -> anyhow::Result<()> {
+    const SEVENZ_MAGIC: [u8; 6] = [b'7', b'z', 0xbc, 0xaf, 0x27, 0x1c];
+    const SEVENZ_HEADER_MAX: u64 = 1024 * 1024;
+    let mut file = File::open(path)?;
+    let len = file.metadata()?.len();
+    let mut start = [0u8; 32];
+    file.read_exact(&mut start)?;
+    anyhow::ensure!(start[..6] == SEVENZ_MAGIC, "not a 7z archive");
+    let offset = u64::from_le_bytes(start[12..20].try_into().expect("8 bytes"));
+    let size = u64::from_le_bytes(start[20..28].try_into().expect("8 bytes"));
+    anyhow::ensure!(
+        size <= SEVENZ_HEADER_MAX,
+        "implausible next-header size {size}"
+    );
+    let end = offset.checked_add(size).and_then(|e| e.checked_add(32));
+    anyhow::ensure!(
+        end.is_some_and(|e| e <= len),
+        "the next header lies outside the file"
+    );
+    Ok(())
+}
+
 /// List a 7z archive natively: `size  name` per entry, capped at 128.
 /// `Archive::open` reads only the archive metadata - nothing is
 /// extracted or decompressed.
 fn native_sevenz_list(path: &Path) -> anyhow::Result<Vec<String>> {
+    plausible_sevenz_start_header(path)?;
     let archive = sevenz_rust::Archive::open(path)?;
     Ok(archive
         .files
@@ -1193,7 +1285,16 @@ fn sevenz_preview(path: &Path) -> Preview {
                     .arg("l")
                     .arg(path)
                     .output()
-                    .and_then(|o| o.stdout.lines().take(128).collect()),
+                    // `lines()` trims the \r\n pair but not embedded
+                    // \r; member names are attacker-controlled, so the
+                    // scrub convention applies here too.
+                    .and_then(|o| {
+                        o.stdout
+                            .lines()
+                            .take(128)
+                            .map(|l| l.map(scrub_line))
+                            .collect()
+                    }),
             )
         }
     }
@@ -1247,8 +1348,10 @@ enum DocKind {
 /// Streaming tag-strip of one XML document: text nodes accumulate and
 /// flush as one line per closing paragraph tag (`p` covers `w:p`,
 /// `text:p`, DrawingML `a:p` and XHTML `p` via the local name; `t`
-/// gives xlsx one shared string per line). Text inside `style`/`script`
-/// is skipped (epub XHTML heads). Appends to `lines`, stopping at the
+/// gives xlsx one shared string per line). Text inside
+/// `style`/`script`/`title` is skipped (epub XHTML heads — a leaked
+/// `<title>` would glue itself onto the first paragraph). Appends to
+/// `lines`, stopping at the
 /// 128-line cap; every line goes through `scrub_line` — document text
 /// is attacker-controlled.
 fn xml_text_lines<R: BufRead>(
@@ -1265,7 +1368,7 @@ fn xml_text_lines<R: BufRead>(
         match xml.read_event_into(&mut buf)? {
             Event::Eof => break,
             Event::Start(e) => {
-                if matches!(e.local_name().as_ref(), b"style" | b"script") {
+                if matches!(e.local_name().as_ref(), b"style" | b"script" | b"title") {
                     skip_depth += 1;
                 }
             }
@@ -1288,7 +1391,7 @@ fn xml_text_lines<R: BufRead>(
             }
             Event::End(e) => {
                 let local = e.local_name();
-                if matches!(local.as_ref(), b"style" | b"script") {
+                if matches!(local.as_ref(), b"style" | b"script" | b"title") {
                     skip_depth = skip_depth.saturating_sub(1);
                 } else if paragraph_tags.contains(&local.as_ref()) {
                     let line = scrub_line(std::mem::take(&mut current));
@@ -1477,7 +1580,19 @@ fn doc_preview(path: &Path, kind: DocKind) -> Preview {
 /// quoted for the COUNT (embedded quotes doubled) and scrubbed for
 /// display. 2 header lines + 126 tables = the shared 128-line cap.
 fn native_sqlite_lines(path: &Path) -> anyhow::Result<Vec<String>> {
+    // COUNT(*) is a full table/index scan: on a multi-GB database (a
+    // browser places.sqlite) up to 126 of them would churn disk/CPU
+    // in the preview task for a long time. Past this source size the
+    // counts print `?` (the same placeholder as a corrupt table) —
+    // the table NAMES still list instantly from sqlite_master.
+    const SQLITE_COUNT_MAX_BYTES: u64 = 64 * 1024 * 1024;
+    native_sqlite_lines_bounded(path, SQLITE_COUNT_MAX_BYTES)
+}
+
+/// Budget-parameterized core of [`native_sqlite_lines`].
+fn native_sqlite_lines_bounded(path: &Path, count_budget: u64) -> anyhow::Result<Vec<String>> {
     use rusqlite::OpenFlags;
+    let count_rows = path.metadata()?.len() <= count_budget;
     let conn = rusqlite::Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -1498,12 +1613,15 @@ fn native_sqlite_lines(path: &Path) -> anyhow::Result<Vec<String>> {
     ];
     for name in names.iter().take(126) {
         let quoted = format!("\"{}\"", name.replace('"', "\"\""));
-        let count = conn
-            .query_row(&format!("SELECT COUNT(*) FROM {quoted}"), [], |row| {
+        let count = if count_rows {
+            conn.query_row(&format!("SELECT COUNT(*) FROM {quoted}"), [], |row| {
                 row.get::<_, i64>(0)
             })
             .map(|n| n.to_string())
-            .unwrap_or_else(|_| String::from("?"));
+            .unwrap_or_else(|_| String::from("?"))
+        } else {
+            String::from("?")
+        };
         lines.push(scrub_line(format!("{count:>8}  {name}")));
     }
     Ok(lines)
@@ -2909,16 +3027,16 @@ mod new_type_tests {
                 ),
                 (
                     "OEBPS/ch1.xhtml",
-                    "<html><head><style>p { color: red }</style></head><body><p>It was a dark and stormy night.</p></body></html>",
+                    "<html><head><title>One</title><style>p { color: red }</style></head><body><p>It was a dark and stormy night.</p></body></html>",
                 ),
             ],
         );
         match doc_preview(&epub, DocKind::Epub) {
             Preview::Text { lines } => {
+                // Exact match: the head <title> ("One") must NOT leak
+                // into the first paragraph ("OneIt was a dark...").
                 assert!(
-                    lines
-                        .iter()
-                        .any(|l| l.contains("It was a dark and stormy night.")),
+                    lines.iter().any(|l| l == "It was a dark and stormy night."),
                     "{lines:?}"
                 );
                 assert!(
@@ -3256,10 +3374,8 @@ mod new_type_tests {
     fn tar_bz2_preview_lists_members() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("archive.tar.bz2");
-        let mut writer = bzip2::write::BzEncoder::new(
-            File::create(&path).unwrap(),
-            bzip2::Compression::fast(),
-        );
+        let mut writer =
+            bzip2::write::BzEncoder::new(File::create(&path).unwrap(), bzip2::Compression::fast());
         writer.write_all(&tar_bytes(&["a.txt", "b.txt"])).unwrap();
         writer.finish().unwrap();
         let lines = expect_lines(bz2_preview(&path));
@@ -3367,6 +3483,170 @@ mod new_type_tests {
         assert!(native_sevenz_list(&path).is_err());
         let lines = expect_lines(sevenz_preview(&path));
         assert!(!lines.is_empty(), "{lines:?}");
+    }
+
+    /// CRC-32 (IEEE, reflected) — just enough to craft a start header
+    /// that passes sevenz-rust's checksum verification.
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = 0xffff_ffffu32;
+        for &b in data {
+            crc ^= b as u32;
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+            }
+        }
+        !crc
+    }
+
+    /// A syntactically valid 32-byte 7z start header (correct magic and
+    /// CRC) declaring the given next-header offset/size.
+    fn sevenz_start_header(offset: u64, size: u64) -> Vec<u8> {
+        let mut start = Vec::new();
+        start.extend_from_slice(&offset.to_le_bytes());
+        start.extend_from_slice(&size.to_le_bytes());
+        start.extend_from_slice(&0u32.to_le_bytes()); // next-header CRC
+        let mut file = vec![b'7', b'z', 0xbc, 0xaf, 0x27, 0x1c, 0, 4];
+        file.extend_from_slice(&crc32(&start).to_le_bytes());
+        file.extend_from_slice(&start);
+        file
+    }
+
+    #[test]
+    fn sevenz_rejects_an_implausible_next_header_as_an_err() {
+        // sevenz-rust allocates `vec![0; next_header_size]` before any
+        // read: a 32-byte crafted file declaring a multi-TB header
+        // aborts the whole process (allocation failure is not an Err
+        // the fallback could catch). The arm must reject it up front.
+        let tmp = tempfile::tempdir().unwrap();
+        let bomb = tmp.path().join("bomb.7z");
+        std::fs::write(&bomb, sevenz_start_header(0, 0x0000_ffff_ffff_ffff)).unwrap();
+        assert!(native_sevenz_list(&bomb).is_err());
+
+        // A header that merely lies outside the file (plausible size,
+        // absurd offset) is rejected by the same length check.
+        let out_of_bounds = tmp.path().join("oob.7z");
+        std::fs::write(&out_of_bounds, sevenz_start_header(u64::MAX - 40, 8)).unwrap();
+        assert!(native_sevenz_list(&out_of_bounds).is_err());
+    }
+
+    /// gzip `data` in memory (the .svgz / bomb fixtures).
+    fn gzipped(data: &[u8]) -> Vec<u8> {
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        enc.write_all(data).unwrap();
+        enc.finish().unwrap()
+    }
+
+    #[test]
+    fn read_bounded_truncates_at_the_cap() {
+        // The font/svg arms rely on this bound: a mislabeled huge file
+        // yields a truncated buffer (whose parse fails → fallback),
+        // never the whole file in memory.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("big.bin");
+        std::fs::write(&path, [0u8; 100]).unwrap();
+        assert_eq!(read_bounded(&path, 10).unwrap().len(), 10);
+        assert_eq!(read_bounded(&path, 1000).unwrap().len(), 100);
+    }
+
+    #[test]
+    fn svgz_bomb_is_rejected_by_the_inflate_bound() {
+        // A ~4 MiB gzip can inflate to gigabytes (usvg itself has no
+        // output bound, and an allocation failure would abort rfm,
+        // skipping the text fallback): over-budget inflate must be
+        // None, sending svg_preview_in to the bat fallback.
+        let bomb = gzipped(&vec![b' '; (SVGZ_INFLATED_MAX + 1024) as usize]);
+        assert!(
+            bomb.len() < SVG_SOURCE_MAX as usize,
+            "the bomb must pass the source-read cap to prove the inflate bound"
+        );
+        assert!(inflate_svgz_bounded(bomb).is_none());
+        // Plain XML and a sane gzip pass through unchanged/inflated.
+        assert_eq!(
+            inflate_svgz_bounded(TEST_SVG.to_vec()).as_deref(),
+            Some(TEST_SVG)
+        );
+        assert_eq!(
+            inflate_svgz_bounded(gzipped(TEST_SVG)).as_deref(),
+            Some(TEST_SVG)
+        );
+    }
+
+    #[test]
+    fn sqlite_counts_are_skipped_past_the_scan_budget() {
+        // Above the budget every count is `?` — the names still list.
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("huge.sqlite");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE t1(a);
+             INSERT INTO t1 VALUES (1);",
+        )
+        .unwrap();
+        drop(conn);
+        let lines = native_sqlite_lines_bounded(&db, 0).unwrap();
+        assert!(lines[0].contains("1 table"), "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("t1") && l.contains('?')),
+            "counts must be skipped for an over-budget database: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn svgz_still_renders_through_the_bounded_inflate() {
+        // .svgz (gzip'd SVG) must keep rendering once the arm inflates
+        // the gzip layer itself instead of trusting usvg's unbounded
+        // auto-decompression.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("pic.svgz");
+        std::fs::write(&path, gzipped(TEST_SVG)).unwrap();
+        let modified = path.metadata().unwrap().modified().unwrap();
+        match svg_preview_in(None, &path, modified) {
+            Preview::Image { img, .. } => {
+                let img = img.expect("svgz must render");
+                assert_eq!((img.width(), img.height()), (960, 480));
+            }
+            Preview::Text { lines } => panic!("expected a rendered svgz, got text: {lines:?}"),
+        }
+    }
+
+    #[test]
+    fn compressed_tar_listing_stops_at_the_decompression_budget() {
+        // tar over a non-Seek stream reaches the next header by
+        // read-and-discarding the content in between: a crafted first
+        // member spanning the whole scan budget must truncate the
+        // listing there instead of decompressing gigabytes (CPU DoS on
+        // the preview task) to reach later headers.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("padded.tar.gz");
+        let gz = flate2::write::GzEncoder::new(
+            File::create(&path).unwrap(),
+            flate2::Compression::fast(),
+        );
+        let mut builder = tar::Builder::new(gz);
+        let budget = 64 * 1024 * 1024; // = TAR_SCAN_MAX
+        let mut header = tar::Header::new_gnu();
+        header.set_size(budget);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "big.bin", io::repeat(0).take(budget))
+            .unwrap();
+        let mut header = tar::Header::new_gnu();
+        header.set_size(7);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "late.txt", &b"content"[..])
+            .unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+
+        let lines = expect_lines(gz_preview(&path));
+        assert!(lines.iter().any(|l| l.contains("big.bin")), "{lines:?}");
+        assert!(
+            lines.iter().all(|l| !l.contains("late.txt")),
+            "the scan budget must stop the listing: {lines:?}"
+        );
     }
 }
 
