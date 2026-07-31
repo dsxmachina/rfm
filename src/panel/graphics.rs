@@ -1,12 +1,13 @@
 //! Terminal graphics protocol support for image previews.
 //!
 //! This module owns which protocol (kitty graphics / sixel / half-block
-//! fallback) the preview column may use, and the cell→pixel geometry needed
-//! to place real pixels into a cell layout. The detection core is pure —
-//! env lookups and probe replies are injected — so the whole decision matrix
-//! is unit-testable without a terminal. The emitters (kitty/sixel) land in
-//! later steps; until then the resolved protocol is `HalfBlock` everywhere
-//! unless detection says otherwise.
+//! fallback) the preview column may use, the cell→pixel geometry needed
+//! to place real pixels into a cell layout, and the emitters themselves.
+//! The detection core is pure — env lookups and probe replies are
+//! injected — so the whole decision matrix is unit-testable without a
+//! terminal; the emitters write to any `impl Write`, so their byte
+//! streams, the `EmitKey` re-emission gating and the frame
+//! claim-and-reconcile are unit-tested against `Vec<u8>` sinks.
 
 use std::io::{self, Write};
 use std::ops::Range;
@@ -394,7 +395,6 @@ pub fn emit_kitty(
 /// caller pre-sizes the raster to the pane pixel box and the encoder
 /// truncates to whole 6-row bands, so the raster cannot overflow into
 /// neighbouring panels (D7).
-#[allow(dead_code)] // draw-path integration (step 6)
 pub fn emit_sixel(
     w: &mut impl Write,
     key: EmitKey,

@@ -91,11 +91,25 @@ const ASSUMED_CELL: graphics::CellGeometry = graphics::CellGeometry {
     cell_h: 16,
 };
 
-/// Draw the image via the kitty graphics protocol. Returns the cell rows
-/// used, so the caller's info-line/blanking tail runs unchanged below the
-/// image. Any error falls back to the half-block loop for this frame.
+/// The cell geometry a protocol can draw with, or `None` when it cannot
+/// draw at all: kitty tolerates missing geometry (assumed cell, D2), a
+/// sixel raster is placed verbatim and demands the real cell size, and
+/// half-block is not a graphics emitter.
+fn geometry_for(proto: GraphicsProtocol) -> Option<graphics::CellGeometry> {
+    match proto {
+        GraphicsProtocol::Kitty => Some(graphics::cell_geometry().unwrap_or(ASSUMED_CELL)),
+        GraphicsProtocol::Sixel => graphics::cell_geometry(),
+        GraphicsProtocol::HalfBlock => None,
+    }
+}
+
+/// Draw the image via a graphics protocol (kitty or sixel). Returns the
+/// cell rows used, so the caller's info-line/blanking tail runs unchanged
+/// below the image. Any error falls back to the half-block loop for this
+/// frame.
 #[allow(clippy::too_many_arguments)]
-fn draw_kitty(
+fn draw_graphics(
+    proto: GraphicsProtocol,
     stdout: &mut Stdout,
     resize_cache: &mut Option<ResizeCache>,
     src: &DynamicImage,
@@ -111,7 +125,12 @@ fn draw_kitty(
     if width == 0 || rows_budget == 0 {
         return Ok(0);
     }
-    let geo = graphics::cell_geometry().unwrap_or(ASSUMED_CELL);
+    let geo = geometry_for(proto).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            "protocol needs pixel cell geometry, none available",
+        )
+    })?;
     // The raster is fitted into the pane's pixel box; the resize cache is
     // keyed on these requested pixel dims (D8).
     let (px_w, px_h) = graphics::pixel_box(width, rows_budget, geo);
@@ -130,7 +149,18 @@ fn draw_kitty(
         px_h,
         origin_cell: origin,
     };
-    graphics::emit_kitty(stdout, key, rgb, cols, rows)?;
+    match proto {
+        GraphicsProtocol::Kitty => graphics::emit_kitty(stdout, key, rgb, cols, rows)?,
+        GraphicsProtocol::Sixel => graphics::emit_sixel(stdout, key, rgb, cols, rows)?,
+        // Unreachable via the dispatch guard; kept as a graceful fallback
+        // instead of a panic in the draw path.
+        GraphicsProtocol::HalfBlock => {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "half-block is not a graphics emitter",
+            ))
+        }
+    };
     Ok(rows)
 }
 
@@ -179,15 +209,15 @@ impl Draw for FilePreview {
                 // load image
                 if img.is_some() {
                     let src = img.as_ref().unwrap();
-                    // Graphics-protocol tier: real pixels via kitty when the
-                    // frame allows a placement (single view, no overlay).
-                    // Any emit failure falls back to half-blocks for this
-                    // frame — a preview always renders *something*.
+                    // Graphics-protocol tier: real pixels via kitty/sixel
+                    // when the frame allows a placement (single view, no
+                    // overlay). Any emit failure falls back to half-blocks
+                    // for this frame — a preview always renders *something*.
                     let mut graphics_cy = None;
-                    if graphics::protocol() == GraphicsProtocol::Kitty
-                        && graphics::frame_allows_image()
-                    {
-                        match draw_kitty(
+                    let proto = graphics::protocol();
+                    if proto != GraphicsProtocol::HalfBlock && graphics::frame_allows_image() {
+                        match draw_graphics(
+                            proto,
                             stdout,
                             resize_cache,
                             src,
@@ -4956,5 +4986,21 @@ mod render_cache_tests {
         assert_eq!(image_rows(30, true), 20);
         assert_eq!(image_rows(1, true), 0);
         assert_eq!(image_rows(0, false), 0);
+    }
+
+    #[test]
+    fn graphics_geometry_requirements_per_protocol() {
+        // The test binary never calls graphics::init(), so no cell geometry
+        // was ever reported. Kitty survives that with the assumed 8x16 cell
+        // (the terminal scales into the c=/r= rectangle, D2); sixel places
+        // a raw raster and MUST have real geometry -> None forces the
+        // half-block fallback. HalfBlock is not a graphics emitter at all.
+        assert_eq!(
+            geometry_for(GraphicsProtocol::Kitty),
+            Some(ASSUMED_CELL),
+            "kitty falls back to the assumed cell size"
+        );
+        assert_eq!(geometry_for(GraphicsProtocol::Sixel), None);
+        assert_eq!(geometry_for(GraphicsProtocol::HalfBlock), None);
     }
 }

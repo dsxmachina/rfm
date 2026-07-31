@@ -154,19 +154,35 @@ in the sequence; no flag plumbing.
 Log lines shown in the widget expire after DISPLAY_TTL (logger.rs, 10s);
 the 1 s task wakes the UI only when a line actually expires.
 
-Graphics-protocol image previews (`src/panel/graphics.rs`): the protocol
-(kitty | sixel | half-block) is resolved once at startup —
-`graphics::init` in main.rs, right after `enable_raw_mode` and before the
-EventStream exists — via env heuristics plus a 250 ms poll-bounded probe
-(tmux/screen always resolve to half-block; the `image_protocol` config
-key pins it and skips probing). The resolved protocol is on the debug
-socket `state` as `image_protocol`, and the probe decision is a
-`graphics: probe -> <proto> (<reason>)` debug log line. Cell→pixel
-geometry comes from TIOCGWINSZ and is refreshed on `Event::Resize`. The
-kitty/sixel emitters — a second exception to blit-cheapness, with a
-begin_frame/end_frame claim-and-reconcile preserving the z-order
-invariant — are the follow-up steps of the graphics plan; the draw path
-stays half-block-only until they land.
+Graphics-protocol image previews (`src/panel/graphics.rs` + the sixel
+encoder in `graphics/sixel.rs`): the protocol (kitty | sixel |
+half-block) is resolved once at startup — `graphics::init` in main.rs,
+right after `enable_raw_mode` and before the EventStream exists — in
+this order: explicit `image_protocol` config pins it (no probe); else
+env heuristics ($TMUX / TERM=tmux*/screen* → half-block, kitty/WezTerm/
+Ghostty vars → kitty); else a 250 ms poll-bounded probe (kitty APC
+query + DA1; DA1 attribute `4` = sixel; kitty beats sixel; timeout →
+half-block). Cell→pixel geometry comes from TIOCGWINSZ (CSI 14 t at
+startup as fallback) and is refreshed on `Event::Resize`; sixel
+*requires* it and degrades to half-block without it, kitty assumes an
+8×16 cell. The resolved protocol is on the debug socket `state` as
+`image_protocol`; decisions/emits are `graphics:` trace/debug log lines.
+
+The emitters are the second exception to blit-cheapness, so re-emission
+is gated: a module-global `EmitKey` (path, mtime, pixel box, origin) —
+unchanged key = zero bytes written on repaint. Stale placements are
+handled by frame reconcile, not per-panel plumbing: `begin_frame`
+(manager `draw()`, allowed only in single view without a console
+overlay) → the image draw claims its key → `end_frame` erases any
+unclaimed live placement. Erase discipline: kitty deletes by id
+(`a=d,d=I` — pixels float above cells, never stamp spaces over live
+cells); sixel pixels ARE cell content, so its erase is a space-overwrite
+of the recorded cell region. The sixel raster is pre-fitted to the pane
+pixel box and truncated to whole 6-row bands, so it cannot overflow
+neighbouring panels. Emit errors fall back to the half-block loop for
+that frame. Caveat: tmux/screen swallow both protocols without
+passthrough — auto always resolves to half-block there, and even the
+explicit config override only helps users who configured passthrough.
 
 ## Architecture: native preview backends
 
