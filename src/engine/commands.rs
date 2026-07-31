@@ -36,8 +36,12 @@ enum Route {
 /// The single source of truth for binding-string routing, shared by
 /// `insert` and `insert_default` so claim checks and insertions can
 /// never diverge. Returns `None` for unroutable strings (a bare
-/// modifier prefix like `"ctrl-"`).
+/// modifier prefix like `"ctrl-"`, or the empty string — every pattern
+/// starts_with(""), so a claimed "" would prefix-drop ALL defaults).
 fn route(b: &str) -> Option<Route> {
+    if b.is_empty() {
+        return None;
+    }
     for (prefix, modifier) in [
         ("ctrl-", KeyModifiers::CONTROL),
         ("alt-", KeyModifiers::ALT),
@@ -692,8 +696,8 @@ impl CommandParser {
                 Some(Route::Pattern(pattern)) => {
                     self.key_commands.insert(pattern, cmd.clone());
                 }
-                // route() only rejects non-empty strings (a bare modifier
-                // prefix like "ctrl-"); silence would hide the user's typo.
+                // route() rejects the empty string and bare modifier
+                // prefixes like "ctrl-"; silence would hide the user's typo.
                 None => warn!("ignoring malformed keybinding '{b}'"),
             }
         }
@@ -1205,6 +1209,17 @@ mod builder_tests {
         assert!(dropped.iter().any(|d| d.binding == "cd"));
         // unrelated defaults survive:
         assert!(matches!(press(&mut p, 'u'), Command::Undo));
+    }
+
+    #[test]
+    fn empty_binding_string_is_rejected_not_mass_dropping() {
+        // A typo like `search = [""]` must not claim the empty pattern:
+        // every pattern starts_with(""), so a claimed "" would prefix-drop
+        // ALL defaults and leave the keyboard dead.
+        let user: KeyConfig = toml::from_str("[general]\nsearch = [\"\"]").unwrap();
+        let (mut p, dropped) = CommandParser::build(&defaults(), &user, &Default::default());
+        assert!(matches!(press(&mut p, 'j'), Command::Move(Move::Down)));
+        assert!(!dropped.iter().any(|d| d.binding == "j"));
     }
 
     #[test]

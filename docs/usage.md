@@ -103,7 +103,7 @@ All of these are typed like words and are reversible via [undo](#undo--redo)
 | `pp` | paste (`po` to overwrite existing files) |
 | `delete` | delete marked items (to trash, if enabled) |
 | `zip` / `tar` | create an archive from marked items |
-| `extract` / `unzip` | extract an archive in place |
+| `extract` | extract an archive in place |
 
 **Bulk-rename**: mark several files and run `rename` — rfm opens the list in your
 editor, and applying the edited names is recorded as a single undoable

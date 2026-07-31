@@ -278,7 +278,7 @@ paste            = [ "paste", "pp", "ctrl-v" ] # paste previously cut or copied 
 paste_overwrite  = [ "po", "ctrl-V" ]          # paste items and overwrite existing elements
 zip              = [ "zip" ]                   # create a zip archive from selected items (requires 'zip')
 tar              = [ "tar" ]                   # create a tar archive from selected items (requires 'tar')
-extract          = [ "extract", "unzip" ]      # extract archive in place (requires archive program)
+extract          = [ "extract" ]               # extract archive in place (requires archive program)
 #
 # Undo/redo works within the running session only (the stack is not persisted).
 # Undoable: rename, cut/copy-paste, mkdir, touch, bulk-rename, zip/tar (redo of an
