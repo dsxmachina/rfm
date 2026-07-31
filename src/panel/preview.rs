@@ -225,8 +225,10 @@ impl FilePreview {
         let preview = match (mime.type_().as_str(), mime.subtype().as_str()) {
             // Before the raster arm: image/svg+xml used to mis-land on
             // the bitmap decode (which cannot read SVG). Covers .svgz
-            // too — usvg auto-detects the gzip magic.
-            ("image", "svg+xml") => svg_preview(&path, modified),
+            // too — usvg auto-detects the gzip magic. NOTE: mime 0.3
+            // splits "svg+xml" into subtype "svg" + suffix "xml", so
+            // the subtype to match is "svg".
+            ("image", "svg") => svg_preview(&path, modified),
             ("image", _) => cached_image_preview(&path, modified, &mime),
             // ttf/otf (and any sfnt the sniff finds) get the rendered
             // sample; woff/woff2 currently degrade to the stat fallback
@@ -700,7 +702,12 @@ fn font_preview_in(
             }
         }
         Err(e) => {
-            log::debug!("font sample failed, falling back to stat: {e}");
+            // Also hit by binary junk the sniff mistakes for a font —
+            // the ttf magic (00 01 00 00) is notoriously ambiguous.
+            log::debug!(
+                "font sample failed, falling back to stat: {}: {e}",
+                path.display()
+            );
             stat_preview(path, mime)
         }
     }
@@ -2269,6 +2276,37 @@ mod new_type_tests {
         match svg_preview_in(Some(cache.path()), &path, modified) {
             Preview::Image { img, .. } => assert!(img.is_some(), "hit must serve cached pixels"),
             _ => panic!("expected an image preview from the cache"),
+        }
+    }
+
+    #[test]
+    fn svg_dispatch_reaches_the_render_arm() {
+        // mime 0.3 splits image/svg+xml into subtype "svg" + suffix
+        // "xml", so an arm matching the subtype against "svg+xml" never
+        // fires and .svg mis-lands on the bitmap decode (caught by the
+        // e2e smoke: "native image decode failed" for pic.svg).
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("pic.svg");
+        std::fs::write(&path, TEST_SVG).unwrap();
+        match FilePreview::new(path).preview {
+            Preview::Image { img, .. } => assert!(img.is_some()),
+            Preview::Text { lines } => {
+                panic!("svg must dispatch to the render arm, got text: {lines:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn font_dispatch_reaches_the_sample_arm() {
+        // font/ttf → ("font", _); pins the dispatch end-to-end.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("sample.ttf");
+        std::fs::write(&path, TEST_FONT).unwrap();
+        match FilePreview::new(path).preview {
+            Preview::Image { img, .. } => assert!(img.is_some()),
+            Preview::Text { lines } => {
+                panic!("ttf must dispatch to the font arm, got text: {lines:?}")
+            }
         }
     }
 
