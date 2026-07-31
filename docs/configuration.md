@@ -112,15 +112,22 @@ jump = [ "'" ]   # '<letter> returns to it
 use_trash = true       # delete to the freedesktop trash (undoable) instead of
                        # deleting permanently. See usage.md#trash and usage.md#undo--redo.
 preview_cache = true   # persist image/video preview thumbnails in
-                       # $XDG_CACHE_HOME/rfm/thumbnails (usually ~/.cache/rfm/thumbnails)
-                       # so they survive restarts. Pruned automatically at startup
-                       # (entries older than 30 days, capped at 256 MiB).
-                       # When disabled, image previews stay in memory only;
-                       # video thumbnails still use a temp dir (usually tmpfs,
-                       # cleaned after 7 days), since ffmpeg writes to a file.
+                       # $XDG_CACHE_HOME/rfm/thumbnails so they survive restarts
 fancy_icons = false    # use Nerd Font icons (needs a Nerd Font in your terminal)
 rate_limit_interval_ms = 500   # preview decode rate limit while scrolling
 ```
+
+With `preview_cache = true` (the default), the rendered image and video
+preview rasters are stored in `$XDG_CACHE_HOME/rfm/thumbnails/` (usually
+`~/.cache/rfm/thumbnails/`) and reused across restarts. Entries are keyed on
+the file's absolute path and mtime, so edited files re-render automatically;
+a startup prune drops entries untouched for 30 days and caps the cache at
+256 MB. `rm -rf ~/.cache/rfm` is always safe, even while rfm is running.
+
+With `preview_cache = false`, nothing about your files is written to disk:
+image previews are held in memory only, and video previews show a mediainfo
+text block instead of a thumbnail (generating an ffmpeg thumbnail would be a
+write).
 
 When `fancy_icons = true`, rfm renders file-type icons from the
 [Nerd Fonts](https://www.nerdfonts.com/) project (like yazi). Your terminal must

@@ -178,29 +178,6 @@ in the sequence; no flag plumbing.
 Log lines shown in the widget expire after DISPLAY_TTL (logger.rs, 10s);
 the 1 s task wakes the UI only when a line actually expires.
 
-## Architecture: thumbnail cache
-
-Persistent image/video preview thumbnails in
-`$XDG_CACHE_HOME/rfm/thumbnails` (fallback `~/.cache`). The filename is
-the entire metadata — `<seahash(path):016x>-<mtime>.jpg` — no index, no
-locks: a changed source means a new name, and the old entry is just a
-stale sibling. Writes are atomic (same-dir `.part`/`.part.jpg` +
-rename); every store sweeps stale siblings of the same path-hash;
-startup prunes 30-day/256-MiB overflows via `spawn_blocking`. Corrupt
-entries self-heal: lookups decode-check, delete on failure, and the
-caller regenerates. `preview_cache` (config, default true) gates it:
-off → previews are in-memory only and video thumbs fall back to
-`temp_dir()/rfm-thumbnails` with a 7-day prune (the pre-cache scheme).
-
-Module `src/panel/thumb_cache.rs`: pure core
-(`entry_name`/`lookup_in`/`store_in`/`cleanup_stale`/`prune_dir`,
-explicit dir params, unit-tested without the global state) under thin
-OnceCell wrappers (`init`/`dir`/`lookup`/`store`/`prune`). Consumers in
-preview.rs: `cached_image_preview` (image path) and `ffmpeg_thumbnail`
-(video path). Test interactively by pointing `XDG_CACHE_HOME` at a
-scratch dir in the tmux pane before launching rfm; the debug-socket
-`log` shows "thumbnail cache hit" lines.
-
 ## Architecture: native preview backends
 
 Previews (`src/panel/preview.rs`) are native-first: each arm of the
@@ -284,3 +261,40 @@ multi-select.
 
 Debug socket `state` exposes
 `undo_depth` / `redo_depth`.
+
+## Architecture: preview raster cache
+
+Persistent image/video preview rasters in `$XDG_CACHE_HOME/rfm/thumbnails/`
+(`src/panel/raster_cache.rs`; created 0700 per the XDG basedir spec). The
+filename is the entire metadata: `<seahash(abs path):016x>-<mtime_secs>-
+<kind>.jpg`, with kinds `img960` (image thumbnails, bounded to 960×540 —
+never upscaled) and `vid120` (ffmpeg frames, `scale=120:-1`). Same
+path+mtime with two kinds coexist; a store's stale-sibling sweep deletes
+everything with the `<hash>-` prefix OUTSIDE the keep scope
+`<hash>-<mtime>-` (old mtimes of any kind, plus their orphaned `.part`s).
+
+Writes are atomic: same-dir `<final>.<pid>-<seq>.part` temp name (the
+per-process counter matters — the directory preloader and the on-demand
+preview task can store the same entry concurrently), then rename; the
+ffmpeg producer keeps `.jpg` LAST in its part name so container inference
+works. Lookups apply the corrupt-entry rule (decode failure → delete +
+regenerate — both producers, never a blank preview). Everything is
+best-effort: a cache fault only costs a recompute, and the video producer
+re-creates the dir before each ffmpeg run, so `rm -rf ~/.cache/rfm` is
+safe mid-session. Startup prune (spawn_blocking): 30-day age, then
+oldest-first down to 256 MB (one shared budget).
+
+`preview_cache` (config, default true) gates it via
+`raster_cache::init(enabled)` in main. `false` is a privacy promise —
+nothing about the user's files is written: images run in-memory
+(`native_image_preview`), videos degrade to mediainfo text (no ffmpeg
+thumbnail at all). Enabled-but-unavailable (no resolvable cache home) is
+different: videos then fall back to the pre-cache `temp_dir()/
+rfm-thumbnails` (7-day prune). See `video_thumbnail_dir_from`.
+
+Testing: unit tests never call `init` (uninitialized == opted out); the
+producers are dir-parameterized (`cached_image_preview_in`,
+`ffmpeg_thumbnail(dir, …)`) so tests pass tempdirs. E2e: launch in tmux
+with `XDG_CACHE_HOME=$(mktemp -d)` in the pane before rfm, then assert on
+the entries in `$XDG_CACHE_HOME/rfm/thumbnails` and grep the socket `log`
+for "raster cache hit".

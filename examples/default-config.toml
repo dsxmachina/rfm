@@ -59,9 +59,9 @@ use_trash = true
 # pruned automatically at startup (older than 30 days, capped at 256 MiB);
 # "rm -rf ~/.cache/rfm" is always safe.
 #
-# When disabled, image previews stay in memory only; video thumbnails still
-# go through a temp directory (usually tmpfs, cleaned after 7 days), since
-# ffmpeg needs a file to write to.
+# When disabled, nothing about your files is written to disk: image previews
+# stay in memory only, and video previews show a mediainfo text block instead
+# of a thumbnail (generating an ffmpeg thumbnail would be a write).
 #
 preview_cache = true
 

@@ -65,8 +65,8 @@ pub struct GeneralConfig {
     /// deleting permanently. Defaults to `true`.
     #[serde(default = "default_true")]
     pub use_trash: bool,
-    /// Persist image/video preview thumbnails in $XDG_CACHE_HOME/rfm so
-    /// they survive restarts. Defaults to `true`.
+    /// Persist image/video preview rasters in $XDG_CACHE_HOME/rfm so they
+    /// survive restarts. Defaults to `true`.
     #[serde(default = "default_true")]
     pub preview_cache: bool,
     /// Rate limit interval for preview updates in milliseconds
@@ -96,7 +96,16 @@ mod defaults_tests {
         let config: Config = default_tree().try_into().unwrap();
         config.keys.assert_complete(); // panics with the field name if None
     }
+
+    #[test]
+    fn preview_cache_defaults_true_and_parses_false() {
+        let g: GeneralConfig = toml::from_str("").unwrap();
+        assert!(g.preview_cache);
+        let g: GeneralConfig = toml::from_str("preview_cache = false").unwrap();
+        assert!(!g.preview_cache);
+    }
 }
+
 
 pub mod color {
     use anyhow::{anyhow, Context, Result};

@@ -209,10 +209,11 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Persistent thumbnail cache: resolve/create the dir once, then prune
-    // old entries off the hot path.
-    panel::thumb_cache::init(preview_cache);
-    tokio::task::spawn_blocking(panel::thumb_cache::prune);
+    // Persistent preview raster cache: resolve/create the dir once (before
+    // the first preview can run), then evict stale entries in the
+    // background (fire-and-forget).
+    panel::raster_cache::init(preview_cache);
+    tokio::task::spawn_blocking(panel::raster_cache::prune);
 
     let opener = OpenEngine::with_config(loaded.config.open);
 
