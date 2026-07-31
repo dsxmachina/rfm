@@ -272,4 +272,6 @@ closes.
 The notice appears **once per rfm version**: however you answer (including
 Esc), it won't ask again until the next upgrade. Answering "not now" on the
 migration simply re-offers it with the next version — or run
-`rfm --migrate-config` yourself anytime.
+`rfm --migrate-config` yourself anytime. Conflicts you chose to keep are
+re-listed on the next version's notice as long as the binding still
+collides — keeping them again is a single `Esc`.
