@@ -1905,6 +1905,118 @@ fn pdf_text_tier(path: &Path) -> anyhow::Result<Preview> {
     })
 }
 
+/// Info footer for the pdf image tier: metadata via the guarded lopdf
+/// load (best-effort — an unreadable source keeps just Size/Modified;
+/// the renderer may well parse files lopdf cannot).
+fn pdf_image_info(path: &Path) -> Vec<String> {
+    let mut lines = match load_pdf_guarded(path) {
+        Ok(doc) => {
+            let mut lines = native_pdf_lines(&doc, path);
+            lines.truncate(2); // "PDF · N pages" + title (or blank)
+            lines.push(String::new());
+            lines
+        }
+        Err(_) => Vec::new(),
+    };
+    lines.extend(size_modified_lines(path));
+    lines
+}
+
+/// Render page 1 of `path` into `dir` under KIND_PDF. Discipline as
+/// `ffmpeg_thumbnail`: `lookup_in` first (corrupt-entry rule),
+/// re-create the dir (mid-session `rm -rf` safety), render to a
+/// same-dir `<entry>.<part_token()>.part.<ext>` temp name (extension
+/// LAST so the tools' format inference works: pdftoppm gets the
+/// prefix and appends ".jpg" itself, mutool writes ".png"), then
+/// decode the part (`with_guessed_format` — the output format differs
+/// per tool), delete it, and finalize via `store_in` — whose own
+/// part+rename gives the atomic final write and the stale-sibling
+/// sweep. This decode→store_in normalization is a deliberate
+/// deviation from ffmpeg_thumbnail's direct rename: one uniform path
+/// for both tools, uniform JPEG quality. Non-zero exit, missing or
+/// undecodable output => remove the part, Err (the caller drops to
+/// the text tier).
+fn pdf_render_first_page_in(
+    dir: &Path,
+    renderer: PdfRenderer,
+    path: &Path,
+    mtime: u64,
+) -> anyhow::Result<Preview> {
+    if let Some(img) = raster_cache::lookup_in(dir, path, mtime, raster_cache::KIND_PDF) {
+        log::debug!("raster cache hit for {}", path.display());
+        return Ok(Preview::Image {
+            img: Some(img),
+            info: pdf_image_info(path),
+        });
+    }
+    let name = raster_cache::entry_name(path, mtime, raster_cache::KIND_PDF);
+    log::debug!("rendering pdf page 1 of {}", path.display());
+    let _ = raster_cache::create_dir_all_private(dir);
+    let prefix = dir.join(format!("{name}.{}.part", raster_cache::part_token()));
+    let mut cmd;
+    let part;
+    match renderer {
+        PdfRenderer::Pdftoppm => {
+            // pdftoppm appends ".jpg" to the given prefix itself.
+            part = PathBuf::from(format!("{}.jpg", prefix.display()));
+            cmd = std::process::Command::new("pdftoppm");
+            cmd.arg("-jpeg")
+                .arg("-f")
+                .arg("1")
+                .arg("-l")
+                .arg("1")
+                .arg("-scale-to")
+                .arg("960")
+                .arg("-singlefile")
+                .arg(path)
+                .arg(&prefix);
+        }
+        PdfRenderer::Mutool => {
+            part = PathBuf::from(format!("{}.png", prefix.display()));
+            cmd = std::process::Command::new("mutool");
+            cmd.arg("draw")
+                .arg("-o")
+                .arg(&part)
+                .arg("-w")
+                .arg("960")
+                .arg("-h")
+                .arg("540")
+                .arg(path)
+                .arg("1");
+        }
+    }
+    cmd.stdin(Stdio::null());
+    let out = cmd.output()?;
+    if !out.status.success() || !part.exists() {
+        // A failed run may still have created a partial file; drop it.
+        let _ = std::fs::remove_file(&part);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let tail: Vec<&str> = stderr.lines().rev().take(3).collect();
+        anyhow::bail!(
+            "{renderer:?} did not render a page ({}): {}",
+            out.status,
+            tail.into_iter().rev().collect::<Vec<_>>().join(" | ")
+        );
+    }
+    let decoded = image::io::Reader::open(&part)
+        .map_err(anyhow::Error::from)
+        .and_then(|r| Ok(r.with_guessed_format()?.decode()?));
+    let _ = std::fs::remove_file(&part);
+    let img = decoded?;
+    // Defensive bound: the cache must never hold an unbounded raster,
+    // whatever the tool produced.
+    let img = if img.width() <= 960 && img.height() <= 540 {
+        img
+    } else {
+        img.thumbnail(960, 540)
+    };
+    raster_cache::store_in(dir, path, mtime, raster_cache::KIND_PDF, &img)?;
+    Ok(Preview::Image {
+        img: Some(img),
+        info: pdf_image_info(path),
+    })
+}
+
 /// Dependency-free stat block for generic application/* files: path,
 /// size, mtime, MIME type, permissions. Replaces the mediainfo
 /// boilerplate; an Err routes to the mediainfo fallback.
@@ -4223,6 +4335,94 @@ mod pdf_tests {
         // Unit tests never call set_pdf_render, so every other test
         // stays hermetic (no probe spawns, no external renders).
         assert!(!pdf_render_enabled());
+    }
+
+    /// Cache-dir entries belonging to `pdf` (16-hex hash prefix match),
+    /// any kind — the leftovers detector for the render tests.
+    fn cache_entries_of(dir: &Path, pdf: &Path) -> Vec<String> {
+        let prefix = raster_cache::entry_name(pdf, 0, raster_cache::KIND_PDF)[..17].to_string();
+        std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .filter(|name| name.starts_with(&prefix))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn pdf_render_hits_the_cache_without_spawning() {
+        // A pre-seeded entry must be served BEFORE any renderer spawn:
+        // this passes on a machine without pdftoppm (no skip guard —
+        // that absence is the point).
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let pdf = tmp.path().join("doc.pdf");
+        std::fs::write(&pdf, b"never parsed on the hit path").unwrap();
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::new(8, 8));
+        raster_cache::store_in(cache.path(), &pdf, 42, raster_cache::KIND_PDF, &img).unwrap();
+        match pdf_render_first_page_in(cache.path(), PdfRenderer::Pdftoppm, &pdf, 42) {
+            Ok(Preview::Image { img, .. }) => assert!(img.is_some()),
+            other => panic!("expected a cache-hit image preview, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pdftoppm_renders_page_one_into_the_cache() {
+        let Some(renderer) = pdf_renderer() else {
+            eprintln!("skipping: no pdf renderer installed");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let pdf = make_pdf(tmp.path(), "doc.pdf", "Rendered", 2);
+        match pdf_render_first_page_in(cache.path(), renderer, &pdf, 7).unwrap() {
+            Preview::Image { img, .. } => assert!(img.is_some()),
+            other => panic!("expected an image preview, got {other:?}"),
+        }
+        let name = raster_cache::entry_name(&pdf, 7, raster_cache::KIND_PDF);
+        let entry = cache.path().join(&name);
+        assert!(entry.is_file(), "the render must land in the cache");
+        let cached = raster_cache::lookup_in(cache.path(), &pdf, 7, raster_cache::KIND_PDF)
+            .expect("the cached entry must decode");
+        assert!(
+            cached.width() <= 960 && cached.height() <= 540,
+            "bounded render: {}x{}",
+            cached.width(),
+            cached.height()
+        );
+        // atomicity: no .part siblings left behind
+        assert_eq!(cache_entries_of(cache.path(), &pdf), vec![name]);
+    }
+
+    #[test]
+    fn pdf_render_failure_leaves_no_part_files() {
+        let Some(renderer) = pdf_renderer() else {
+            eprintln!("skipping: no pdf renderer installed");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let garbage = tmp.path().join("broken.pdf");
+        std::fs::write(&garbage, b"%PDF-1.4\nnot a pdf").unwrap();
+        assert!(pdf_render_first_page_in(cache.path(), renderer, &garbage, 7).is_err());
+        assert!(
+            cache_entries_of(cache.path(), &garbage).is_empty(),
+            "a failed render must leave nothing behind"
+        );
+    }
+
+    #[test]
+    fn kind_pdf_coexists_with_other_kinds() {
+        // The raster-cache key discriminator covers the new kind: same
+        // source and mtime, different producer → distinct entries.
+        let pdf = Path::new("/some/doc.pdf");
+        let pdf_entry = raster_cache::entry_name(pdf, 100, raster_cache::KIND_PDF);
+        let img_entry = raster_cache::entry_name(pdf, 100, raster_cache::KIND_IMAGE);
+        assert_ne!(pdf_entry, img_entry);
+        assert!(pdf_entry.ends_with("-pdf-p1-960.jpg"), "{pdf_entry}");
     }
 
     #[test]
