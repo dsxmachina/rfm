@@ -8,11 +8,15 @@
 //! later steps; until then the resolved protocol is `HalfBlock` everywhere
 //! unless detection says otherwise.
 
+use std::io::{self, Write};
+use std::ops::Range;
 use std::os::unix::io::RawFd;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use once_cell::sync::OnceCell;
+use parking_lot::Mutex;
 
 use crate::config::ImageProtocolChoice;
 
@@ -220,6 +224,283 @@ pub fn cells_for(px: u32, cell_px: u16) -> u16 {
         return 0;
     }
     px.div_ceil(cell_px as u32).min(u16::MAX as u32) as u16
+}
+
+/// Kitty `c=`/`r=` placement for a raster: ceil to cells, clamped to the
+/// pane span so the image can never bleed into a neighbouring panel.
+#[allow(dead_code)] // consumed by the draw-path dispatch (step 6)
+pub fn placement_cells(
+    px_w: u32,
+    px_h: u32,
+    geo: CellGeometry,
+    max_cols: u16,
+    max_rows: u16,
+) -> (u16, u16) {
+    (
+        cells_for(px_w, geo.cell_w).min(max_cols),
+        cells_for(px_h, geo.cell_h).min(max_rows),
+    )
+}
+
+// --- Frame claim + reconcile, kitty emitter (D4/D5/D6).
+
+/// Identity of a transmitted preview image (D5). When the computed key
+/// equals the live one, a repaint emits *nothing* for the raster region —
+/// unrelated dirty repaints cost zero retransmission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmitKey {
+    pub path: PathBuf,
+    pub mtime_secs: u64,
+    pub px_w: u32,
+    pub px_h: u32,
+    /// Top-left cell of the placement, 0-based screen coordinates.
+    pub origin_cell: (u16, u16),
+}
+
+/// The placement currently on screen.
+#[derive(Debug, Clone)]
+struct LiveImage {
+    key: EmitKey,
+    /// Kitty image id; `None` for protocols without ids (sixel).
+    id: Option<u32>,
+    /// Occupied cells as (columns, rows), absolute screen coordinates.
+    region: (Range<u16>, Range<u16>),
+}
+
+/// Module-global (not per-`FilePreview`): a new preview *replaces* the whole
+/// `FilePreview`, so a per-instance field could never erase its
+/// predecessor's placement (D5).
+static LIVE: Mutex<Option<LiveImage>> = Mutex::new(None);
+/// The emit key claimed by this frame's draw pass, reconciled in
+/// [`end_frame`].
+static CLAIMED: Mutex<Option<EmitKey>> = Mutex::new(None);
+/// Whether the current frame may place a graphics image (single view, no
+/// console overlay). Defaults to `false` so draw-path unit tests (which
+/// never run [`begin_frame`]) stay on the half-block fallback.
+static FRAME_ALLOWED: AtomicBool = AtomicBool::new(false);
+/// Fresh kitty image id per transmission. Fixed non-zero base so rfm's ids
+/// are recognizable in terminal-side debugging.
+static NEXT_ID: AtomicU32 = AtomicU32::new(0x4d46);
+
+/// Result of an emit call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Emitted {
+    /// The raster was (re-)transmitted.
+    Transmitted,
+    /// The live placement already matches the key — nothing was written.
+    Gated,
+}
+
+/// Mark the start of a draw pass (top of `PanelManager::draw`, D4).
+/// `image_allowed`: single view and no console overlay — a kitty placement
+/// floats above cells, so overlays must force the half-block fallback.
+#[allow(dead_code)] // consumed by the draw-path dispatch (step 6)
+pub fn begin_frame(image_allowed: bool) {
+    FRAME_ALLOWED.store(image_allowed, Ordering::Relaxed);
+    *CLAIMED.lock() = None;
+}
+
+/// Whether the current frame may draw via a graphics protocol.
+#[allow(dead_code)] // consumed by the draw-path dispatch (step 6)
+pub fn frame_allows_image() -> bool {
+    FRAME_ALLOWED.load(Ordering::Relaxed)
+}
+
+/// Reconcile at the end of a draw pass (just before
+/// `EndSynchronizedUpdate`): a live placement whose key was not claimed this
+/// frame is stale — the selection moved, an overlay opened, the view split —
+/// and is erased. This one hook covers every stale-image case (D4).
+#[allow(dead_code)] // consumed by the draw-path dispatch (step 6)
+pub fn end_frame(w: &mut impl Write) -> io::Result<()> {
+    let claimed = CLAIMED.lock().take();
+    let mut live = LIVE.lock();
+    if let Some(l) = live.as_ref() {
+        if claimed.as_ref() != Some(&l.key) {
+            // Kitty: delete-by-id only — the cells underneath were already
+            // repainted by this frame's draw pass, stamping spaces here
+            // would destroy them (and any overlay on top). Id-less
+            // placements (sixel) *are* cells and need the overwrite.
+            delete_placement(w, l)?;
+            *live = None;
+        }
+    }
+    Ok(())
+}
+
+/// Erase the live placement unconditionally: delete-by-id plus a
+/// space-overwrite of the recorded cell region (belt and braces — also
+/// correct on terminals that ignore the delete).
+#[allow(dead_code)] // draw-path integration (step 6)
+pub fn erase_live(w: &mut impl Write) -> io::Result<()> {
+    if let Some(live) = LIVE.lock().take() {
+        delete_placement(w, &live)?;
+        blank_region(w, &live.region)?;
+    }
+    Ok(())
+}
+
+/// Transmit `rgb` via the kitty graphics protocol, gated on `key`:
+/// - live key equals `key` → write nothing, claim the frame, `Gated`;
+/// - otherwise delete the previous placement (by id), blank the target
+///   region (clears half-block remnants from fallback frames), place the
+///   cursor at the origin and transmit base64-chunked with a fresh id.
+///
+/// Sized `c=`/`r=` cells so the terminal scales into exactly the pane
+/// rectangle (exact clipping, D6). `q=2` everywhere: the terminal must
+/// never answer into the event stream.
+#[allow(dead_code)] // consumed by the draw-path dispatch (step 6)
+pub fn emit_kitty(
+    w: &mut impl Write,
+    key: EmitKey,
+    rgb: &image::RgbImage,
+    cols: u16,
+    rows: u16,
+) -> io::Result<Emitted> {
+    if LIVE.lock().as_ref().map_or(false, |l| l.key == key) {
+        *CLAIMED.lock() = Some(key);
+        log::trace!("graphics: gated (unchanged)");
+        return Ok(Emitted::Gated);
+    }
+    if let Some(old) = LIVE.lock().take() {
+        delete_placement(w, &old)?;
+    }
+    let region = (
+        key.origin_cell.0..key.origin_cell.0.saturating_add(cols),
+        key.origin_cell.1..key.origin_cell.1.saturating_add(rows),
+    );
+    blank_region(w, &region)?;
+    move_to(w, key.origin_cell)?;
+
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    transmit_kitty(w, id, rgb, cols, rows)?;
+    log::trace!(
+        "graphics: transmit kitty id={id} {}x{}",
+        rgb.width(),
+        rgb.height()
+    );
+    *LIVE.lock() = Some(LiveImage {
+        key: key.clone(),
+        id: Some(id),
+        region,
+    });
+    *CLAIMED.lock() = Some(key);
+    Ok(Emitted::Transmitted)
+}
+
+/// Base64 payload chunk size in chars (kitty protocol limit).
+const KITTY_CHUNK: usize = 4096;
+
+/// Direct transmission `a=T,f=24`: the raw RGB bytes, base64, chunked at
+/// 4096 chars with `m=1` continuations and a final `m=0`.
+fn transmit_kitty(
+    w: &mut impl Write,
+    id: u32,
+    rgb: &image::RgbImage,
+    cols: u16,
+    rows: u16,
+) -> io::Result<()> {
+    let payload = b64(rgb.as_raw());
+    let bytes = payload.as_bytes();
+    let mut chunks: Vec<&[u8]> = bytes.chunks(KITTY_CHUNK).collect();
+    if chunks.is_empty() {
+        chunks.push(&[]); // degenerate raster: still send one command
+    }
+    let last = chunks.len() - 1;
+    for (i, chunk) in chunks.iter().enumerate() {
+        let m = u8::from(i < last);
+        if i == 0 {
+            write!(
+                w,
+                "\x1b_Ga=T,f=24,s={},v={},i={},c={},r={},q=2,m={};",
+                rgb.width(),
+                rgb.height(),
+                id,
+                cols,
+                rows,
+                m
+            )?;
+        } else {
+            write!(w, "\x1b_Gm={m};")?;
+        }
+        w.write_all(chunk)?;
+        w.write_all(b"\x1b\\")?;
+    }
+    Ok(())
+}
+
+/// Remove a placement from the terminal. Kitty: `a=d,d=I` — capital `I`
+/// also frees the pixel data. Id-less placements (sixel) have no delete
+/// command; their pixels are ordinary cell content, overwritten with spaces.
+fn delete_placement(w: &mut impl Write, live: &LiveImage) -> io::Result<()> {
+    match live.id {
+        Some(id) => {
+            write!(w, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
+            log::trace!("graphics: erase id={id}");
+        }
+        None => blank_region(w, &live.region)?,
+    }
+    Ok(())
+}
+
+/// Overwrite a cell region with default-colored spaces.
+fn blank_region(w: &mut impl Write, region: &(Range<u16>, Range<u16>)) -> io::Result<()> {
+    let (cols, rows) = region;
+    if cols.is_empty() || rows.is_empty() {
+        return Ok(());
+    }
+    write!(w, "\x1b[0m")?; // SGR reset: spaces in default colors
+    let blanks = " ".repeat(cols.len());
+    for y in rows.clone() {
+        move_to(w, (cols.start, y))?;
+        w.write_all(blanks.as_bytes())?;
+    }
+    Ok(())
+}
+
+/// `CUP` to a 0-based cell (the CSI is 1-based). Raw escape rather than
+/// crossterm so the emitters stay testable against any `Write` sink.
+fn move_to(w: &mut impl Write, cell: (u16, u16)) -> io::Result<()> {
+    write!(w, "\x1b[{};{}H", cell.1 as u32 + 1, cell.0 as u32 + 1)
+}
+
+const B64_TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// RFC 4648 base64 with padding. Hand-rolled (~15 lines): the `base64`
+/// crate in the lock is transitive-only and not worth the dependency (D6).
+fn b64(data: &[u8]) -> String {
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let n = (chunk[0] as u32) << 16
+            | (*chunk.get(1).unwrap_or(&0) as u32) << 8
+            | *chunk.get(2).unwrap_or(&0) as u32;
+        out.push(B64_TABLE[(n >> 18) as usize & 63] as char);
+        out.push(B64_TABLE[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            B64_TABLE[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            B64_TABLE[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// Test-only view of the live placement: `(key, id)`.
+#[cfg(test)]
+fn live_snapshot_for_test() -> Option<(EmitKey, Option<u32>)> {
+    LIVE.lock().as_ref().map(|l| (l.key.clone(), l.id))
+}
+
+/// Reset the module-global emitter state between tests.
+#[cfg(test)]
+fn reset_emit_state_for_test() {
+    *LIVE.lock() = None;
+    *CLAIMED.lock() = None;
+    FRAME_ALLOWED.store(false, Ordering::Relaxed);
 }
 
 // --- I/O shell: resolved protocol + geometry, startup probe, ioctl.
@@ -887,5 +1168,271 @@ mod tests {
         assert_eq!(GraphicsProtocol::Kitty.name(), "kitty");
         assert_eq!(GraphicsProtocol::Sixel.name(), "sixel");
         assert_eq!(GraphicsProtocol::HalfBlock.name(), "half-block");
+    }
+
+    // --- kitty emitter (step 4)
+
+    use image::{Rgb, RgbImage};
+    use std::path::PathBuf;
+
+    /// The emitter state (LIVE/CLAIMED/FRAME_ALLOWED) is module-global by
+    /// design (D5) — cargo test runs threads in parallel, so every stateful
+    /// emitter test serializes on this lock and starts from a clean slate.
+    static EMIT_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+    fn emit_guard() -> parking_lot::MutexGuard<'static, ()> {
+        let guard = EMIT_LOCK.lock();
+        reset_emit_state_for_test();
+        guard
+    }
+
+    fn test_key(name: &str, px_w: u32, px_h: u32) -> EmitKey {
+        EmitKey {
+            path: PathBuf::from(name),
+            mtime_secs: 1,
+            px_w,
+            px_h,
+            origin_cell: (10, 2),
+        }
+    }
+
+    /// Split the emitted bytes into kitty APC sequences, returning
+    /// `(control_keys, payload)` per `\x1b_G<keys>[;<payload>]\x1b\\`.
+    /// Non-APC bytes (CSI moves, spaces) between sequences are skipped.
+    fn apc_sequences(bytes: &[u8]) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i + 3 <= bytes.len() {
+            if &bytes[i..i + 3] != b"\x1b_G" {
+                i += 1;
+                continue;
+            }
+            let body_start = i + 3;
+            let end = bytes[body_start..]
+                .windows(2)
+                .position(|w| w == b"\x1b\\")
+                .expect("unterminated APC sequence")
+                + body_start;
+            let body = &bytes[body_start..end];
+            let (keys, payload) = match body.iter().position(|&b| b == b';') {
+                Some(p) => (&body[..p], &body[p + 1..]),
+                None => (body, &b""[..]),
+            };
+            out.push((
+                String::from_utf8_lossy(keys).into_owned(),
+                String::from_utf8_lossy(payload).into_owned(),
+            ));
+            i = end + 2;
+        }
+        out
+    }
+
+    /// Value of `k=` in an APC control-key list, exact-matched per key.
+    fn key_val(keys: &str, k: &str) -> Option<String> {
+        keys.split(',')
+            .find_map(|kv| kv.strip_prefix(&format!("{k}=")))
+            .map(str::to_string)
+    }
+
+    #[test]
+    fn base64_known_vectors() {
+        // RFC 4648 test vectors, padding included.
+        assert_eq!(b64(b""), "");
+        assert_eq!(b64(b"f"), "Zg==");
+        assert_eq!(b64(b"fo"), "Zm8=");
+        assert_eq!(b64(b"foo"), "Zm9v");
+        assert_eq!(b64(b"foob"), "Zm9vYg==");
+        assert_eq!(b64(b"fooba"), "Zm9vYmE=");
+        assert_eq!(b64(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn kitty_transmit_is_chunked_and_terminated() {
+        let _g = emit_guard();
+        // 64x64 RGB = 12288 raw bytes -> 16384 base64 chars -> 4 chunks.
+        let rgb = RgbImage::from_pixel(64, 64, Rgb([1, 2, 3]));
+        let mut sink = Vec::new();
+        let emitted = emit_kitty(&mut sink, test_key("a.png", 512, 512), &rgb, 30, 15).unwrap();
+        assert_eq!(emitted, Emitted::Transmitted);
+
+        let apcs = apc_sequences(&sink);
+        assert!(apcs.len() > 1, "base64 > 4096 chars must be chunked");
+        let first = &apcs[0].0;
+        for want in ["a=T", "f=24", "s=64", "v=64", "c=30", "r=15", "q=2", "m=1"] {
+            assert!(
+                first.split(',').any(|kv| kv == want),
+                "first chunk missing {want}: {first}"
+            );
+        }
+        assert!(key_val(first, "i").is_some(), "first chunk carries the id");
+        for (i, (keys, payload)) in apcs.iter().enumerate() {
+            assert!(payload.len() <= 4096, "chunk {i} payload over 4096");
+            if i > 0 {
+                let m = if i == apcs.len() - 1 { "m=0" } else { "m=1" };
+                assert_eq!(keys, m, "continuation chunk {i}");
+            }
+        }
+        // Reassembled payload is exactly the base64 of the raw RGB bytes.
+        let joined: String = apcs.iter().map(|(_, p)| p.as_str()).collect();
+        assert_eq!(joined, b64(rgb.as_raw()));
+    }
+
+    #[test]
+    fn kitty_small_image_single_chunk_m0() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(2, 2, Rgb([9, 9, 9]));
+        let mut sink = Vec::new();
+        emit_kitty(&mut sink, test_key("b.png", 16, 32), &rgb, 2, 1).unwrap();
+        let apcs = apc_sequences(&sink);
+        assert_eq!(apcs.len(), 1, "tiny payload must be a single chunk");
+        assert!(
+            apcs[0].0.split(',').any(|kv| kv == "m=0"),
+            "single chunk carries m=0: {}",
+            apcs[0].0
+        );
+        assert_eq!(apcs[0].1, b64(rgb.as_raw()));
+    }
+
+    #[test]
+    fn kitty_delete_sequence() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(2, 2, Rgb([0, 0, 0]));
+        let mut sink = Vec::new();
+        emit_kitty(&mut sink, test_key("c.png", 16, 32), &rgb, 2, 1).unwrap();
+        let (_, id) = live_snapshot_for_test().expect("live after emit");
+        let id = id.expect("kitty placement has an id");
+
+        let mut sink = Vec::new();
+        erase_live(&mut sink).unwrap();
+        let s = String::from_utf8_lossy(&sink);
+        // Capital I frees the pixel data too.
+        assert!(
+            s.contains(&format!("\x1b_Ga=d,d=I,i={id},q=2\x1b\\")),
+            "delete-by-id missing: {s:?}"
+        );
+        // Belt and braces: the recorded cell region (origin (10,2), 2x1
+        // cells) is overwritten with spaces for terminals that ignore the
+        // delete. CSI H is 1-based: row 3, col 11.
+        assert!(s.contains("\x1b[3;11H  "), "space overwrite missing: {s:?}");
+        assert!(live_snapshot_for_test().is_none(), "live state must clear");
+    }
+
+    #[test]
+    fn emit_state_gates_identical_key() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(2, 2, Rgb([5, 5, 5]));
+        let key = test_key("d.png", 16, 32);
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_kitty(&mut sink, key.clone(), &rgb, 2, 1).unwrap(),
+            Emitted::Transmitted
+        );
+        // Unrelated repaint: same key -> zero bytes, no retransmission.
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_kitty(&mut sink, key, &rgb, 2, 1).unwrap(),
+            Emitted::Gated
+        );
+        assert!(sink.is_empty(), "gated emit wrote bytes: {sink:?}");
+    }
+
+    #[test]
+    fn emit_state_new_key_deletes_old_id_first() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(2, 2, Rgb([5, 5, 5]));
+        let mut sink = Vec::new();
+        emit_kitty(&mut sink, test_key("old.png", 16, 32), &rgb, 2, 1).unwrap();
+        let (_, old_id) = live_snapshot_for_test().unwrap();
+        let old_id = old_id.unwrap();
+
+        let mut sink = Vec::new();
+        emit_kitty(&mut sink, test_key("new.png", 16, 32), &rgb, 2, 1).unwrap();
+        let apcs = apc_sequences(&sink);
+        assert_eq!(
+            apcs[0].0,
+            format!("a=d,d=I,i={old_id},q=2"),
+            "output must start with the delete of the previous id"
+        );
+        let new_id: u32 = key_val(&apcs[1].0, "i").unwrap().parse().unwrap();
+        assert!(new_id > old_id, "fresh id per transmission");
+    }
+
+    #[test]
+    fn end_frame_erases_unclaimed() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(2, 2, Rgb([5, 5, 5]));
+        let mut sink = Vec::new();
+        emit_kitty(&mut sink, test_key("e.png", 16, 32), &rgb, 2, 1).unwrap();
+        let (_, id) = live_snapshot_for_test().unwrap();
+        let id = id.unwrap();
+
+        // A frame passes in which nothing claims the placement (selection
+        // moved to a text file, overlay opened, split toggled, ...).
+        begin_frame(true);
+        let mut sink = Vec::new();
+        end_frame(&mut sink).unwrap();
+        let s = String::from_utf8_lossy(&sink);
+        assert!(
+            s.contains(&format!("\x1b_Ga=d,d=I,i={id},q=2\x1b\\")),
+            "unclaimed placement not deleted: {s:?}"
+        );
+        assert!(live_snapshot_for_test().is_none());
+
+        // Idempotent: with no live image, end_frame writes nothing.
+        let mut sink = Vec::new();
+        end_frame(&mut sink).unwrap();
+        assert!(sink.is_empty());
+    }
+
+    #[test]
+    fn end_frame_keeps_claimed() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(2, 2, Rgb([5, 5, 5]));
+        let key = test_key("f.png", 16, 32);
+        begin_frame(true);
+        let mut sink = Vec::new();
+        emit_kitty(&mut sink, key.clone(), &rgb, 2, 1).unwrap();
+        let mut sink = Vec::new();
+        end_frame(&mut sink).unwrap();
+        assert!(sink.is_empty(), "claimed placement must survive end_frame");
+        assert!(live_snapshot_for_test().is_some());
+
+        // A *gated* emit also claims: an unrelated repaint (same key) must
+        // not let end_frame erase the still-valid placement. This is the
+        // design's cost constraint (D5).
+        begin_frame(true);
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_kitty(&mut sink, key, &rgb, 2, 1).unwrap(),
+            Emitted::Gated
+        );
+        let mut sink = Vec::new();
+        end_frame(&mut sink).unwrap();
+        assert!(sink.is_empty(), "gated frame must keep the placement");
+        assert!(live_snapshot_for_test().is_some());
+    }
+
+    #[test]
+    fn begin_frame_disallowed_forces_no_claim() {
+        let _g = emit_guard();
+        begin_frame(false);
+        assert!(!frame_allows_image());
+        begin_frame(true);
+        assert!(frame_allows_image());
+    }
+
+    #[test]
+    fn placement_cells_clip_to_pane() {
+        let geo = CellGeometry {
+            cell_w: 8,
+            cell_h: 16,
+        };
+        // Exact fit.
+        assert_eq!(placement_cells(240, 320, geo, 40, 25), (30, 20));
+        // One pixel over a cell boundary rounds up to the next cell...
+        assert_eq!(placement_cells(241, 321, geo, 40, 25), (31, 21));
+        // ...but never past the pane span (exact clipping, D6).
+        assert_eq!(placement_cells(1000, 1000, geo, 40, 25), (40, 25));
+        assert_eq!(placement_cells(0, 0, geo, 40, 25), (0, 0));
     }
 }
