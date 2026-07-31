@@ -17,6 +17,8 @@ path = "src/main.rs"
 [dependencies]
 ab_glyph = "0.2"
 anyhow = "1.0.95"
+# pure-Rust bzip2 backend (libbz2-rs-sys); 0.6 needs rustc 1.82
+bzip2 = "0.6"
 cached = "0.42.0"
 clap = {version = "4.5.26", features = ["derive"]}
 crossterm = { version = "0.26.1", features = ["event-stream"] }
@@ -33,6 +35,9 @@ log = { version ="0.4.22", features = ["std"] }
 # lofty 0.22.3 bumps MSRV to 1.85; cap below it (its ogg_pager dep 0.7.1
 # does too - pinned to 0.7.0 in Cargo.lock).
 lofty = ">=0.22, <0.22.3"
+# pure-Rust LZMA/XZ; 0.16 bumps MSRV to 1.85; cap below it. "encoder" is
+# only for hermetic test fixtures (XzWriter).
+lzma-rust2 = { version = ">=0.15, <0.16", default-features = false, features = ["std", "xz", "encoder"] }
 mime = "0.3.17"
 mime_guess = "2.0.5"
 notify = "8.0.0"
@@ -48,8 +53,12 @@ resvg = { version = ">=0.45, <0.46", default-features = false }
 # `bundled` avoids a system libsqlite3 dependency.
 rusqlite = { version = ">=0.37, <0.38", features = ["bundled"] }
 rust-embed = "8.5.0"
+# ruzstd 0.8.2 switches to edition2024 (cargo >=1.85); cap below it.
+ruzstd = ">=0.8, <0.8.2"
 serde = {version = "1.0.217", features = ["serde_derive"]}
 serde_json = "1.0"
+# deprecated in favor of sevenz-rust2, which needs rustc >=1.85.
+sevenz-rust = "0.6.1"
 shell-escape = "0.1.5"
 tar = "0.4.44"
 tempfile = "3.15.0"
