@@ -35,6 +35,11 @@ log = { version ="0.4.22", features = ["std"] }
 # lofty 0.22.3 bumps MSRV to 1.85; cap below it (its ogg_pager dep 0.7.1
 # does too - pinned to 0.7.0 in Cargo.lock).
 lofty = ">=0.22, <0.22.3"
+# pdf text tier; 0.36 declares rust-version 1.74, newer need >=1.88.
+# default features would pull jiff (edition2024) + chrono + rayon —
+# rayon off also keeps load_filtered single-threaded (the guard
+# filter's thread_local budget relies on it).
+lopdf = { version = ">=0.36, <0.37", default-features = false, features = ["time"] }
 # pure-Rust LZMA/XZ; 0.16 bumps MSRV to 1.85; cap below it. "encoder" is
 # only for hermetic test fixtures (XzWriter).
 lzma-rust2 = { version = ">=0.15, <0.16", default-features = false, features = ["std", "xz", "encoder"] }

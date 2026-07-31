@@ -69,6 +69,11 @@ pub struct GeneralConfig {
     /// survive restarts. Defaults to `true`.
     #[serde(default = "default_true")]
     pub preview_cache: bool,
+    /// Render PDF page 1 to an image preview via pdftoppm/mutool when one
+    /// of them is installed. Defaults to `false` (opt-in) so the base
+    /// install stays pure-Rust — PDFs then get the native text tier.
+    #[serde(default)]
+    pub pdf_render: bool,
     /// Rate limit interval for preview updates in milliseconds
     #[serde(default = "default_rate_limit_interval")]
     pub rate_limit_interval_ms: u64,
@@ -103,6 +108,16 @@ mod defaults_tests {
         assert!(g.preview_cache);
         let g: GeneralConfig = toml::from_str("preview_cache = false").unwrap();
         assert!(!g.preview_cache);
+    }
+
+    #[test]
+    fn pdf_render_defaults_false_and_parses_true() {
+        // NOTE the opposite default of preview_cache: the external pdf
+        // image tier is opt-in so the base install stays pure-Rust.
+        let g: GeneralConfig = toml::from_str("").unwrap();
+        assert!(!g.pdf_render);
+        let g: GeneralConfig = toml::from_str("pdf_render = true").unwrap();
+        assert!(g.pdf_render);
     }
 }
 

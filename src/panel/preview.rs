@@ -283,6 +283,11 @@ impl FilePreview {
             // answer, so infer resolves the `SQLite format 3\0` magic —
             // a .db that is not SQLite routes elsewhere (correct).
             ("application", "vnd.sqlite3") => sqlite_preview(&path, &mime),
+            // Tiered pdf preview (image -> text -> stat). The `%PDF`
+            // magic also routes extensionless files here via the
+            // sniff; mime 0.3 keeps subtype "pdf" whole — no suffix
+            // trap like svg+xml/epub+zip.
+            ("application", "pdf") => pdf_preview(&path, modified, &mime),
             // Text based application/* types
             ("application", "x-sh")
             | ("application", "json")
@@ -531,6 +536,14 @@ const FONT_SOURCE_MAX: u64 = 64 * 1024 * 1024;
 /// A .svgz may legitimately inflate ~10-50x; 32 MiB of XML is far past
 /// any real SVG.
 const SVGZ_INFLATED_MAX: u64 = 32 * 1024 * 1024;
+/// PDFs above this take the stat block (or the image tier): the text
+/// tier's value is capped anyway and load_filtered slurps the file.
+const PDF_SOURCE_MAX: u64 = 32 * 1024 * 1024;
+/// Total decompressed bytes lopdf may materialize per document.
+const PDF_DECOMP_BUDGET: u64 = 64 * 1024 * 1024;
+/// Longest retained preview line (chars) — a PDF can emit one
+/// multi-megabyte text run with no newlines.
+const PDF_LINE_MAX: usize = 1024;
 
 /// usvg auto-detects the gzip magic (.svgz and .svg alike) and
 /// inflates it with NO output bound (`decompress_svgz` is a plain
@@ -1635,6 +1648,560 @@ fn sqlite_preview(path: &Path, mime: &mime::Mime) -> Preview {
         Err(e) => {
             log::debug!(
                 "sqlite listing failed, falling back to stat: {}: {e}",
+                path.display()
+            );
+            stat_preview(path, mime)
+        }
+    }
+}
+
+/// The `pdf_render` config switch, set once at startup (like
+/// `raster_cache::init`). Unset — e.g. in unit tests — counts as
+/// opted out, keeping every test hermetic.
+static PDF_RENDER: OnceCell<bool> = OnceCell::new();
+
+/// Wire the `pdf_render` config switch (called once from main).
+pub fn set_pdf_render(enabled: bool) {
+    let _ = PDF_RENDER.set(enabled);
+}
+
+fn pdf_render_enabled() -> bool {
+    PDF_RENDER.get().copied().unwrap_or(false)
+}
+
+/// The external PDF renderer for the optional image tier.
+#[derive(Clone, Copy, Debug)]
+enum PdfRenderer {
+    Pdftoppm,
+    Mutool,
+}
+
+/// OnceCell probe, ffmpeg-style but two candidates: `pdftoppm -v`,
+/// else `mutool -v`. Present = spawned AND (exit success OR output
+/// contains "version") — the -v exit codes are not uniform across
+/// packagings. Only consulted when pdf_render_enabled(), so the base
+/// install never spawns probes.
+fn pdf_renderer() -> Option<PdfRenderer> {
+    static RENDERER: OnceCell<Option<PdfRenderer>> = OnceCell::new();
+    *RENDERER.get_or_init(|| {
+        let present = |bin: &str| {
+            std::process::Command::new(bin)
+                .arg("-v")
+                .stdin(Stdio::null())
+                .output()
+                .map(|out| {
+                    out.status.success()
+                        || String::from_utf8_lossy(&out.stdout).contains("version")
+                        || String::from_utf8_lossy(&out.stderr).contains("version")
+                })
+                .unwrap_or(false)
+        };
+        if present("pdftoppm") {
+            Some(PdfRenderer::Pdftoppm)
+        } else if present("mutool") {
+            Some(PdfRenderer::Mutool)
+        } else {
+            None
+        }
+    })
+}
+
+thread_local! {
+    /// Remaining decompression budget for the load_filtered call on
+    /// this thread (the FilterFunc is a plain fn pointer, so the
+    /// budget travels beside it; rayon is disabled in our lopdf
+    /// features, the filter runs on the loading thread).
+    static PDF_BUDGET: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Max single-stage deflate/LZW expansion ratio (1032:1).
+const MAX_INFLATE_RATIO: u64 = 1032;
+
+/// True for a filter name that inflates its input (deflate / LZW).
+fn is_inflating_filter(name: &[u8]) -> bool {
+    name == b"FlateDecode" || name == b"LZWDecode"
+}
+
+/// Counting-decompress `content` as zlib through a `Take`'d sink,
+/// never reading past `budget + 1` output bytes. A mid-stream zlib
+/// error bounds lopdf's own partial `read_to_end` at the same offset,
+/// so the returned count matches what lopdf would materialize.
+fn flate_output_len(content: &[u8], budget: u64) -> u64 {
+    let mut n: u64 = 0;
+    let mut decoder = flate2::read::ZlibDecoder::new(content).take(budget.saturating_add(1));
+    let mut buf = [0u8; 16 * 1024];
+    loop {
+        match decoder.read(&mut buf) {
+            Ok(0) => break,
+            Ok(k) => n += k as u64,
+            Err(_) => break,
+        }
+    }
+    n
+}
+
+/// How many bytes lopdf would materialize when decompressing `content`
+/// through `filters`, bounded probes only — never more than
+/// `budget + 1` counting bytes. `None` means over budget: drop it.
+///
+/// - FlateDecode (sole filter): counting-decompress exactly.
+/// - Any other chain containing an inflating filter (LZWDecode, or a
+///   multi-stage chain like [FlateDecode FlateDecode] / [ASCII85Decode
+///   FlateDecode] whose raw bytes cannot be counting-decoded): charge
+///   pessimistically at `MAX_INFLATE_RATIO ^ k`, where `k` is the
+///   number of inflating stages. A k-deep flate chain inflates up to
+///   1032^k (each stage decompresses the previous stage's output), so
+///   a single 1032:1 multiply undercounts — this raises it to the true
+///   upper bound (non-inflating stages like ASCII85 only shrink).
+/// - DCT/ASCII85/plain pass at zero: lopdf never inflates DCT,
+///   ASCII85 shrinks, and plain content is bounded by PDF_SOURCE_MAX.
+fn inflation_charge(content: &[u8], filters: &[&[u8]], budget: u64) -> Option<u64> {
+    if filters.len() == 1 && filters[0] == b"FlateDecode" {
+        let n = flate_output_len(content, budget);
+        return (n <= budget).then_some(n);
+    }
+    let stages = filters.iter().filter(|f| is_inflating_filter(f)).count() as u32;
+    if stages > 0 {
+        let ratio = MAX_INFLATE_RATIO.checked_pow(stages).unwrap_or(u64::MAX);
+        let charge = (content.len() as u64).saturating_mul(ratio);
+        return (charge <= budget).then_some(charge);
+    }
+    Some(0)
+}
+
+/// How many bytes lopdf would materialize when decompressing `stream`.
+/// `None` means over budget: drop the stream. See [`inflation_charge`].
+fn pdf_stream_charge(stream: &lopdf::Stream, budget: u64) -> Option<u64> {
+    match stream.filters() {
+        Ok(filters) => inflation_charge(&stream.content, &filters, budget),
+        // No/unreadable Filter entry: plain content, nothing inflates.
+        Err(_) => Some(0),
+    }
+}
+
+/// lopdf's decompress_zlib/_lzw are unbounded read_to_ends — verify
+/// every stream BEFORE lopdf inflates it (`load_filtered` calls this
+/// for each parsed object; returning `None` drops it). Over budget =>
+/// drop the object AND zero the budget: one bomb costs at most
+/// budget+1 counting bytes, every later stream then drops after <=1
+/// byte — total work across a hostile file stays O(2 * budget). A
+/// dropped stream leaves a hole; lopdf then errs or extracts nothing
+/// and the caller degrades — exactly right for a hostile file.
+fn pdf_guard_filter(
+    id: (u32, u16),
+    object: &mut lopdf::Object,
+) -> Option<((u32, u16), lopdf::Object)> {
+    if let lopdf::Object::Stream(stream) = &*object {
+        let budget = PDF_BUDGET.with(|b| b.get());
+        match pdf_stream_charge(stream, budget) {
+            Some(charge) => PDF_BUDGET.with(|b| b.set(budget - charge)),
+            None => {
+                PDF_BUDGET.with(|b| b.set(0));
+                log::debug!("pdf stream {id:?} exceeds the decompression budget, dropping it");
+                return None;
+            }
+        }
+    }
+    // The clone is the FilterFunc API's shape; it is bounded by
+    // PDF_SOURCE_MAX (the raw, still-compressed bytes).
+    Some((id, object.clone()))
+}
+
+/// The `pdf_guard_filter` above bounds every *object-loop* stream, but
+/// lopdf inflates PDF-1.5+ cross-reference STREAMS (`/Type /XRef` with
+/// `/Filter /FlateDecode`) far earlier — inside `xref_and_trailer ->
+/// decode_xref_stream -> Stream::decompress` (an unbounded
+/// `read_to_end`) — before any `FilterFunc` exists in the flow. That
+/// path (and the `/Prev` / `/XRefStm` chain of linked xref streams) is
+/// therefore exempt from `PDF_BUDGET`; a small file whose xref stream
+/// inflates to GiBs (compression-ratio bomb + huge `/Size`) would OOM
+/// the process on plain cursor navigation. Since `load_filtered`'s
+/// guard cannot reach it, we pre-scan the raw bytes and reject the file
+/// before handing it to lopdf.
+///
+/// Conservative by construction: it returns `true` (let lopdf proceed)
+/// for every ambiguous or classic-`xref`-table case, and only `false`
+/// when a compressed xref stream is positively measured over budget.
+/// It scans every stream object carrying the `/XRef` type marker —
+/// which covers whichever ones the `startxref`/`/Prev`/`/XRefStm` chain
+/// actually reaches — and charges each with the same
+/// counting-decompress / pessimistic-ratio logic as the object guard.
+fn pdf_xref_streams_within_budget(bytes: &[u8], budget: u64) -> bool {
+    let mut cursor = 0usize;
+    while let Some(rel) = find_bytes(&bytes[cursor..], b"stream") {
+        let kw = cursor + rel;
+        cursor = kw + b"stream".len();
+        // Skip the "stream" inside "endstream".
+        if kw >= 3 && &bytes[kw - 3..kw] == b"end" {
+            continue;
+        }
+        // The stream's dictionary lies between its `N G obj` marker and
+        // the `stream` keyword. The nearest preceding `obj` is this
+        // object's own declaration.
+        let dict_start = rfind_bytes(&bytes[..kw], b"obj")
+            .map(|p| p + 3)
+            .unwrap_or(0);
+        let dict = &bytes[dict_start..kw];
+        if find_bytes(dict, b"/XRef").is_none() {
+            continue; // not a cross-reference stream (ObjStm, content, …)
+        }
+        // Stream data: after the keyword's EOL, up to `endstream`.
+        let mut data_start = kw + b"stream".len();
+        if bytes.get(data_start) == Some(&b'\r') {
+            data_start += 1;
+        }
+        if bytes.get(data_start) == Some(&b'\n') {
+            data_start += 1;
+        }
+        let data_end = find_bytes(&bytes[data_start..], b"endstream")
+            .map(|r| data_start + r)
+            .unwrap_or(bytes.len());
+        let content = &bytes[data_start..data_end.max(data_start)];
+        let filters = xref_stream_filters(dict);
+        if inflation_charge(content, &filters, budget).is_none() {
+            log::debug!("pdf cross-reference stream exceeds the decompression budget, rejecting");
+            return false;
+        }
+    }
+    true
+}
+
+/// The `/Filter` names of an xref-stream dictionary (raw dict bytes).
+/// Empty when there is no `/Filter` (an uncompressed xref stream —
+/// bounded by the source itself). Handles both `/Filter /FlateDecode`
+/// and `/Filter [/FlateDecode …]`.
+fn xref_stream_filters(dict: &[u8]) -> Vec<&[u8]> {
+    let Some(rel) = find_bytes(dict, b"/Filter") else {
+        return Vec::new();
+    };
+    let mut rest = &dict[rel + b"/Filter".len()..];
+    // Skip whitespace.
+    while rest.first().is_some_and(|b| b.is_ascii_whitespace()) {
+        rest = &rest[1..];
+    }
+    let mut names = Vec::new();
+    if rest.first() == Some(&b'[') {
+        rest = &rest[1..];
+        while let Some(pos) = rest.iter().position(|&b| b == b'/' || b == b']') {
+            if rest[pos] == b']' {
+                break;
+            }
+            rest = &rest[pos + 1..];
+            let end = rest
+                .iter()
+                .position(|&b| b.is_ascii_whitespace() || b == b'/' || b == b']' || b == b'[')
+                .unwrap_or(rest.len());
+            names.push(&rest[..end]);
+            rest = &rest[end..];
+        }
+    } else if rest.first() == Some(&b'/') {
+        rest = &rest[1..];
+        let end = rest
+            .iter()
+            .position(|&b| b.is_ascii_whitespace() || b == b'/' || b == b'[' || b == b'>')
+            .unwrap_or(rest.len());
+        names.push(&rest[..end]);
+    }
+    names
+}
+
+/// First index of `needle` in `haystack`.
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Last index of `needle` in `haystack`.
+fn rfind_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).rposition(|w| w == needle)
+}
+
+/// Bounded lopdf load: size pre-check, budget arm, guarded parse.
+fn load_pdf_guarded(path: &Path) -> anyhow::Result<lopdf::Document> {
+    load_pdf_guarded_bounded(path, PDF_SOURCE_MAX, PDF_DECOMP_BUDGET)
+}
+
+/// Parameterized core of [`load_pdf_guarded`]. The size pre-check
+/// replaces a literal bounded read (`load_filtered` takes a path and
+/// slurps it): benign TOCTOU — a file growing between check and read
+/// only wastes one preview's work.
+fn load_pdf_guarded_bounded(
+    path: &Path,
+    source_max: u64,
+    budget: u64,
+) -> anyhow::Result<lopdf::Document> {
+    let len = path.metadata()?.len();
+    anyhow::ensure!(
+        len <= source_max,
+        "pdf too large for the text tier ({len} bytes)"
+    );
+    // Cross-reference streams are inflated by lopdf BEFORE the object
+    // guard runs; bound them here or a 48 KiB file can OOM the process.
+    let bytes = read_bounded(path, source_max)?;
+    anyhow::ensure!(
+        pdf_xref_streams_within_budget(&bytes, budget),
+        "pdf cross-reference stream exceeds the decompression budget"
+    );
+    PDF_BUDGET.with(|b| b.set(budget));
+    Ok(lopdf::Document::load_filtered(path, pdf_guard_filter)?)
+}
+
+/// Scrub + length-cap one PDF-sourced line (/Info strings and
+/// extracted text are attacker-controlled).
+fn pdf_line(line: &str) -> String {
+    let scrubbed = scrub_line(line.to_string());
+    if scrubbed.len() > PDF_LINE_MAX {
+        // chars().take is char-boundary safe by construction; when the
+        // byte length exceeds the cap but the char count does not, the
+        // collect returns the string unchanged.
+        scrubbed.chars().take(PDF_LINE_MAX).collect()
+    } else {
+        scrubbed
+    }
+}
+
+/// `Size:`/`Modified:` block from file metadata (best-effort).
+fn size_modified_lines(path: &Path) -> Vec<String> {
+    use time::OffsetDateTime;
+    let mut lines = Vec::new();
+    if let Ok(meta) = path.metadata() {
+        lines.push(format!(
+            "Size:     {}",
+            crate::util::file_size_str(meta.len())
+        ));
+        if let Ok(modified) = meta.modified() {
+            let t = OffsetDateTime::from(modified);
+            lines.push(format!(
+                "Modified: {}-{:02}-{:02} {:02}:{:02}:{:02}",
+                t.year(),
+                u8::from(t.month()),
+                t.day(),
+                t.hour(),
+                t.minute(),
+                t.second()
+            ));
+        }
+    }
+    lines
+}
+
+/// Header + body lines of the text tier. Encrypted docs get
+/// "encrypted PDF (N pages)" + Size/Modified only — NO /Info strings
+/// (they are encrypted garbage in a real encrypted file) and no
+/// extract_text. Otherwise: "PDF · N pages", Title/Author/Producer
+/// from /Info when present, blank, then page-1 text — every line
+/// scrubbed + length-capped, 128 lines total. Body-extraction failure
+/// (dropped/looping content) is "no body", never a tier failure — the
+/// metadata header still shows.
+fn native_pdf_lines(doc: &lopdf::Document, path: &Path) -> Vec<String> {
+    let n_pages = doc.get_pages().len();
+    let pages_word = if n_pages == 1 { "page" } else { "pages" };
+    if doc.is_encrypted() {
+        let mut lines = vec![
+            format!("encrypted PDF ({n_pages} {pages_word})"),
+            String::new(),
+        ];
+        lines.extend(size_modified_lines(path));
+        return lines;
+    }
+    let mut lines = vec![format!("PDF · {n_pages} {pages_word}")];
+    if let Ok(info) = doc
+        .trailer
+        .get(b"Info")
+        .and_then(|o| doc.dereference(o))
+        .and_then(|(_, o)| o.as_dict())
+    {
+        for (key, label) in [
+            (b"Title".as_slice(), "Title:    "),
+            (b"Author".as_slice(), "Author:   "),
+            (b"Producer".as_slice(), "Producer: "),
+        ] {
+            let value = info
+                .get(key)
+                .and_then(|o| doc.dereference(o))
+                .ok()
+                .and_then(|(_, o)| o.as_str().ok())
+                .map(String::from_utf8_lossy);
+            if let Some(value) = value {
+                if !value.trim().is_empty() {
+                    lines.push(pdf_line(&format!("{label}{value}")));
+                }
+            }
+        }
+    }
+    lines.push(String::new());
+    if let Ok(text) = doc.extract_text(&[1]) {
+        for line in text.lines() {
+            if lines.len() >= 128 {
+                break;
+            }
+            lines.push(pdf_line(line));
+        }
+    }
+    lines.truncate(128);
+    lines
+}
+
+/// PDF text tier: guarded lopdf load + metadata/page-1 lines.
+fn pdf_text_tier(path: &Path) -> anyhow::Result<Preview> {
+    let doc = load_pdf_guarded(path)?;
+    Ok(Preview::Text {
+        lines: native_pdf_lines(&doc, path),
+    })
+}
+
+/// Info footer for the pdf image tier: metadata via the guarded lopdf
+/// load (best-effort — an unreadable source keeps just Size/Modified;
+/// the renderer may well parse files lopdf cannot).
+fn pdf_image_info(path: &Path) -> Vec<String> {
+    let mut lines = match load_pdf_guarded(path) {
+        Ok(doc) => {
+            let mut lines = native_pdf_lines(&doc, path);
+            lines.truncate(2); // "PDF · N pages" + title (or blank)
+            lines.push(String::new());
+            lines
+        }
+        Err(_) => Vec::new(),
+    };
+    lines.extend(size_modified_lines(path));
+    lines
+}
+
+/// Render page 1 of `path` into `dir` under KIND_PDF. Discipline as
+/// `ffmpeg_thumbnail`: `lookup_in` first (corrupt-entry rule),
+/// re-create the dir (mid-session `rm -rf` safety), render to a
+/// same-dir `<entry>.<part_token()>.part.<ext>` temp name (extension
+/// LAST so the tools' format inference works: pdftoppm gets the
+/// prefix and appends ".jpg" itself, mutool writes ".png"), then
+/// decode the part (`with_guessed_format` — the output format differs
+/// per tool), delete it, and finalize via `store_in` — whose own
+/// part+rename gives the atomic final write and the stale-sibling
+/// sweep. This decode→store_in normalization is a deliberate
+/// deviation from ffmpeg_thumbnail's direct rename: one uniform path
+/// for both tools, uniform JPEG quality. Non-zero exit, missing or
+/// undecodable output => remove the part, Err (the caller drops to
+/// the text tier).
+fn pdf_render_first_page_in(
+    dir: &Path,
+    renderer: PdfRenderer,
+    path: &Path,
+    mtime: u64,
+) -> anyhow::Result<Preview> {
+    if let Some(img) = raster_cache::lookup_in(dir, path, mtime, raster_cache::KIND_PDF) {
+        log::debug!("raster cache hit for {}", path.display());
+        return Ok(Preview::Image {
+            img: Some(img),
+            info: pdf_image_info(path),
+        });
+    }
+    let name = raster_cache::entry_name(path, mtime, raster_cache::KIND_PDF);
+    log::debug!("rendering pdf page 1 of {}", path.display());
+    let _ = raster_cache::create_dir_all_private(dir);
+    let prefix = dir.join(format!("{name}.{}.part", raster_cache::part_token()));
+    let mut cmd;
+    let part;
+    match renderer {
+        PdfRenderer::Pdftoppm => {
+            // pdftoppm appends ".jpg" to the given prefix itself.
+            part = PathBuf::from(format!("{}.jpg", prefix.display()));
+            cmd = std::process::Command::new("pdftoppm");
+            cmd.arg("-jpeg")
+                .arg("-f")
+                .arg("1")
+                .arg("-l")
+                .arg("1")
+                .arg("-scale-to")
+                .arg("960")
+                .arg("-singlefile")
+                .arg(path)
+                .arg(&prefix);
+        }
+        PdfRenderer::Mutool => {
+            part = PathBuf::from(format!("{}.png", prefix.display()));
+            cmd = std::process::Command::new("mutool");
+            cmd.arg("draw")
+                .arg("-o")
+                .arg(&part)
+                .arg("-w")
+                .arg("960")
+                .arg("-h")
+                .arg("540")
+                .arg(path)
+                .arg("1");
+        }
+    }
+    cmd.stdin(Stdio::null());
+    let out = cmd.output()?;
+    if !out.status.success() || !part.exists() {
+        // A failed run may still have created a partial file; drop it.
+        let _ = std::fs::remove_file(&part);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let tail: Vec<&str> = stderr.lines().rev().take(3).collect();
+        anyhow::bail!(
+            "{renderer:?} did not render a page ({}): {}",
+            out.status,
+            tail.into_iter().rev().collect::<Vec<_>>().join(" | ")
+        );
+    }
+    let decoded = image::io::Reader::open(&part)
+        .map_err(anyhow::Error::from)
+        .and_then(|r| Ok(r.with_guessed_format()?.decode()?));
+    let _ = std::fs::remove_file(&part);
+    let img = decoded?;
+    // Defensive bound: the cache must never hold an unbounded raster,
+    // whatever the tool produced.
+    let img = if img.width() <= 960 && img.height() <= 540 {
+        img
+    } else {
+        img.thumbnail(960, 540)
+    };
+    raster_cache::store_in(dir, path, mtime, raster_cache::KIND_PDF, &img)?;
+    Ok(Preview::Image {
+        img: Some(img),
+        info: pdf_image_info(path),
+    })
+}
+
+/// Tiered PDF arm: optional external image tier (pdf_render on AND a
+/// renderer installed AND somewhere to write — `video_thumbnail_dir`'s
+/// policy: cache dir / temp fallback / `None` when `preview_cache =
+/// false`, a privacy promise the external render must honor, since a
+/// render IS a write) → native text tier → stat block. A PDF never
+/// shows a bare error panel.
+fn pdf_preview(path: &Path, modified: SystemTime, mime: &mime::Mime) -> Preview {
+    let renderer = if pdf_render_enabled() {
+        pdf_renderer()
+    } else {
+        None
+    };
+    pdf_preview_in(renderer, video_thumbnail_dir(), path, modified, mime)
+}
+
+/// Testably parameterized core of [`pdf_preview`]; every downgrade
+/// logs a debug-level "falling back" line (socket `log` history).
+fn pdf_preview_in(
+    renderer: Option<PdfRenderer>,
+    thumb_dir: Option<&Path>,
+    path: &Path,
+    modified: SystemTime,
+    mime: &mime::Mime,
+) -> Preview {
+    if let (Some(renderer), Some(dir)) = (renderer, thumb_dir) {
+        match pdf_render_first_page_in(dir, renderer, path, mtime_secs(modified)) {
+            Ok(preview) => return preview,
+            Err(e) => log::debug!("pdf render failed, falling back to text tier: {e}"),
+        }
+    }
+    match pdf_text_tier(path) {
+        Ok(preview) => preview,
+        Err(e) => {
+            log::debug!(
+                "pdf text tier failed, falling back to stat: {}: {e}",
                 path.display()
             );
             stat_preview(path, mime)
@@ -3647,6 +4214,594 @@ mod new_type_tests {
             lines.iter().all(|l| !l.contains("late.txt")),
             "the scan budget must stop the listing: {lines:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod pdf_tests {
+    use super::*;
+    use lopdf::{
+        content::{Content, Operation},
+        dictionary, Document, Object, Stream,
+    };
+
+    /// Default per-page content: one text block with a page marker.
+    fn page_ops(n: usize) -> Vec<Operation> {
+        vec![
+            Operation::new("BT", vec![]),
+            Operation::new("Tf", vec!["F1".into(), 24.into()]),
+            Operation::new("Td", vec![100.into(), 600.into()]),
+            Operation::new(
+                "Tj",
+                vec![Object::string_literal(format!("Hello PDF page {n}"))],
+            ),
+            Operation::new("ET", vec![]),
+        ]
+    }
+
+    /// Catalog/Pages/Page skeleton with /Info (Title = `title`,
+    /// Author with an embedded newline — deliberate, lopdf hands /Info
+    /// strings through raw — and a Producer). One page per element of
+    /// `pages`, each with the given content operations.
+    fn build_pdf(title: &str, pages: Vec<Vec<Operation>>) -> Document {
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let font_id = doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Courier",
+        });
+        let resources_id = doc.add_object(dictionary! {
+            "Font" => dictionary! { "F1" => font_id },
+        });
+        let mut kids: Vec<Object> = Vec::new();
+        let count = pages.len() as i64;
+        for ops in pages {
+            let content = Content { operations: ops };
+            let content_id = doc.add_object(Stream::new(dictionary! {}, content.encode().unwrap()));
+            let page_id = doc.add_object(dictionary! {
+                "Type" => "Page",
+                "Parent" => pages_id,
+                "Contents" => content_id,
+            });
+            kids.push(page_id.into());
+        }
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => kids,
+                "Count" => count,
+                "Resources" => resources_id,
+                "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+            }),
+        );
+        let catalog_id = doc.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+        doc.trailer.set("Root", catalog_id);
+        let info_id = doc.add_object(dictionary! {
+            "Title" => Object::string_literal(title),
+            "Author" => Object::string_literal("Prob\ne Author"),
+            "Producer" => Object::string_literal("rfm test producer"),
+        });
+        doc.trailer.set("Info", info_id);
+        doc
+    }
+
+    fn save_pdf(dir: &Path, name: &str, mut doc: Document) -> PathBuf {
+        let path = dir.join(name);
+        let mut bytes = Vec::new();
+        doc.save_to(&mut bytes).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    fn make_pdf(dir: &Path, name: &str, title: &str, n_pages: usize) -> PathBuf {
+        let pages = (1..=n_pages).map(page_ops).collect();
+        save_pdf(dir, name, build_pdf(title, pages))
+    }
+
+    /// Detection-only /Encrypt fixture: lopdf's `is_encrypted` checks
+    /// the trailer; the crafted O/U never authenticate with "".
+    fn make_encrypted_pdf(dir: &Path) -> PathBuf {
+        let mut doc = build_pdf("Secret Title", vec![page_ops(1), page_ops(2)]);
+        let enc_id = doc.add_object(dictionary! {
+            "Filter" => "Standard",
+            "V" => 1,
+            "R" => 2,
+            "O" => Object::string_literal(vec![0u8; 32]),
+            "U" => Object::string_literal(vec![0u8; 32]),
+            "P" => -1,
+        });
+        doc.trailer.set("Encrypt", enc_id);
+        save_pdf(dir, "locked.pdf", doc)
+    }
+
+    /// Page-1 Contents is a FlateDecode stream inflating to
+    /// `inflated_len` bytes — mostly padding around a marker text that
+    /// must never surface in a preview (proof the stream was dropped,
+    /// not inflated and parsed).
+    fn make_bomb_pdf(dir: &Path, inflated_len: usize) -> PathBuf {
+        use std::io::Write;
+        let mut doc = build_pdf("Bomb", vec![page_ops(1)]);
+        let mut inflated = b"BT /F1 24 Tf (BOMB MARKER) Tj ET\n".to_vec();
+        inflated.resize(inflated_len, b' ');
+        let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        enc.write_all(&inflated).unwrap();
+        let compressed = enc.finish().unwrap();
+        let bomb_id = doc.add_object(
+            Stream::new(dictionary! { "Filter" => "FlateDecode" }, compressed)
+                .with_compression(false),
+        );
+        let page_id = *doc.get_pages().get(&1).unwrap();
+        doc.get_object_mut(page_id)
+            .and_then(Object::as_dict_mut)
+            .unwrap()
+            .set("Contents", bomb_id);
+        save_pdf(dir, "bomb.pdf", doc)
+    }
+
+    /// Two objects referencing each other, page-1 Contents pointing
+    /// into the loop.
+    fn make_loop_pdf(dir: &Path) -> PathBuf {
+        let mut doc = build_pdf("Loop", vec![page_ops(1)]);
+        let a_id = doc.new_object_id();
+        let b_id = doc.new_object_id();
+        doc.objects.insert(a_id, Object::Reference(b_id));
+        doc.objects.insert(b_id, Object::Reference(a_id));
+        let page_id = *doc.get_pages().get(&1).unwrap();
+        doc.get_object_mut(page_id)
+            .and_then(Object::as_dict_mut)
+            .unwrap()
+            .set("Contents", a_id);
+        save_pdf(dir, "loop.pdf", doc)
+    }
+
+    fn text_tier_lines(path: &Path) -> Vec<String> {
+        match pdf_text_tier(path).unwrap() {
+            Preview::Text { lines } => lines,
+            _ => panic!("expected a text preview"),
+        }
+    }
+
+    #[test]
+    fn pdf_text_tier_shows_page_count_title_and_first_page_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = make_pdf(tmp.path(), "report.pdf", "Quarterly Report", 3);
+        let lines = text_tier_lines(&pdf);
+        let joined = lines.join("\n");
+        assert!(joined.contains("PDF · 3 pages"), "{joined}");
+        assert!(joined.contains("Quarterly Report"), "{joined}");
+        assert!(joined.contains("Hello PDF page 1"), "{joined}");
+        assert!(
+            !joined.contains("Hello PDF page 2"),
+            "page 1 only: {joined}"
+        );
+    }
+
+    #[test]
+    fn pdf_info_strings_are_scrubbed() {
+        // The Author fixture value carries an embedded newline (lopdf
+        // hands /Info strings through raw — proven); it must render as
+        // ONE line.
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = make_pdf(tmp.path(), "report.pdf", "Title", 1);
+        let lines = text_tier_lines(&pdf);
+        assert!(
+            lines.iter().all(|l| !l.contains(['\r', '\n'])),
+            "newlines must be scrubbed: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("Probe Author")),
+            "the scrubbed author must still show: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn pdf_text_is_capped_at_128_lines() {
+        // 200 BT..ET blocks extract as 200 lines; the preview output is
+        // capped at the shared 128.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ops = Vec::new();
+        for i in 0..200 {
+            ops.push(Operation::new("BT", vec![]));
+            ops.push(Operation::new("Tf", vec!["F1".into(), 12.into()]));
+            ops.push(Operation::new("Td", vec![10.into(), 10.into()]));
+            ops.push(Operation::new(
+                "Tj",
+                vec![Object::string_literal(format!("body line {i}"))],
+            ));
+            ops.push(Operation::new("ET", vec![]));
+        }
+        let pdf = save_pdf(tmp.path(), "long.pdf", build_pdf("Long", vec![ops]));
+        let lines = text_tier_lines(&pdf);
+        assert!(lines.len() <= 128, "cap must hold, got {}", lines.len());
+        assert!(lines.iter().any(|l| l.contains("body line 0")), "{lines:?}");
+        assert!(
+            lines.iter().all(|l| !l.contains("body line 199")),
+            "the tail past the cap must be dropped"
+        );
+    }
+
+    #[test]
+    fn pdf_lines_are_length_capped() {
+        // A PDF can emit one multi-megabyte text run with no newlines;
+        // the retained line is truncated (char-boundary safe).
+        let tmp = tempfile::tempdir().unwrap();
+        let huge = "A".repeat(100 * 1024);
+        let ops = vec![
+            Operation::new("BT", vec![]),
+            Operation::new("Tf", vec!["F1".into(), 12.into()]),
+            Operation::new("Tj", vec![Object::string_literal(huge)]),
+            Operation::new("ET", vec![]),
+        ];
+        let pdf = save_pdf(tmp.path(), "wide.pdf", build_pdf("Wide", vec![ops]));
+        let lines = text_tier_lines(&pdf);
+        assert!(
+            lines.iter().all(|l| l.chars().count() <= PDF_LINE_MAX),
+            "every line must be capped at {PDF_LINE_MAX} chars"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("AAAA")),
+            "the truncated run must still show: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn encrypted_pdf_shows_encrypted_line_and_page_count() {
+        // Metadata = file Size/Modified, NOT /Info strings: in a real
+        // encrypted PDF the strings are encrypted garbage (the
+        // dictionaries are not, which is why the page count reads).
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = make_encrypted_pdf(tmp.path());
+        let lines = text_tier_lines(&pdf);
+        assert_eq!(lines[0], "encrypted PDF (2 pages)", "{lines:?}");
+        let joined = lines.join("\n");
+        assert!(joined.contains("Size:"), "{joined}");
+        assert!(joined.contains("Modified:"), "{joined}");
+        assert!(
+            !joined.contains("Secret Title"),
+            "/Info strings must not show for an encrypted pdf: {joined}"
+        );
+    }
+
+    #[test]
+    fn truncated_pdf_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = make_pdf(tmp.path(), "whole.pdf", "T", 1);
+        let bytes = std::fs::read(&pdf).unwrap();
+        let cut = tmp.path().join("cut.pdf");
+        std::fs::write(&cut, &bytes[..bytes.len() / 2]).unwrap();
+        assert!(pdf_text_tier(&cut).is_err());
+    }
+
+    #[test]
+    fn garbage_pdf_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bogus = tmp.path().join("bogus.pdf");
+        std::fs::write(&bogus, b"%PDF-1.4\nnot a pdf").unwrap();
+        assert!(pdf_text_tier(&bogus).is_err());
+    }
+
+    #[test]
+    fn oversized_pdf_is_an_error() {
+        // The size pre-check replaces a literal bounded read
+        // (load_filtered takes a path and slurps): past source_max the
+        // tier bails before parsing anything.
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = make_pdf(tmp.path(), "big.pdf", "Big", 1);
+        let len = std::fs::metadata(&pdf).unwrap().len();
+        assert!(load_pdf_guarded_bounded(&pdf, len - 1, PDF_DECOMP_BUDGET).is_err());
+        // The same file parses fine under the real cap.
+        assert!(load_pdf_guarded_bounded(&pdf, PDF_SOURCE_MAX, PDF_DECOMP_BUDGET).is_ok());
+    }
+
+    #[test]
+    fn flate_bomb_content_stream_is_dropped_not_inflated() {
+        // lopdf's decompress_zlib is an unbounded read_to_end; the
+        // guard filter must size-verify and drop the stream BEFORE
+        // lopdf ever inflates it. 16 MiB inflated vs a 1 MiB budget.
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = make_bomb_pdf(tmp.path(), 16 * 1024 * 1024);
+        let doc = load_pdf_guarded_bounded(&pdf, PDF_SOURCE_MAX, 1024 * 1024).unwrap();
+        let lines = native_pdf_lines(&doc, &pdf);
+        let joined = lines.join("\n");
+        assert!(
+            !joined.contains("BOMB MARKER"),
+            "the bomb stream must be dropped, not parsed: {joined}"
+        );
+        // The metadata header survives the dropped body.
+        assert!(joined.contains("PDF · 1 page"), "{joined}");
+    }
+
+    #[test]
+    fn pdf_render_defaults_off_when_uninitialized() {
+        // The raster-cache convention: uninitialized == opted out.
+        // Unit tests never call set_pdf_render, so every other test
+        // stays hermetic (no probe spawns, no external renders).
+        assert!(!pdf_render_enabled());
+    }
+
+    /// Cache-dir entries belonging to `pdf` (16-hex hash prefix match),
+    /// any kind — the leftovers detector for the render tests.
+    fn cache_entries_of(dir: &Path, pdf: &Path) -> Vec<String> {
+        let prefix = raster_cache::entry_name(pdf, 0, raster_cache::KIND_PDF)[..17].to_string();
+        std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .filter(|name| name.starts_with(&prefix))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn pdf_render_hits_the_cache_without_spawning() {
+        // A pre-seeded entry must be served BEFORE any renderer spawn:
+        // this passes on a machine without pdftoppm (no skip guard —
+        // that absence is the point).
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let pdf = tmp.path().join("doc.pdf");
+        std::fs::write(&pdf, b"never parsed on the hit path").unwrap();
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::new(8, 8));
+        raster_cache::store_in(cache.path(), &pdf, 42, raster_cache::KIND_PDF, &img).unwrap();
+        match pdf_render_first_page_in(cache.path(), PdfRenderer::Pdftoppm, &pdf, 42) {
+            Ok(Preview::Image { img, .. }) => assert!(img.is_some()),
+            other => panic!("expected a cache-hit image preview, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pdftoppm_renders_page_one_into_the_cache() {
+        let Some(renderer) = pdf_renderer() else {
+            eprintln!("skipping: no pdf renderer installed");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let pdf = make_pdf(tmp.path(), "doc.pdf", "Rendered", 2);
+        match pdf_render_first_page_in(cache.path(), renderer, &pdf, 7).unwrap() {
+            Preview::Image { img, .. } => assert!(img.is_some()),
+            other => panic!("expected an image preview, got {other:?}"),
+        }
+        let name = raster_cache::entry_name(&pdf, 7, raster_cache::KIND_PDF);
+        let entry = cache.path().join(&name);
+        assert!(entry.is_file(), "the render must land in the cache");
+        let cached = raster_cache::lookup_in(cache.path(), &pdf, 7, raster_cache::KIND_PDF)
+            .expect("the cached entry must decode");
+        assert!(
+            cached.width() <= 960 && cached.height() <= 540,
+            "bounded render: {}x{}",
+            cached.width(),
+            cached.height()
+        );
+        // atomicity: no .part siblings left behind
+        assert_eq!(cache_entries_of(cache.path(), &pdf), vec![name]);
+    }
+
+    #[test]
+    fn pdf_render_failure_leaves_no_part_files() {
+        let Some(renderer) = pdf_renderer() else {
+            eprintln!("skipping: no pdf renderer installed");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let garbage = tmp.path().join("broken.pdf");
+        std::fs::write(&garbage, b"%PDF-1.4\nnot a pdf").unwrap();
+        assert!(pdf_render_first_page_in(cache.path(), renderer, &garbage, 7).is_err());
+        assert!(
+            cache_entries_of(cache.path(), &garbage).is_empty(),
+            "a failed render must leave nothing behind"
+        );
+    }
+
+    #[test]
+    fn kind_pdf_coexists_with_other_kinds() {
+        // The raster-cache key discriminator covers the new kind: same
+        // source and mtime, different producer → distinct entries.
+        let pdf = Path::new("/some/doc.pdf");
+        let pdf_entry = raster_cache::entry_name(pdf, 100, raster_cache::KIND_PDF);
+        let img_entry = raster_cache::entry_name(pdf, 100, raster_cache::KIND_IMAGE);
+        assert_ne!(pdf_entry, img_entry);
+        assert!(pdf_entry.ends_with("-pdf-p1-960.jpg"), "{pdf_entry}");
+    }
+
+    #[test]
+    fn pdf_preview_uses_text_tier_when_render_disabled() {
+        // renderer None == pdf_render off (or no tool): the composed
+        // preview is the text tier, and nothing touches a cache dir.
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = make_pdf(tmp.path(), "report.pdf", "Tiered", 3);
+        let modified = pdf.metadata().unwrap().modified().unwrap();
+        let mime: mime::Mime = "application/pdf".parse().unwrap();
+        match pdf_preview_in(None, None, &pdf, modified, &mime) {
+            Preview::Text { lines } => {
+                assert!(
+                    lines.iter().any(|l| l.contains("PDF · 3 pages")),
+                    "{lines:?}"
+                );
+            }
+            _ => panic!("expected the text tier"),
+        }
+    }
+
+    #[test]
+    fn pdf_preview_of_garbage_falls_back_to_stat() {
+        // Composition floor: a PDF never shows a bare error panel —
+        // garbage degrades text tier -> stat block.
+        let tmp = tempfile::tempdir().unwrap();
+        let garbage = tmp.path().join("broken.pdf");
+        std::fs::write(&garbage, b"%PDF-1.4\nnot a pdf").unwrap();
+        let modified = garbage.metadata().unwrap().modified().unwrap();
+        let mime: mime::Mime = "application/pdf".parse().unwrap();
+        match pdf_preview_in(None, None, &garbage, modified, &mime) {
+            Preview::Text { lines } => {
+                let joined = lines.join("\n");
+                assert!(joined.contains("Size:"), "{joined}");
+                assert!(joined.contains("MIME type:"), "{joined}");
+            }
+            _ => panic!("expected the stat fallback"),
+        }
+    }
+
+    #[test]
+    fn file_preview_dispatches_pdf_to_the_text_tier() {
+        // End-to-end: FilePreview::new on a .pdf must produce the
+        // text-tier lines, not the plain stat block the old
+        // ("application", _) catch-all served. Extensionless %PDF
+        // routing is covered by opener.rs's
+        // extensionless_pdf_bytes_get_application_pdf.
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = make_pdf(tmp.path(), "whatever.pdf", "Dispatched", 1);
+        match FilePreview::new(pdf).preview {
+            Preview::Text { lines } => {
+                let joined = lines.join("\n");
+                assert!(joined.contains("PDF · 1 page"), "{joined}");
+                assert!(joined.contains("Dispatched"), "{joined}");
+                assert!(
+                    !joined.contains("MIME type:"),
+                    "must not land on the stat catch-all: {joined}"
+                );
+            }
+            _ => panic!("expected a text preview"),
+        }
+    }
+
+    #[test]
+    fn reference_loop_pdf_terminates() {
+        // lopdf's DEREF_LIMIT bounds the chase; the tier must simply
+        // return (metadata Ok, or Err) instead of spinning.
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = make_loop_pdf(tmp.path());
+        match pdf_text_tier(&pdf) {
+            Ok(Preview::Text { lines }) => {
+                assert!(lines.iter().any(|l| l.contains("PDF")), "{lines:?}")
+            }
+            Ok(_) => panic!("expected a text preview"),
+            Err(_) => {} // an error is a valid terminating outcome
+        }
+    }
+
+    fn zlib_compress(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        enc.write_all(data).unwrap();
+        enc.finish().unwrap()
+    }
+
+    /// Hand-assemble a minimal PDF-1.5 whose cross-reference is a
+    /// `/Filter /FlateDecode` xref STREAM (which lopdf's `save_to` never
+    /// emits — it writes classic tables). The xref stream inflates to
+    /// `xref_padding` bytes of trailing filler beyond the 25 real entry
+    /// bytes; a large `xref_padding` is a compression-ratio bomb that
+    /// lopdf inflates during xref parsing, BEFORE the object guard runs.
+    fn make_xref_stream_pdf(dir: &Path, name: &str, xref_padding: usize) -> PathBuf {
+        // W = [1 2 1]: type(1) offset(2) gen(1). Objects fit under 64 KiB
+        // so 2-byte offsets suffice.
+        fn entry(v: &mut Vec<u8>, t: u8, off: u32, gen: u8) {
+            v.push(t);
+            v.push((off >> 8) as u8);
+            v.push(off as u8);
+            v.push(gen);
+        }
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(b"%PDF-1.5\n%\xE2\xE3\xCF\xD3\n");
+        let mut off = [0usize; 5];
+        off[1] = buf.len();
+        buf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+        off[2] = buf.len();
+        buf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+        off[3] = buf.len();
+        buf.extend_from_slice(
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>\nendobj\n",
+        );
+        // Object 4 is the xref stream itself.
+        off[4] = buf.len();
+        let mut xref = Vec::new();
+        entry(&mut xref, 0, 0, 255); // object 0: the free-list head
+        for &obj_off in &off[1..=4] {
+            entry(&mut xref, 1, obj_off as u32, 0);
+        }
+        xref.resize(xref.len() + xref_padding, 0);
+        let compressed = zlib_compress(&xref);
+        let dict = format!(
+            "<< /Type /XRef /Size 5 /Index [0 5] /W [1 2 1] /Root 1 0 R /Length {} /Filter /FlateDecode >>",
+            compressed.len()
+        );
+        buf.extend_from_slice(format!("4 0 obj\n{dict}\nstream\n").as_bytes());
+        buf.extend_from_slice(&compressed);
+        buf.extend_from_slice(b"\nendstream\nendobj\n");
+        buf.extend_from_slice(format!("startxref\n{}\n%%EOF", off[4]).as_bytes());
+        let path = dir.join(name);
+        std::fs::write(&path, buf).unwrap();
+        path
+    }
+
+    #[test]
+    fn valid_xref_stream_pdf_loads() {
+        // Guards against over-rejection: a legitimate (tiny) xref stream
+        // must still parse through the pre-scan and into lopdf.
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = make_xref_stream_pdf(tmp.path(), "modern.pdf", 0);
+        let doc = load_pdf_guarded_bounded(&pdf, PDF_SOURCE_MAX, PDF_DECOMP_BUDGET)
+            .expect("a valid xref-stream pdf must load");
+        assert_eq!(doc.get_pages().len(), 1);
+    }
+
+    #[test]
+    fn xref_stream_flate_bomb_is_rejected_before_lopdf_inflates_it() {
+        // The bomb inflates to ~4 MiB from a few hundred compressed
+        // bytes; under a 1 MiB budget the pre-scan must reject the file
+        // WITHOUT handing it to lopdf (whose xref parsing would inflate
+        // it fully — the object guard never sees an xref stream). This
+        // is the compressed-xref-stream OOM class from cursor nav.
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = make_xref_stream_pdf(tmp.path(), "bomb.pdf", 4 * 1024 * 1024);
+        // Sanity: on-disk size stays tiny (a real ratio bomb).
+        assert!(
+            std::fs::metadata(&pdf).unwrap().len() < 64 * 1024,
+            "the compressed bomb must be small on disk"
+        );
+        let res = load_pdf_guarded_bounded(&pdf, PDF_SOURCE_MAX, 1024 * 1024);
+        assert!(
+            res.is_err(),
+            "the xref-stream decompression bomb must be rejected"
+        );
+    }
+
+    #[test]
+    fn chained_flate_filters_are_charged_super_linearly() {
+        // A stream with /Filter [/FlateDecode /FlateDecode] inflates up
+        // to 1032^2 : 1, not 1032 : 1. The pre-fix single multiply
+        // (content.len() * 1032) kept ~980 bytes under the 64 MiB
+        // budget; the true bound 980 * 1032^2 ~= 1 GiB is over budget,
+        // so the charge must report None (drop the stream).
+        let content = vec![0u8; 980];
+        let stream = Stream::new(
+            dictionary! {
+                "Filter" => vec![Object::from("FlateDecode"), Object::from("FlateDecode")],
+            },
+            content,
+        )
+        .with_compression(false);
+        assert!(
+            pdf_stream_charge(&stream, PDF_DECOMP_BUDGET).is_none(),
+            "a two-stage flate chain must be charged 1032^2, over budget"
+        );
+        // A single FlateDecode of the same size is still counted exactly
+        // (and here decodes to near-nothing, well under budget).
+        let single = Stream::new(
+            dictionary! { "Filter" => "FlateDecode" },
+            zlib_compress(b"hello"),
+        )
+        .with_compression(false);
+        assert!(pdf_stream_charge(&single, PDF_DECOMP_BUDGET).is_some());
     }
 }
 

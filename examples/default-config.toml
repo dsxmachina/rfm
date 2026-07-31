@@ -65,6 +65,18 @@ use_trash = true
 #
 preview_cache = true
 
+# Render the first page of PDFs to an image preview (instead of the built-in
+# text/metadata preview). This needs an external PDF renderer: pdftoppm
+# (from poppler-utils) or mutool (from mupdf-tools).
+#   - pdf_render = false : (default) PDFs show page count, title/author and
+#     the text of page 1 — pure Rust, no external dependency.
+#   - pdf_render = true  : render page 1 via pdftoppm/mutool into the preview
+#     cache. If neither tool is installed, rfm silently stays on the text
+#     preview. With preview_cache = false nothing is rendered to disk, so the
+#     image tier is skipped entirely.
+#
+pdf_render = false
+
 # Use Nerd Font icons for file types.
 #
 # When enabled, rfm will use icons from the Nerd Fonts project (like yazi does).

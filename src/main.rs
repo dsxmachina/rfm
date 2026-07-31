@@ -180,6 +180,9 @@ async fn main() -> anyhow::Result<()> {
 
     let use_trash = loaded.config.general.use_trash;
     let preview_cache = loaded.config.general.preview_cache;
+    // Whether the external pdf image tier (pdftoppm/mutool) may run
+    // (config key `pdf_render`; default OFF — opt-in).
+    let pdf_render = loaded.config.general.pdf_render;
     let rate_limit_interval_ms = loaded.config.general.rate_limit_interval_ms;
     let fancy_icons = loaded.config.general.fancy_icons;
     info!("Using rate-limit of {rate_limit_interval_ms}ms");
@@ -213,6 +216,7 @@ async fn main() -> anyhow::Result<()> {
     // the first preview can run), then evict stale entries in the
     // background (fire-and-forget).
     panel::raster_cache::init(preview_cache);
+    panel::set_pdf_render(pdf_render);
     tokio::task::spawn_blocking(panel::raster_cache::prune);
 
     let opener = OpenEngine::with_config(loaded.config.open);

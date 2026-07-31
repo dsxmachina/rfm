@@ -30,6 +30,10 @@ pub(crate) const KIND_SVG: &str = "svg960";
 /// the size MUST bump this constant (`s2`, `-32`) — old entries then
 /// age out via the stale-sibling sweep.
 pub(crate) const KIND_FONT: &str = "font-s1-24";
+/// Kind tag for external PDF page renders: page 1, scale-to 960.
+/// Changing the page or scale MUST bump this ("pdf-p2-…", "-1280") —
+/// old entries then age out via the stale-sibling sweep.
+pub(crate) const KIND_PDF: &str = "pdf-p1-960";
 
 /// `<seahash(abs path):016x>-<mtime_secs>-<kind>.jpg` — the filename is
 /// the entire metadata. `kind` must be filename-safe (`[a-z0-9-]`).
