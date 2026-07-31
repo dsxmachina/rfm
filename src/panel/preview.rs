@@ -269,6 +269,10 @@ impl FilePreview {
                 doc_preview(&path, DocKind::Odt)
             }
             ("application", "epub") => doc_preview(&path, DocKind::Epub),
+            // Sniff-routed: .db/.sqlite/.sqlite3 get no mime_guess
+            // answer, so infer resolves the `SQLite format 3\0` magic —
+            // a .db that is not SQLite routes elsewhere (correct).
+            ("application", "vnd.sqlite3") => sqlite_preview(&path, &mime),
             // Text based application/* types
             ("application", "x-sh")
             | ("application", "json")
@@ -1359,6 +1363,61 @@ fn doc_preview(path: &Path, kind: DocKind) -> Preview {
                 path.display()
             );
             zip_preview(path)
+        }
+    }
+}
+
+/// Table listing of a SQLite database: read-only open, zero busy
+/// timeout (fail fast, never block the panel task), one `count  name`
+/// line per table from sqlite_master. A count failure for one table
+/// (corrupt page) prints `?` for that row; only an open/master-query
+/// failure is `Err` (→ stat fallback). Names are attacker-controlled:
+/// quoted for the COUNT (embedded quotes doubled) and scrubbed for
+/// display. 2 header lines + 126 tables = the shared 128-line cap.
+fn native_sqlite_lines(path: &Path) -> anyhow::Result<Vec<String>> {
+    use rusqlite::OpenFlags;
+    let conn = rusqlite::Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.busy_timeout(std::time::Duration::ZERO)?;
+    let mut stmt =
+        conn.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")?;
+    let names = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    let mut lines = vec![
+        format!(
+            "SQLite database · {} table{}",
+            names.len(),
+            if names.len() == 1 { "" } else { "s" }
+        ),
+        String::new(),
+    ];
+    for name in names.iter().take(126) {
+        let quoted = format!("\"{}\"", name.replace('"', "\"\""));
+        let count = conn
+            .query_row(&format!("SELECT COUNT(*) FROM {quoted}"), [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map(|n| n.to_string())
+            .unwrap_or_else(|_| String::from("?"));
+        lines.push(scrub_line(format!("{count:>8}  {name}")));
+    }
+    Ok(lines)
+}
+
+/// SQLite arm (sniff-routed via the `SQLite format 3\0` magic): native
+/// listing, stat block as the fallback for locked/garbage databases.
+fn sqlite_preview(path: &Path, mime: &mime::Mime) -> Preview {
+    match native_sqlite_lines(path) {
+        Ok(lines) => Preview::Text { lines },
+        Err(e) => {
+            log::debug!(
+                "sqlite listing failed, falling back to stat: {}: {e}",
+                path.display()
+            );
+            stat_preview(path, mime)
         }
     }
 }
@@ -2864,6 +2923,138 @@ mod new_type_tests {
             Preview::Text { lines } => assert!(
                 lines.iter().any(|l| l.contains("Dispatched body text")),
                 "{lines:?}"
+            ),
+            _ => panic!("expected a text preview"),
+        }
+    }
+
+    #[test]
+    fn sqlite_preview_lists_tables_with_row_counts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("data.sqlite");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE t1(a);
+             INSERT INTO t1 VALUES (1);
+             INSERT INTO t1 VALUES (2);
+             CREATE TABLE t2(b);",
+        )
+        .unwrap();
+        drop(conn);
+        let lines = native_sqlite_lines(&db).unwrap();
+        assert!(
+            lines[0].contains("SQLite") && lines[0].contains("2 tables"),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("t1") && l.contains('2') && !l.contains("t2")),
+            "t1 must count 2 rows: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("t2") && l.contains('0')),
+            "t2 must count 0 rows: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn sqlite_table_names_are_scrubbed_and_quoted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("evil.sqlite");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        // An embedded quote in the identifier: COUNT(*) only succeeds
+        // when the listing re-quotes it by doubling; a crafted name
+        // with \n must render on ONE line (scrub convention).
+        conn.execute_batch(
+            "CREATE TABLE \"evil\"\"name\"(x);
+             INSERT INTO \"evil\"\"name\" VALUES (1);
+             CREATE TABLE \"bad\nname\"(y);",
+        )
+        .unwrap();
+        drop(conn);
+        let lines = native_sqlite_lines(&db).unwrap();
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("evil\"name") && l.contains('1') && !l.contains('?')),
+            "the quoted table must count correctly: {lines:?}"
+        );
+        assert!(
+            lines.iter().all(|l| !l.contains(['\r', '\n'])),
+            "newlines must be scrubbed: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("badname")),
+            "the scrubbed name must still be listed: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn sqlite_listing_is_capped_at_128_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("many.sqlite");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        for i in 0..130 {
+            conn.execute_batch(&format!("CREATE TABLE table_{i:03}(x);"))
+                .unwrap();
+        }
+        drop(conn);
+        // 2 header lines + 126 tables = the shared 128-line cap.
+        assert_eq!(native_sqlite_lines(&db).unwrap().len(), 128);
+    }
+
+    #[test]
+    fn sqlite_preview_of_garbage_falls_back_to_stat() {
+        // Only the 16-byte magic + garbage: the open/master query fails
+        // and the stat block (design fallback) must show instead.
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("broken.sqlite");
+        let mut data = b"SQLite format 3\0".to_vec();
+        data.extend_from_slice(&[0xffu8; 100]);
+        std::fs::write(&db, data).unwrap();
+        let mime: mime::Mime = "application/vnd.sqlite3".parse().unwrap();
+        match sqlite_preview(&db, &mime) {
+            Preview::Text { lines } => {
+                let joined = lines.join("\n");
+                assert!(joined.contains("Size:"), "{joined}");
+                assert!(joined.contains("MIME type:"), "{joined}");
+            }
+            _ => panic!("expected the stat fallback"),
+        }
+    }
+
+    #[test]
+    fn extensionless_sqlite_magic_routes_to_the_sqlite_arm() {
+        // .db/.sqlite/.sqlite3 get no mime_guess answer, so routing is
+        // sniff-driven: infer maps the `SQLite format 3\0` magic to
+        // application/vnd.sqlite3 (no get_mime_type special case).
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("statefile");
+        let mut data = b"SQLite format 3\0".to_vec();
+        data.extend_from_slice(&[0u8; 100]);
+        std::fs::write(&db, data).unwrap();
+        let mime = get_mime_type(&db);
+        assert_eq!(
+            (mime.type_().as_str(), mime.subtype().as_str()),
+            ("application", "vnd.sqlite3"),
+            "sniff resolved {mime}"
+        );
+    }
+
+    #[test]
+    fn sqlite_dispatch_reaches_the_listing_arm() {
+        // End-to-end: FilePreview::new on a real .sqlite file must show
+        // the table listing, not the generic stat block.
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("app.sqlite");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch("CREATE TABLE sessions(x);").unwrap();
+        drop(conn);
+        match FilePreview::new(db).preview {
+            Preview::Text { lines } => assert!(
+                lines.iter().any(|l| l.contains("sessions")),
+                "expected the table listing: {lines:?}"
             ),
             _ => panic!("expected a text preview"),
         }
