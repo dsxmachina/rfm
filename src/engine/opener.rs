@@ -574,6 +574,17 @@ mod mime_tests {
     }
 
     #[test]
+    fn jxl_extension_resolves_to_image_jxl() {
+        // mime_guess 2.0.5 does not know JPEG XL; the special-case
+        // routes .jxl into the image arm. Nonexistent path proves no
+        // content was read.
+        assert_eq!(
+            get_mime_type(Path::new("/no/such/photo.jxl")).to_string(),
+            "image/jxl"
+        );
+    }
+
+    #[test]
     fn zst_extensions_resolve_without_sniffing() {
         // mime_guess has no mapping for zstd and the compound tar
         // extensions; without the special-cases these fall into the

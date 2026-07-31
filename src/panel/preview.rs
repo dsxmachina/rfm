@@ -548,6 +548,45 @@ fn decode_upright(path: &Path) -> Option<DynamicImage> {
     Some(img)
 }
 
+/// Decode dispatch for the image arm: JPEG XL goes through jxl-oxide's
+/// `ImageDecoder` integration (the image crate has no JXL support;
+/// jxl-oxide applies the codestream's own orientation during decode —
+/// do NOT also apply EXIF), everything else through [`decode_upright`].
+/// `None` routes the caller to the mediainfo fallback either way.
+fn decode_raster(path: &Path, mime: &mime::Mime) -> Option<DynamicImage> {
+    if mime.subtype().as_str() == "jxl" {
+        let reader = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+        let decoder = jxl_oxide::integration::JxlDecoder::new(reader).ok()?;
+        return DynamicImage::from_decoder(decoder).ok();
+    }
+    decode_upright(path)
+}
+
+/// Upright source dimensions without a full decode, for the cache-hit
+/// info line: a header-only read, w/h swapped for the transposing EXIF
+/// orientations (Rotate90/270 ± flip). JPEG XL dispatches to jxl-oxide
+/// (whose reported dims already have the codestream orientation
+/// applied); `None` lets the caller fall back to the cached raster.
+fn upright_source_dims(path: &Path, subtype: &str) -> Option<(u32, u32)> {
+    use image::{metadata::Orientation, ImageDecoder};
+    if subtype == "jxl" {
+        let reader = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+        let decoder = jxl_oxide::integration::JxlDecoder::new(reader).ok()?;
+        return Some(decoder.dimensions());
+    }
+    let mut decoder = image::ImageReader::open(path).ok()?.into_decoder().ok()?;
+    let (w, h) = decoder.dimensions();
+    Some(
+        match decoder.orientation().unwrap_or(Orientation::NoTransforms) {
+            Orientation::Rotate90
+            | Orientation::Rotate270
+            | Orientation::Rotate90FlipH
+            | Orientation::Rotate270FlipH => (h, w),
+            _ => (w, h),
+        },
+    )
+}
+
 /// Image arm: decode once, derive the info lines from the decode itself
 /// (dimensions are read before the thumbnail shrink).
 fn native_image_preview(path: &Path, mime: &mime::Mime) -> Preview {
@@ -556,7 +595,7 @@ fn native_image_preview(path: &Path, mime: &mime::Mime) -> Preview {
     let modified = meta
         .and_then(|m| m.modified().ok())
         .unwrap_or(SystemTime::UNIX_EPOCH);
-    match decode_upright(path) {
+    match decode_raster(path, mime) {
         Some(img) => {
             let info = image_info_lines(
                 img.width(),
@@ -638,21 +677,8 @@ fn cached_image_preview_in(
 /// The header dims are raw sensor dims — swapped for a transposing EXIF
 /// orientation so the hit path agrees with the (upright) miss path.
 fn cached_image_info(path: &Path, cached: &DynamicImage, subtype: &str) -> Vec<String> {
-    use image::{metadata::Orientation, ImageDecoder};
-    let (width, height) = image::ImageReader::open(path)
-        .ok()
-        .and_then(|r| r.into_decoder().ok())
-        .map(|mut d| {
-            let (w, h) = d.dimensions();
-            match d.orientation().unwrap_or(Orientation::NoTransforms) {
-                Orientation::Rotate90
-                | Orientation::Rotate270
-                | Orientation::Rotate90FlipH
-                | Orientation::Rotate270FlipH => (h, w),
-                _ => (w, h),
-            }
-        })
-        .unwrap_or_else(|| (cached.width(), cached.height()));
+    let (width, height) =
+        upright_source_dims(path, subtype).unwrap_or_else(|| (cached.width(), cached.height()));
     let meta = path.metadata().ok();
     let byte_size = meta.as_ref().map(|m| m.len()).unwrap_or_default();
     let modified = meta
@@ -3016,6 +3042,71 @@ mod native_backend_tests {
                 assert!(info.iter().any(|l| l.contains("10 × 20")), "{info:?}");
             }
             _ => panic!("expected an image preview"),
+        }
+    }
+
+    /// A bare 8×8 solid-color JPEG XL codestream (66 bytes), produced
+    /// once with libjxl 0.11.2 (`magick -size 8x8 xc:'#3060c0'
+    /// -define jxl:effort=1 tiny-8x8.jxl`) — jxl-oxide is decode-only,
+    /// so the fixture is embedded, like testdata/subset-noto-sans.ttf.
+    const TEST_JXL: &[u8] = include_bytes!("testdata/tiny-8x8.jxl");
+
+    #[test]
+    fn a_jxl_file_previews_as_a_native_image() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("tiny.jxl");
+        std::fs::write(&path, TEST_JXL).unwrap();
+        match FilePreview::new(path).preview {
+            Preview::Image { img, info } => {
+                let img = img.expect("jxl must decode natively");
+                assert_eq!((img.width(), img.height()), (8, 8));
+                assert!(info.iter().any(|l| l.contains("8 × 8")), "{info:?}");
+            }
+            other => panic!("expected an image preview, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_jxl_preview_round_trips_through_the_raster_cache() {
+        // JXL rides the existing ("image", _) arm: miss stores under
+        // KIND_IMAGE, hit serves the cached raster without the source.
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("tiny.jxl");
+        std::fs::write(&path, TEST_JXL).unwrap();
+        let mime: mime::Mime = "image/jxl".parse().unwrap();
+        let modified = path.metadata().unwrap().modified().unwrap();
+
+        cached_image_preview_in(Some(cache.path()), &path, modified, &mime);
+        assert!(
+            raster_cache::lookup_in(
+                cache.path(),
+                &path,
+                mtime_secs(modified),
+                raster_cache::KIND_IMAGE,
+            )
+            .is_some(),
+            "miss must store the thumbnail"
+        );
+        std::fs::remove_file(&path).unwrap();
+        match cached_image_preview_in(Some(cache.path()), &path, modified, &mime) {
+            Preview::Image { img, .. } => {
+                assert_eq!(img.unwrap().to_rgb8().dimensions(), (8, 8));
+            }
+            other => panic!("expected a cached image preview, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_broken_jxl_falls_back_to_text() {
+        // Garbage under the .jxl extension must land on the existing
+        // mediainfo/info fallback — no panic, no bare error panel.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("broken.jxl");
+        std::fs::write(&path, b"not a jxl codestream at all").unwrap();
+        match FilePreview::new(path).preview {
+            Preview::Text { lines } => assert!(!lines.is_empty(), "{lines:?}"),
+            other => panic!("expected the text fallback, got {other:?}"),
         }
     }
 

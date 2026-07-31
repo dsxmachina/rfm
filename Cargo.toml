@@ -46,6 +46,11 @@ infer = "0.22"
 # Declared directly for TIOCGWINSZ pixel geometry and the poll()-bounded
 # graphics-protocol probe read (crossterm 0.26 has no pixel-size API).
 libc = "0.2"
+# JPEG XL decode, pure Rust (no system C libraries). 0.12+ needs cargo
+# >=1.85 (jxl-coding is edition2024); cap below it. The `image` feature
+# provides the ImageDecoder integration (requires image >=0.25.5, the
+# floor pinned above); its default rayon feature stays on.
+jxl-oxide = { version = ">=0.11, <0.12", features = ["image"] }
 log = { version ="0.4.22", features = ["std"] }
 # lofty 0.22.3 bumps MSRV to 1.85; cap below it (its ogg_pager dep 0.7.1
 # does too - pinned to 0.7.0 in Cargo.lock).
