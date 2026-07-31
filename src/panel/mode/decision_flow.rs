@@ -95,16 +95,22 @@ impl DecisionFlow {
         }
     }
 
-    /// The item the cursor is on.
+    /// The item the cursor is on. (Test-only so far — rendering reads the
+    /// fields directly; consumers only ever see the resolved answers.)
+    #[cfg(test)]
     pub fn cursor(&self) -> usize {
         self.cursor
     }
 
-    /// Chosen choice index per item; `None` = still unanswered.
+    /// Chosen choice index per item; `None` = still unanswered. (Test-only,
+    /// see [`Self::cursor`].)
+    #[cfg(test)]
     pub fn answers(&self) -> &[Option<usize>] {
         &self.answers
     }
 
+    /// The flow's items, as built. (Test-only, see [`Self::cursor`].)
+    #[cfg(test)]
     pub fn items(&self) -> &[DecisionItem] {
         &self.items
     }

@@ -279,7 +279,7 @@ async fn main() -> anyhow::Result<()> {
         preview_tx,
     };
 
-    let panel_manager = PanelManager::new(
+    let mut panel_manager = PanelManager::new(
         starting_path.clone(),
         handles,
         use_trash,
@@ -292,6 +292,24 @@ async fn main() -> anyhow::Result<()> {
         command_status_rx,
         debug_rx,
     )?;
+
+    // One-time upgrade notice: default-vs-user keybinding conflicts and the
+    // legacy-config migration offer, shown at most once per rfm version
+    // (state.toml gates it). Complements — not replaces — the warn! lines
+    // above.
+    let state_dir = util::xdg_state_home().map(|p| p.join("rfm")).ok();
+    let version = env!("CARGO_PKG_VERSION");
+    if let Some(dir) = &state_dir {
+        if config::app_state::read(dir).upgrade_notice_seen_for.as_deref() != Some(version) {
+            panel_manager.maybe_show_upgrade_notice(
+                &dropped,
+                loaded.legacy_folded,
+                config_dir.clone(),
+                dir.clone(),
+            );
+        }
+    }
+
     let panel_handle = tokio::spawn(panel_manager.run());
 
     // If the panel manager returns, we essentially want to shutdown the entire program.
