@@ -39,6 +39,12 @@ pub fn get_mime_type<P: AsRef<Path>>(path: P) -> Mime {
         Some("astro") => return "text/x-astro".parse().unwrap(),
         Some("gradle") => return "text/x-gradle".parse().unwrap(),
         Some("groovy") => return "text/x-groovy".parse().unwrap(),
+        // mime_guess has no mapping for zstd and the compound tar
+        // extensions (.xz/.bz2/.7z it does know); resolving them here
+        // saves the content sniff.
+        Some("zst" | "tzst") => return "application/zstd".parse().unwrap(),
+        Some("txz") => return "application/x-xz".parse().unwrap(),
+        Some("tbz2") => return "application/x-bzip2".parse().unwrap(),
         // No extension: the guess has nothing to work with - sniff.
         None => return sniffed(path.as_ref()).unwrap_or(mime::TEXT_PLAIN),
         _ => (),
@@ -565,6 +571,30 @@ mod mime_tests {
     fn an_unreadable_extensionless_path_falls_back_to_text_plain() {
         // Sniff read errors must never fail the caller.
         assert_eq!(get_mime_type(Path::new("/no/such/file")), mime::TEXT_PLAIN);
+    }
+
+    #[test]
+    fn zst_extensions_resolve_without_sniffing() {
+        // mime_guess has no mapping for zstd and the compound tar
+        // extensions; without the special-cases these fall into the
+        // sniff path. Nonexistent paths prove no content was read (the
+        // sniff fallback would yield text/plain).
+        assert_eq!(
+            get_mime_type(Path::new("/no/such/foo.tar.zst")).to_string(),
+            "application/zstd"
+        );
+        assert_eq!(
+            get_mime_type(Path::new("/no/such/foo.tzst")).to_string(),
+            "application/zstd"
+        );
+        assert_eq!(
+            get_mime_type(Path::new("/no/such/foo.txz")).to_string(),
+            "application/x-xz"
+        );
+        assert_eq!(
+            get_mime_type(Path::new("/no/such/foo.tbz2")).to_string(),
+            "application/x-bzip2"
+        );
     }
 
     #[test]

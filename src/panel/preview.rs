@@ -244,6 +244,15 @@ impl FilePreview {
             ("video", _) => video_preview(&path, modified),
             ("application", "x-x509-ca-cert") => cert_preview(&path),
             ("application", "gzip") => gz_preview(&path),
+            // zstd/xz/bzip2 ride the same decompress -> tar-sniff ->
+            // list-or-text logic as gzip, via pure-Rust decoders.
+            // Extensions route through the get_mime_type special-cases
+            // (.zst/.tzst/.txz/.tbz2) or mime_guess (.xz/.bz2/.7z);
+            // extensionless files through the infer magics.
+            ("application", "zstd") => zst_preview(&path),
+            ("application", "x-xz") => xz_preview(&path),
+            ("application", "x-bzip2") => bz2_preview(&path),
+            ("application", "x-7z-compressed") => sevenz_preview(&path),
             ("application", "x-tar") => tar_preview(&path),
             ("application", "zip") => zip_preview(&path),
             // Zip-container documents: extensions resolve via
@@ -1063,13 +1072,18 @@ fn gz_preview(path: &Path) -> Preview {
     }
 }
 
-/// Decompress the head, sniff the tar magic (`ustar` at offset 257 -
-/// covers both POSIX `ustar\0` and GNU `ustar  `), then either chain
-/// head+rest into `native_tar_list` or show the decompressed head as
-/// text (bounded 64 KiB read, lossy UTF-8, 128 lines, `\r` scrubbed
-/// like `bat_preview`).
 fn native_gz_preview(path: &Path) -> anyhow::Result<Preview> {
-    let mut decoder = flate2::read::GzDecoder::new(File::open(path)?);
+    native_compressed_preview(flate2::read::GzDecoder::new(File::open(path)?))
+}
+
+/// Shared tail of every compressed-single-stream arm (gzip, zstd, xz,
+/// bzip2): decompress the head, sniff the tar magic (`ustar` at offset
+/// 257 - covers both POSIX `ustar\0` and GNU `ustar  `), then either
+/// chain head+rest into `native_tar_list` or show the decompressed
+/// head as text (bounded 64 KiB read, lossy UTF-8, 128 lines, `\r`
+/// scrubbed like `bat_preview`) - a compressed non-tar file shows its
+/// text head, never a tar error.
+fn native_compressed_preview(mut decoder: impl Read) -> anyhow::Result<Preview> {
     // Read up to one tar block; a short read just means a small file.
     let mut head = [0u8; 512];
     let mut filled = 0;
@@ -1095,6 +1109,94 @@ fn native_gz_preview(path: &Path) -> anyhow::Result<Preview> {
         .map(|l| l.replace('\r', ""))
         .collect();
     Ok(Preview::Text { lines })
+}
+
+/// zstd arm (`.zst`/`.tzst`/`.tar.zst`): pure-Rust ruzstd decode into
+/// the shared tar-or-text logic; a system tar built with zstd stays as
+/// the fallback (exactly the old fragile path, now demoted).
+fn zst_preview(path: &Path) -> Preview {
+    let native = File::open(path)
+        .map_err(anyhow::Error::from)
+        .and_then(|f| Ok(ruzstd::decoding::StreamingDecoder::new(io::BufReader::new(f))?))
+        .and_then(native_compressed_preview);
+    match native {
+        Ok(preview) => preview,
+        Err(e) => {
+            log::debug!("native zstd preview failed, trying tar: {e}");
+            cmd_to_preview("tar", tar_list(path))
+        }
+    }
+}
+
+/// xz arm (`.xz`/`.txz`/`.tar.xz`): pure-Rust lzma-rust2 decode into
+/// the shared tar-or-text logic; the tar binary stays as the fallback.
+fn xz_preview(path: &Path) -> Preview {
+    let native = File::open(path).map_err(anyhow::Error::from).and_then(|f| {
+        native_compressed_preview(lzma_rust2::XzReader::new(io::BufReader::new(f), true))
+    });
+    match native {
+        Ok(preview) => preview,
+        Err(e) => {
+            log::debug!("native xz preview failed, trying tar: {e}");
+            cmd_to_preview("tar", tar_list(path))
+        }
+    }
+}
+
+/// bzip2 arm (`.bz2`/`.tbz2`/`.tar.bz2`): pure-Rust libbz2-rs decode
+/// into the shared tar-or-text logic; the tar binary stays as the
+/// fallback.
+fn bz2_preview(path: &Path) -> Preview {
+    let native = File::open(path)
+        .map_err(anyhow::Error::from)
+        .and_then(|f| native_compressed_preview(bzip2::read::BzDecoder::new(f)));
+    match native {
+        Ok(preview) => preview,
+        Err(e) => {
+            log::debug!("native bzip2 preview failed, trying tar: {e}");
+            cmd_to_preview("tar", tar_list(path))
+        }
+    }
+}
+
+/// List a 7z archive natively: `size  name` per entry, capped at 128.
+/// `Archive::open` reads only the archive metadata - nothing is
+/// extracted or decompressed.
+fn native_sevenz_list(path: &Path) -> anyhow::Result<Vec<String>> {
+    let archive = sevenz_rust::Archive::open(path)?;
+    Ok(archive
+        .files
+        .iter()
+        .take(128)
+        .map(|entry| {
+            scrub_line(format!(
+                "{:>8}  {}",
+                crate::util::file_size_str(entry.size()),
+                entry.name()
+            ))
+        })
+        .collect())
+}
+
+/// Native-first 7z arm. There was no 7z shell-out before this arm; the
+/// `7z l` fallback is added fallback-only, so encrypted-header archives
+/// still get a listing when the binary exists (else error text - the
+/// preview is never empty).
+fn sevenz_preview(path: &Path) -> Preview {
+    match native_sevenz_list(path) {
+        Ok(lines) => Preview::Text { lines },
+        Err(e) => {
+            log::debug!("native 7z list failed, trying 7z: {e}");
+            cmd_to_preview(
+                "7z",
+                std::process::Command::new("7z")
+                    .arg("l")
+                    .arg(path)
+                    .output()
+                    .and_then(|o| o.stdout.lines().take(128).collect()),
+            )
+        }
+    }
 }
 
 /// Native-first x-tar arm; the tar binary stays as the fallback (the
@@ -3088,6 +3190,183 @@ mod new_type_tests {
             Preview::Image { img, .. } => assert!(img.is_some(), "hit must serve cached pixels"),
             _ => panic!("expected an image preview from the cache"),
         }
+    }
+
+    // ---- C5: extra archive formats (.7z, .tar.zst/.tar.xz/.tar.bz2) ----
+
+    use std::io::Write;
+
+    /// A small tar stream built in memory via the tar crate.
+    fn tar_bytes(names: &[&str]) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        for name in names {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(7);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, *name, &b"content"[..])
+                .unwrap();
+        }
+        builder.into_inner().unwrap()
+    }
+
+    fn expect_lines(preview: Preview) -> Vec<String> {
+        match preview {
+            Preview::Text { lines } => lines,
+            _ => panic!("expected a text preview"),
+        }
+    }
+
+    #[test]
+    fn tar_zst_preview_lists_members() {
+        let tmp = tempfile::tempdir().unwrap();
+        let compressed = ruzstd::encoding::compress_to_vec(
+            &tar_bytes(&["a.txt", "b.txt"])[..],
+            ruzstd::encoding::CompressionLevel::Fastest,
+        );
+        let path = tmp.path().join("archive.tar.zst");
+        std::fs::write(&path, compressed).unwrap();
+        let lines = expect_lines(zst_preview(&path));
+        assert!(
+            lines.iter().any(|l| l.contains("a.txt")) && lines.iter().any(|l| l.contains("b.txt")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn tar_xz_preview_lists_members() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("archive.tar.xz");
+        let mut writer = lzma_rust2::XzWriter::new(
+            File::create(&path).unwrap(),
+            lzma_rust2::XzOptions::with_preset(1),
+        )
+        .unwrap();
+        writer.write_all(&tar_bytes(&["a.txt", "b.txt"])).unwrap();
+        writer.finish().unwrap();
+        let lines = expect_lines(xz_preview(&path));
+        assert!(
+            lines.iter().any(|l| l.contains("a.txt")) && lines.iter().any(|l| l.contains("b.txt")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn tar_bz2_preview_lists_members() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("archive.tar.bz2");
+        let mut writer = bzip2::write::BzEncoder::new(
+            File::create(&path).unwrap(),
+            bzip2::Compression::fast(),
+        );
+        writer.write_all(&tar_bytes(&["a.txt", "b.txt"])).unwrap();
+        writer.finish().unwrap();
+        let lines = expect_lines(bz2_preview(&path));
+        assert!(
+            lines.iter().any(|l| l.contains("a.txt")) && lines.iter().any(|l| l.contains("b.txt")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn zst_of_a_non_tar_file_previews_the_decompressed_text() {
+        // The gz-arm behavior generalised: a compressed NON-tar file
+        // must show its decompressed head as text, not an error.
+        let tmp = tempfile::tempdir().unwrap();
+        let compressed = ruzstd::encoding::compress_to_vec(
+            &b"hello from a zstd text file\r\nsecond line\n"[..],
+            ruzstd::encoding::CompressionLevel::Fastest,
+        );
+        let path = tmp.path().join("notes.txt.zst");
+        std::fs::write(&path, compressed).unwrap();
+        let lines = expect_lines(zst_preview(&path));
+        assert!(
+            lines[0].contains("hello from a zstd text file") && !lines[0].contains('\r'),
+            "{lines:?}"
+        );
+        assert_eq!(lines[1], "second line");
+    }
+
+    #[test]
+    fn compressed_garbage_degrades_to_a_text_preview() {
+        // Unreadable streams route to the tar-binary fallback, which
+        // itself degrades to error text - never a panic, never empty.
+        let tmp = tempfile::tempdir().unwrap();
+        let garbage = [0xffu8; 64];
+        for (name, preview_fn) in [
+            ("g.tar.zst", zst_preview as fn(&Path) -> Preview),
+            ("g.tar.xz", xz_preview),
+            ("g.tar.bz2", bz2_preview),
+        ] {
+            let path = tmp.path().join(name);
+            std::fs::write(&path, garbage).unwrap();
+            let lines = expect_lines(preview_fn(&path));
+            assert!(!lines.is_empty(), "{name}: {lines:?}");
+        }
+    }
+
+    #[test]
+    fn sevenz_preview_lists_names_and_sizes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("a.txt"), b"content").unwrap();
+        std::fs::write(src.join("b.txt"), b"content").unwrap();
+        let path = tmp.path().join("archive.7z");
+        sevenz_rust::compress_to_path(&src, &path).unwrap();
+        let lines = expect_lines(sevenz_preview(&path));
+        assert!(
+            lines.iter().any(|l| l.contains("a.txt")) && lines.iter().any(|l| l.contains("b.txt")),
+            "{lines:?}"
+        );
+        // `size  name` columns like the zip/tar listings.
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("7 B") && l.contains("a.txt")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn sevenz_list_caps_at_128_and_scrubs() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Cap: 140 members list as exactly 128 lines.
+        let big = tmp.path().join("big");
+        std::fs::create_dir(&big).unwrap();
+        for i in 0..140 {
+            std::fs::write(big.join(format!("file-{i:03}.txt")), b"x").unwrap();
+        }
+        let big_archive = tmp.path().join("big.7z");
+        sevenz_rust::compress_to_path(&big, &big_archive).unwrap();
+        assert_eq!(native_sevenz_list(&big_archive).unwrap().len(), 128);
+
+        // Scrub: a member name with an embedded newline stays one line.
+        let evil = tmp.path().join("evil");
+        std::fs::create_dir(&evil).unwrap();
+        std::fs::write(evil.join("evil\nname.txt"), b"x").unwrap();
+        let evil_archive = tmp.path().join("evil.7z");
+        sevenz_rust::compress_to_path(&evil, &evil_archive).unwrap();
+        let lines = native_sevenz_list(&evil_archive).unwrap();
+        assert!(
+            lines.iter().any(|l| l.contains("evilname.txt")),
+            "newline must be scrubbed out of the member name: {lines:?}"
+        );
+        assert!(lines.iter().all(|l| !l.contains('\n')));
+    }
+
+    #[test]
+    fn sevenz_of_garbage_degrades_to_a_text_preview() {
+        // Err from the native lister routes to the 7z shell-out, whose
+        // absence still yields error text - never empty, never a panic.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("garbage.7z");
+        std::fs::write(&path, [0xffu8; 64]).unwrap();
+        assert!(native_sevenz_list(&path).is_err());
+        let lines = expect_lines(sevenz_preview(&path));
+        assert!(!lines.is_empty(), "{lines:?}");
     }
 }
 
