@@ -21,6 +21,15 @@ use std::{
 pub(crate) const KIND_IMAGE: &str = "img960";
 /// Kind tag for ffmpeg video frames (`scale=120:-1`).
 pub(crate) const KIND_VIDEO: &str = "vid120";
+/// Kind tag for resvg SVG renders: aspect-fit to 960×540 (vectors are
+/// scaled up to the bound), white background (the JPEG cache has no
+/// alpha).
+pub(crate) const KIND_SVG: &str = "svg960";
+/// Kind tag for rasterised font samples. `s1` is the sample-string
+/// version and `24` the px size: changing the pangram/digits rows or
+/// the size MUST bump this constant (`s2`, `-32`) — old entries then
+/// age out via the stale-sibling sweep.
+pub(crate) const KIND_FONT: &str = "font-s1-24";
 
 /// `<seahash(abs path):016x>-<mtime_secs>-<kind>.jpg` — the filename is
 /// the entire metadata. `kind` must be filename-safe (`[a-z0-9-]`).

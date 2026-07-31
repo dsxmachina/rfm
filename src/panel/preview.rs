@@ -223,13 +223,66 @@ impl FilePreview {
         let mime = get_mime_type(&path);
 
         let preview = match (mime.type_().as_str(), mime.subtype().as_str()) {
+            // Before the raster arm: image/svg+xml used to mis-land on
+            // the bitmap decode (which cannot read SVG). Covers .svgz
+            // too — the arm inflates the gzip layer itself, bounded
+            // (usvg's auto-decompression has no output cap). NOTE: mime 0.3
+            // splits "svg+xml" into subtype "svg" + suffix "xml", so
+            // the subtype to match is "svg".
+            ("image", "svg") => svg_preview(&path, modified),
             ("image", _) => cached_image_preview(&path, modified, &mime),
+            // ttf/otf (and any sfnt the sniff finds) get the rendered
+            // sample; woff/woff2 currently degrade to the stat fallback
+            // inside the arm (no MSRV-1.83 pure-Rust woff decoder —
+            // ttf-parser cannot read WOFF containers).
+            ("font", _) => font_preview(&path, modified, &mime),
+            // .otf via mime_guess; extensionless ttf/otf and woff via
+            // the infer sniff — the legacy application/font-* aliases.
+            ("application", "font-sfnt") | ("application", "font-woff") => {
+                font_preview(&path, modified, &mime)
+            }
             ("audio", _) => audio_preview(&path),
             ("video", _) => video_preview(&path, modified),
             ("application", "x-x509-ca-cert") => cert_preview(&path),
             ("application", "gzip") => gz_preview(&path),
+            // zstd/xz/bzip2 ride the same decompress -> tar-sniff ->
+            // list-or-text logic as gzip, via pure-Rust decoders.
+            // Extensions route through the get_mime_type special-cases
+            // (.zst/.tzst/.txz/.tbz2) or mime_guess (.xz/.bz2/.7z);
+            // extensionless files through the infer magics.
+            ("application", "zstd") => zst_preview(&path),
+            ("application", "x-xz") => xz_preview(&path),
+            ("application", "x-bzip2") => bz2_preview(&path),
+            ("application", "x-7z-compressed") => sevenz_preview(&path),
             ("application", "x-tar") => tar_preview(&path),
             ("application", "zip") => zip_preview(&path),
+            // Zip-container documents: extensions resolve via
+            // mime_guess, extensionless files via infer's zip-content
+            // discrimination — both land here. A container infer can
+            // only see as generic zip takes the plain zip arm above
+            // (an acceptable listing, never empty). NOTE: mime 0.3
+            // splits "epub+zip" into subtype "epub" + suffix "zip"
+            // (the svg+xml trap), while the vnd.* subtypes carry no
+            // suffix and match whole.
+            ("application", "vnd.openxmlformats-officedocument.wordprocessingml.document") => {
+                doc_preview(&path, DocKind::Docx)
+            }
+            ("application", "vnd.openxmlformats-officedocument.spreadsheetml.sheet") => {
+                doc_preview(&path, DocKind::Xlsx)
+            }
+            ("application", "vnd.openxmlformats-officedocument.presentationml.presentation") => {
+                doc_preview(&path, DocKind::Pptx)
+            }
+            ("application", "vnd.oasis.opendocument.text")
+            | ("application", "vnd.oasis.opendocument.spreadsheet")
+            | ("application", "vnd.oasis.opendocument.presentation") => {
+                doc_preview(&path, DocKind::Odt)
+            }
+            ("application", "epub") => doc_preview(&path, DocKind::Epub),
+            // Sniff-routed: .db/.sqlite/.sqlite3 get no mime_guess
+            // answer, so infer resolves the `SQLite format 3\0` magic —
+            // a .db that is not SQLite routes elsewhere (correct).
+            ("application", "vnd.sqlite3") => sqlite_preview(&path, &mime),
             // Text based application/* types
             ("application", "x-sh")
             | ("application", "json")
@@ -432,6 +485,308 @@ fn cached_image_info(path: &Path, cached: &DynamicImage, subtype: &str) -> Vec<S
         .and_then(|m| m.modified().ok())
         .unwrap_or(SystemTime::UNIX_EPOCH);
     image_info_lines(width, height, cached.color(), byte_size, modified, subtype)
+}
+
+/// Render an SVG to a white-backed RGBA raster, aspect-fit to the same
+/// 960×540 bound as image previews. Unlike bitmap thumbnails, vectors
+/// are *scaled up* to the bound — there is no source resolution to
+/// preserve. `None` routes the caller to the text fallback.
+fn native_svg_render(data: &[u8]) -> Option<DynamicImage> {
+    let tree = resvg::usvg::Tree::from_data(data, &resvg::usvg::Options::default()).ok()?;
+    let size = tree
+        .size()
+        .to_int_size()
+        .scale_to(resvg::tiny_skia::IntSize::from_wh(960, 540)?); // aspect-fit
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(size.width(), size.height())?;
+    // White background: the JPEG cache stores RGB (no alpha), and a
+    // white fill also makes premultiplied == straight alpha, so the
+    // raw buffer converts directly to an RgbaImage.
+    pixmap.fill(resvg::tiny_skia::Color::WHITE);
+    let sx = size.width() as f32 / tree.size().width();
+    let sy = size.height() as f32 / tree.size().height();
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(sx, sy),
+        &mut pixmap.as_mut(),
+    );
+    let img = image::RgbaImage::from_raw(pixmap.width(), pixmap.height(), pixmap.take())?;
+    Some(image::DynamicImage::ImageRgba8(img))
+}
+
+/// Whole-file read, bounded at `max` bytes. Callers pick a cap any
+/// sane instance of their format stays under (4 MiB SVG, 64 MiB font)
+/// so a mislabeled multi-GB file cannot exhaust memory; a truncated
+/// read simply fails the downstream parse and takes that arm's
+/// fallback.
+fn read_bounded(path: &Path, max: u64) -> io::Result<Vec<u8>> {
+    let mut data = Vec::new();
+    File::open(path)?.take(max).read_to_end(&mut data)?;
+    Ok(data)
+}
+
+/// 4 MiB covers any sane SVG source (compressed or not).
+const SVG_SOURCE_MAX: u64 = 4 * 1024 * 1024;
+/// Fonts are small; even the big CJK faces stay well under 64 MiB.
+const FONT_SOURCE_MAX: u64 = 64 * 1024 * 1024;
+/// A .svgz may legitimately inflate ~10-50x; 32 MiB of XML is far past
+/// any real SVG.
+const SVGZ_INFLATED_MAX: u64 = 32 * 1024 * 1024;
+
+/// usvg auto-detects the gzip magic (.svgz and .svg alike) and
+/// inflates it with NO output bound (`decompress_svgz` is a plain
+/// `read_to_end`), so the source-read cap alone would not stop a
+/// crafted ~4 MiB svgz from inflating to gigabytes inside the
+/// renderer — and an allocation failure aborts the process, skipping
+/// the designed text fallback. Inflate the gzip layer ourselves,
+/// bounded: over-budget or broken gzip is `None` (→ text fallback);
+/// plain XML passes through untouched.
+fn inflate_svgz_bounded(data: Vec<u8>) -> Option<Vec<u8>> {
+    if !data.starts_with(&[0x1f, 0x8b]) {
+        return Some(data);
+    }
+    let mut inflated = Vec::new();
+    flate2::read::GzDecoder::new(&data[..])
+        .take(SVGZ_INFLATED_MAX + 1)
+        .read_to_end(&mut inflated)
+        .ok()?;
+    (inflated.len() as u64 <= SVGZ_INFLATED_MAX).then_some(inflated)
+}
+
+/// Info footer for a rendered SVG: the render's dimensions (the source
+/// has no pixel dims), source size and mtime.
+fn svg_info_lines(path: &Path, rendered: &DynamicImage) -> Vec<String> {
+    let meta = path.metadata().ok();
+    let byte_size = meta.as_ref().map(|m| m.len()).unwrap_or_default();
+    let modified = meta
+        .and_then(|m| m.modified().ok())
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    image_info_lines(
+        rendered.width(),
+        rendered.height(),
+        rendered.color(),
+        byte_size,
+        modified,
+        "svg",
+    )
+}
+
+/// SVG arm via the persistent raster cache (kind `svg960`).
+fn svg_preview(path: &Path, modified: SystemTime) -> Preview {
+    svg_preview_in(raster_cache::dir(), path, modified)
+}
+
+/// Dir-parameterized core of [`svg_preview`]; `None` (cache disabled)
+/// renders in-memory. Render/parse failure falls back to the bat/text
+/// path (the raw XML) — never a broken `Preview::Image { img: None }`.
+fn svg_preview_in(cache_dir: Option<&Path>, path: &Path, modified: SystemTime) -> Preview {
+    let mtime = mtime_secs(modified);
+    if let Some(dir) = cache_dir {
+        if let Some(img) = raster_cache::lookup_in(dir, path, mtime, raster_cache::KIND_SVG) {
+            log::debug!("raster cache hit for {}", path.display());
+            let info = svg_info_lines(path, &img);
+            return Preview::Image {
+                img: Some(img),
+                info,
+            };
+        }
+    }
+    let rendered = read_bounded(path, SVG_SOURCE_MAX)
+        .ok()
+        .and_then(inflate_svgz_bounded)
+        .and_then(|data| native_svg_render(&data));
+    match rendered {
+        Some(img) => {
+            if let Some(dir) = cache_dir {
+                if let Err(e) =
+                    raster_cache::store_in(dir, path, mtime, raster_cache::KIND_SVG, &img)
+                {
+                    log::debug!("raster cache store failed for {}: {e}", path.display());
+                }
+            }
+            let info = svg_info_lines(path, &img);
+            Preview::Image {
+                img: Some(img),
+                info,
+            }
+        }
+        None => {
+            log::debug!("svg render failed, falling back to bat: {}", path.display());
+            bat_preview(path, false)
+        }
+    }
+}
+
+/// The rendered sample text — `raster_cache::KIND_FONT` encodes its
+/// version (`s1`) and the px size (`24`): changing either MUST bump
+/// that constant, or stale cache entries keep serving the old sample.
+const FONT_SAMPLE_LINES: [&str; 2] = [
+    "The quick brown fox jumps over the lazy dog",
+    "0123456789 ?!&@%(){}[]",
+];
+const FONT_SAMPLE_PX: f32 = 24.0;
+
+/// Family/style from the name table (IDs 1/2, unicode entries only),
+/// scrubbed — name tables are attacker-controlled. Empty when the face
+/// does not parse or carries no unicode names.
+fn font_name_lines(data: &[u8]) -> Vec<String> {
+    let face = match ttf_parser::Face::parse(data, 0) {
+        Ok(face) => face,
+        Err(_) => return Vec::new(),
+    };
+    let mut family = None;
+    let mut style = None;
+    for name in face.names() {
+        if !name.is_unicode() {
+            continue;
+        }
+        match name.name_id {
+            ttf_parser::name_id::FAMILY => family = family.or_else(|| name.to_string()),
+            ttf_parser::name_id::SUBFAMILY => style = style.or_else(|| name.to_string()),
+            _ => {}
+        }
+    }
+    [family, style]
+        .into_iter()
+        .flatten()
+        .map(scrub_line)
+        .collect()
+}
+
+/// Rasterise the sample rows (pangram + digits/symbols) at 24 px onto a
+/// white grayscale canvas — dark glyphs on white so the JPEG round-trip
+/// of the raster cache stays clean. Returns the name lines alongside.
+/// `Err` (not an sfnt — includes woff/woff2, see the dispatch comment)
+/// routes the caller to the stat fallback.
+fn native_font_sample(data: &[u8]) -> anyhow::Result<(Vec<String>, DynamicImage)> {
+    use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
+    let names = font_name_lines(data);
+    let font = FontRef::try_from_slice(data)?;
+    let scaled = font.as_scaled(PxScale::from(FONT_SAMPLE_PX));
+    let line_height = scaled.height() + scaled.line_gap();
+    let margin = 8.0f32;
+    let width: u32 = 960;
+    // The metrics come straight from the (attacker-controlled) face: a
+    // crafted ascent over a tiny units_per_em would demand an
+    // arbitrarily tall canvas. Clamp — 512 px is far above any sane
+    // 2-row sample at 24 px.
+    let height_px = 2.0 * line_height + 2.0 * margin;
+    anyhow::ensure!(height_px.is_finite(), "non-finite font metrics");
+    let height = height_px.ceil().clamp(16.0, 512.0) as u32;
+    let mut img = image::GrayImage::from_pixel(width, height, image::Luma([255u8]));
+    for (row, text) in FONT_SAMPLE_LINES.iter().enumerate() {
+        let baseline = margin + scaled.ascent() + row as f32 * line_height;
+        let mut x = margin;
+        for c in text.chars() {
+            // Position is set on the glyph BEFORE outlining (there is
+            // no into_glyph_at); advance comes from the scaled font.
+            let mut glyph = scaled.scaled_glyph(c);
+            glyph.position = ab_glyph::point(x, baseline);
+            x += scaled.h_advance(glyph.id);
+            if x > width as f32 {
+                break;
+            }
+            if let Some(og) = scaled.outline_glyph(glyph) {
+                let bounds = og.px_bounds();
+                og.draw(|gx, gy, cov| {
+                    let px = bounds.min.x as i32 + gx as i32;
+                    let py = bounds.min.y as i32 + gy as i32;
+                    if (0..width as i32).contains(&px) && (0..height as i32).contains(&py) {
+                        let p = img.get_pixel_mut(px as u32, py as u32);
+                        p.0[0] = p.0[0].min(255u8.saturating_sub((cov * 255.0) as u8));
+                    }
+                });
+            }
+        }
+    }
+    Ok((names, DynamicImage::ImageLuma8(img)))
+}
+
+/// Info footer for a font preview: name lines (when readable) plus the
+/// size/mtime block from metadata.
+fn font_info_lines(path: &Path, mut names: Vec<String>) -> Vec<String> {
+    use time::OffsetDateTime;
+    if !names.is_empty() {
+        names.push(String::new());
+    }
+    if let Ok(meta) = path.metadata() {
+        names.push(format!(
+            "Size:     {}",
+            crate::util::file_size_str(meta.len())
+        ));
+        if let Ok(modified) = meta.modified() {
+            let t = OffsetDateTime::from(modified);
+            names.push(format!(
+                "Modified: {}-{:02}-{:02} {:02}:{:02}:{:02}",
+                t.year(),
+                u8::from(t.month()),
+                t.day(),
+                t.hour(),
+                t.minute(),
+                t.second()
+            ));
+        }
+    }
+    names
+}
+
+/// Font arm via the persistent raster cache (kind `font-s1-24`).
+fn font_preview(path: &Path, modified: SystemTime, mime: &mime::Mime) -> Preview {
+    font_preview_in(raster_cache::dir(), path, modified, mime)
+}
+
+/// Dir-parameterized core of [`font_preview`]; `None` (cache disabled)
+/// rasterises in-memory. A cache hit re-reads the source only for the
+/// name lines (best-effort — unreadable source keeps the metadata
+/// lines). Parse failure falls back to the stat block. Both reads are
+/// bounded ([`FONT_SOURCE_MAX`]): the sniff routes arbitrary binaries
+/// here (the ttf magic is ambiguous), and a mislabeled multi-GB file
+/// must not be slurped whole — same rationale as the SVG arm.
+fn font_preview_in(
+    cache_dir: Option<&Path>,
+    path: &Path,
+    modified: SystemTime,
+    mime: &mime::Mime,
+) -> Preview {
+    let mtime = mtime_secs(modified);
+    if let Some(dir) = cache_dir {
+        if let Some(img) = raster_cache::lookup_in(dir, path, mtime, raster_cache::KIND_FONT) {
+            log::debug!("raster cache hit for {}", path.display());
+            let names = read_bounded(path, FONT_SOURCE_MAX)
+                .map(|data| font_name_lines(&data))
+                .unwrap_or_default();
+            return Preview::Image {
+                img: Some(img),
+                info: font_info_lines(path, names),
+            };
+        }
+    }
+    let sample = read_bounded(path, FONT_SOURCE_MAX)
+        .map_err(anyhow::Error::from)
+        .and_then(|data| native_font_sample(&data));
+    match sample {
+        Ok((names, img)) => {
+            if let Some(dir) = cache_dir {
+                if let Err(e) =
+                    raster_cache::store_in(dir, path, mtime, raster_cache::KIND_FONT, &img)
+                {
+                    log::debug!("raster cache store failed for {}: {e}", path.display());
+                }
+            }
+            Preview::Image {
+                img: Some(img),
+                info: font_info_lines(path, names),
+            }
+        }
+        Err(e) => {
+            // Also hit by binary junk the sniff mistakes for a font —
+            // the ttf magic (00 01 00 00) is notoriously ambiguous.
+            log::debug!(
+                "font sample failed, falling back to stat: {}: {e}",
+                path.display()
+            );
+            stat_preview(path, mime)
+        }
+    }
 }
 
 fn video_preview(path: impl AsRef<Path>, modified: SystemTime) -> Preview {
@@ -721,7 +1076,14 @@ fn native_tar_list<R: io::Read>(reader: R) -> anyhow::Result<Vec<String>> {
     let mut archive = tar::Archive::new(reader);
     let mut lines = Vec::new();
     for entry in archive.entries()?.take(128) {
-        let entry = entry?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            // A stream truncated mid-scan (the compressed arms cap
+            // their decompression budget at TAR_SCAN_MAX) ends the
+            // listing; only a stream yielding nothing is an error.
+            Err(_) if !lines.is_empty() => break,
+            Err(e) => return Err(e.into()),
+        };
         let header = entry.header();
         // Tar headers carry the permission bits only; the file type
         // lives in the entry-type flag. OR it back in so unix_mode
@@ -757,13 +1119,18 @@ fn gz_preview(path: &Path) -> Preview {
     }
 }
 
-/// Decompress the head, sniff the tar magic (`ustar` at offset 257 -
-/// covers both POSIX `ustar\0` and GNU `ustar  `), then either chain
-/// head+rest into `native_tar_list` or show the decompressed head as
-/// text (bounded 64 KiB read, lossy UTF-8, 128 lines, `\r` scrubbed
-/// like `bat_preview`).
 fn native_gz_preview(path: &Path) -> anyhow::Result<Preview> {
-    let mut decoder = flate2::read::GzDecoder::new(File::open(path)?);
+    native_compressed_preview(flate2::read::GzDecoder::new(File::open(path)?))
+}
+
+/// Shared tail of every compressed-single-stream arm (gzip, zstd, xz,
+/// bzip2): decompress the head, sniff the tar magic (`ustar` at offset
+/// 257 - covers both POSIX `ustar\0` and GNU `ustar  `), then either
+/// chain head+rest into `native_tar_list` or show the decompressed
+/// head as text (bounded 64 KiB read, lossy UTF-8, 128 lines, `\r`
+/// scrubbed like `bat_preview`) - a compressed non-tar file shows its
+/// text head, never a tar error.
+fn native_compressed_preview(mut decoder: impl Read) -> anyhow::Result<Preview> {
     // Read up to one tar block; a short read just means a small file.
     let mut head = [0u8; 512];
     let mut filled = 0;
@@ -776,8 +1143,15 @@ fn native_gz_preview(path: &Path) -> anyhow::Result<Preview> {
     }
     let rest = io::Cursor::new(head[..filled].to_vec()).chain(decoder);
     if filled >= 262 && &head[257..262] == b"ustar" {
+        // tar over a non-Seek stream reaches the next header by
+        // read-and-discarding the content in between: a crafted first
+        // entry declaring a huge size would otherwise force the codec
+        // to decompress that entire span (a CPU/time DoS on the
+        // preview task — memory stays bounded) just to reach header
+        // #2. The budget truncates the listing instead.
+        const TAR_SCAN_MAX: u64 = 64 * 1024 * 1024;
         return Ok(Preview::Text {
-            lines: native_tar_list(rest)?,
+            lines: native_tar_list(rest.take(TAR_SCAN_MAX))?,
         });
     }
     // Not a tar: show the decompressed head as text (bounded).
@@ -789,6 +1163,141 @@ fn native_gz_preview(path: &Path) -> anyhow::Result<Preview> {
         .map(|l| l.replace('\r', ""))
         .collect();
     Ok(Preview::Text { lines })
+}
+
+/// zstd arm (`.zst`/`.tzst`/`.tar.zst`): pure-Rust ruzstd decode into
+/// the shared tar-or-text logic; a system tar built with zstd stays as
+/// the fallback (exactly the old fragile path, now demoted).
+fn zst_preview(path: &Path) -> Preview {
+    let native = File::open(path)
+        .map_err(anyhow::Error::from)
+        .and_then(|f| {
+            Ok(ruzstd::decoding::StreamingDecoder::new(
+                io::BufReader::new(f),
+            )?)
+        })
+        .and_then(native_compressed_preview);
+    match native {
+        Ok(preview) => preview,
+        Err(e) => {
+            log::debug!("native zstd preview failed, trying tar: {e}");
+            cmd_to_preview("tar", tar_list(path))
+        }
+    }
+}
+
+/// xz arm (`.xz`/`.txz`/`.tar.xz`): pure-Rust lzma-rust2 decode into
+/// the shared tar-or-text logic; the tar binary stays as the fallback.
+fn xz_preview(path: &Path) -> Preview {
+    let native = File::open(path).map_err(anyhow::Error::from).and_then(|f| {
+        native_compressed_preview(lzma_rust2::XzReader::new(io::BufReader::new(f), true))
+    });
+    match native {
+        Ok(preview) => preview,
+        Err(e) => {
+            log::debug!("native xz preview failed, trying tar: {e}");
+            cmd_to_preview("tar", tar_list(path))
+        }
+    }
+}
+
+/// bzip2 arm (`.bz2`/`.tbz2`/`.tar.bz2`): pure-Rust libbz2-rs decode
+/// into the shared tar-or-text logic; the tar binary stays as the
+/// fallback.
+fn bz2_preview(path: &Path) -> Preview {
+    let native = File::open(path)
+        .map_err(anyhow::Error::from)
+        .and_then(|f| native_compressed_preview(bzip2::read::BzDecoder::new(f)));
+    match native {
+        Ok(preview) => preview,
+        Err(e) => {
+            log::debug!("native bzip2 preview failed, trying tar: {e}");
+            cmd_to_preview("tar", tar_list(path))
+        }
+    }
+}
+
+/// sevenz-rust trusts the 32-byte start header completely: it
+/// allocates `vec![0; next_header_size]` BEFORE reading a single
+/// header byte, so a crafted tiny .7z declaring a multi-TB header
+/// aborts the whole process — an allocation failure is not an `Err`
+/// the `7z l` fallback could catch. Validate the start header against
+/// the real file length first; implausible files become a normal
+/// `Err` (→ fallback). The 1 MiB cap is far past the metadata of any
+/// archive whose first 128 entries we would list — genuinely bigger
+/// headers just take the `7z l` fallback. (Varint counts INSIDE a
+/// CRC-valid header, e.g. num_files, are still trusted by the crate;
+/// bounding those would mean reimplementing its header parser.)
+fn plausible_sevenz_start_header(path: &Path) -> anyhow::Result<()> {
+    const SEVENZ_MAGIC: [u8; 6] = [b'7', b'z', 0xbc, 0xaf, 0x27, 0x1c];
+    const SEVENZ_HEADER_MAX: u64 = 1024 * 1024;
+    let mut file = File::open(path)?;
+    let len = file.metadata()?.len();
+    let mut start = [0u8; 32];
+    file.read_exact(&mut start)?;
+    anyhow::ensure!(start[..6] == SEVENZ_MAGIC, "not a 7z archive");
+    let offset = u64::from_le_bytes(start[12..20].try_into().expect("8 bytes"));
+    let size = u64::from_le_bytes(start[20..28].try_into().expect("8 bytes"));
+    anyhow::ensure!(
+        size <= SEVENZ_HEADER_MAX,
+        "implausible next-header size {size}"
+    );
+    let end = offset.checked_add(size).and_then(|e| e.checked_add(32));
+    anyhow::ensure!(
+        end.is_some_and(|e| e <= len),
+        "the next header lies outside the file"
+    );
+    Ok(())
+}
+
+/// List a 7z archive natively: `size  name` per entry, capped at 128.
+/// `Archive::open` reads only the archive metadata - nothing is
+/// extracted or decompressed.
+fn native_sevenz_list(path: &Path) -> anyhow::Result<Vec<String>> {
+    plausible_sevenz_start_header(path)?;
+    let archive = sevenz_rust::Archive::open(path)?;
+    Ok(archive
+        .files
+        .iter()
+        .take(128)
+        .map(|entry| {
+            scrub_line(format!(
+                "{:>8}  {}",
+                crate::util::file_size_str(entry.size()),
+                entry.name()
+            ))
+        })
+        .collect())
+}
+
+/// Native-first 7z arm. There was no 7z shell-out before this arm; the
+/// `7z l` fallback is added fallback-only, so encrypted-header archives
+/// still get a listing when the binary exists (else error text - the
+/// preview is never empty).
+fn sevenz_preview(path: &Path) -> Preview {
+    match native_sevenz_list(path) {
+        Ok(lines) => Preview::Text { lines },
+        Err(e) => {
+            log::debug!("native 7z list failed, trying 7z: {e}");
+            cmd_to_preview(
+                "7z",
+                std::process::Command::new("7z")
+                    .arg("l")
+                    .arg(path)
+                    .output()
+                    // `lines()` trims the \r\n pair but not embedded
+                    // \r; member names are attacker-controlled, so the
+                    // scrub convention applies here too.
+                    .and_then(|o| {
+                        o.stdout
+                            .lines()
+                            .take(128)
+                            .map(|l| l.map(scrub_line))
+                            .collect()
+                    }),
+            )
+        }
+    }
 }
 
 /// Native-first x-tar arm; the tar binary stays as the fallback (the
@@ -820,6 +1329,315 @@ fn zip_preview(path: &Path) -> Preview {
                     .output()
                     .and_then(|o| o.stdout.lines().take(128).collect()),
             )
+        }
+    }
+}
+
+/// Which primary part(s) of a zip-container document carry the text.
+#[derive(Debug, Clone, Copy)]
+enum DocKind {
+    Docx,
+    /// Also covers ods/odp — all OpenDocument flavors keep their body
+    /// in `content.xml` with `text:p` paragraphs.
+    Odt,
+    Xlsx,
+    Pptx,
+    Epub,
+}
+
+/// Streaming tag-strip of one XML document: text nodes accumulate and
+/// flush as one line per closing paragraph tag (`p` covers `w:p`,
+/// `text:p`, DrawingML `a:p` and XHTML `p` via the local name; `t`
+/// gives xlsx one shared string per line). Text inside
+/// `style`/`script`/`title` is skipped (epub XHTML heads — a leaked
+/// `<title>` would glue itself onto the first paragraph). Appends to
+/// `lines`, stopping at the
+/// 128-line cap; every line goes through `scrub_line` — document text
+/// is attacker-controlled.
+fn xml_text_lines<R: BufRead>(
+    reader: R,
+    paragraph_tags: &[&[u8]],
+    lines: &mut Vec<String>,
+) -> anyhow::Result<()> {
+    use quick_xml::events::Event;
+    let mut xml = quick_xml::Reader::from_reader(reader);
+    let mut buf = Vec::new();
+    let mut current = String::new();
+    let mut skip_depth = 0usize;
+    while lines.len() < 128 {
+        match xml.read_event_into(&mut buf)? {
+            Event::Eof => break,
+            Event::Start(e) => {
+                if matches!(e.local_name().as_ref(), b"style" | b"script" | b"title") {
+                    skip_depth += 1;
+                }
+            }
+            Event::Text(t) if skip_depth == 0 => current.push_str(&t.decode()?),
+            // quick-xml 0.38 reports `&…;` separately: resolve char
+            // refs and the predefined entities, drop unknown ones.
+            Event::GeneralRef(r) if skip_depth == 0 => {
+                if let Ok(Some(c)) = r.resolve_char_ref() {
+                    current.push(c);
+                } else {
+                    match r.decode()?.as_ref() {
+                        "amp" => current.push('&'),
+                        "lt" => current.push('<'),
+                        "gt" => current.push('>'),
+                        "quot" => current.push('"'),
+                        "apos" => current.push('\''),
+                        _ => {}
+                    }
+                }
+            }
+            Event::End(e) => {
+                let local = e.local_name();
+                if matches!(local.as_ref(), b"style" | b"script" | b"title") {
+                    skip_depth = skip_depth.saturating_sub(1);
+                } else if paragraph_tags.contains(&local.as_ref()) {
+                    let line = scrub_line(std::mem::take(&mut current));
+                    if !line.trim().is_empty() {
+                        lines.push(line);
+                    }
+                }
+            }
+            _ => {}
+        }
+        buf.clear();
+    }
+    Ok(())
+}
+
+/// Tag-strip one archive member into `lines`. The decompressed member
+/// read is bounded (512 KiB) so a zip bomb cannot exhaust memory.
+fn member_text_lines(
+    archive: &mut zip::ZipArchive<File>,
+    name: &str,
+    paragraph_tags: &[&[u8]],
+    lines: &mut Vec<String>,
+) -> anyhow::Result<()> {
+    let member = archive.by_name(name)?;
+    xml_text_lines(
+        io::BufReader::new(member.take(512 * 1024)),
+        paragraph_tags,
+        lines,
+    )
+}
+
+/// First attribute value of `attr` on any `tag` element in the stream —
+/// enough XML to follow epub's container.xml (`rootfile`/`full-path`).
+fn xml_first_attr<R: BufRead>(reader: R, tag: &[u8], attr: &[u8]) -> anyhow::Result<String> {
+    use quick_xml::events::Event;
+    let mut xml = quick_xml::Reader::from_reader(reader);
+    let mut buf = Vec::new();
+    loop {
+        match xml.read_event_into(&mut buf)? {
+            Event::Eof => anyhow::bail!(
+                "no {} attribute on any {} element",
+                String::from_utf8_lossy(attr),
+                String::from_utf8_lossy(tag)
+            ),
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == tag => {
+                for a in e.attributes() {
+                    let a = a?;
+                    if a.key.local_name().as_ref() == attr {
+                        return Ok(a.unescape_value()?.into_owned());
+                    }
+                }
+            }
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
+/// The spine reading order of an epub: parse the OPF's manifest
+/// (id → href) and spine (idref order), resolve hrefs against the OPF's
+/// directory. Any missing piece is an `Err` (→ zip-listing fallback).
+fn epub_spine_docs(
+    archive: &mut zip::ZipArchive<File>,
+    opf_path: &str,
+) -> anyhow::Result<Vec<String>> {
+    use quick_xml::events::Event;
+    let opf_dir = match opf_path.rfind('/') {
+        Some(idx) => &opf_path[..=idx],
+        None => "",
+    };
+    let opf = archive.by_name(opf_path)?;
+    let mut xml = quick_xml::Reader::from_reader(io::BufReader::new(opf.take(512 * 1024)));
+    let mut buf = Vec::new();
+    let mut manifest: Vec<(String, String)> = Vec::new(); // id → href
+    let mut spine: Vec<String> = Vec::new(); // idrefs in order
+    loop {
+        match xml.read_event_into(&mut buf)? {
+            Event::Eof => break,
+            Event::Start(e) | Event::Empty(e) => match e.local_name().as_ref() {
+                b"item" => {
+                    let mut id = None;
+                    let mut href = None;
+                    for a in e.attributes() {
+                        let a = a?;
+                        match a.key.local_name().as_ref() {
+                            b"id" => id = Some(a.unescape_value()?.into_owned()),
+                            b"href" => href = Some(a.unescape_value()?.into_owned()),
+                            _ => {}
+                        }
+                    }
+                    if let (Some(id), Some(href)) = (id, href) {
+                        manifest.push((id, href));
+                    }
+                }
+                b"itemref" => {
+                    for a in e.attributes() {
+                        let a = a?;
+                        if a.key.local_name().as_ref() == b"idref" {
+                            spine.push(a.unescape_value()?.into_owned());
+                        }
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        buf.clear();
+    }
+    let docs: Vec<String> = spine
+        .iter()
+        .filter_map(|idref| manifest.iter().find(|(id, _)| id == idref))
+        .map(|(_, href)| format!("{opf_dir}{href}"))
+        .collect();
+    anyhow::ensure!(!docs.is_empty(), "empty spine in {opf_path}");
+    Ok(docs)
+}
+
+/// Extract the text lines of a zip-container document (the plan's C2
+/// group). Any missing/corrupt piece is an `Err` — the caller then
+/// treats the file as a plain zip so the preview is never empty.
+fn native_doc_lines(path: &Path, kind: DocKind) -> anyhow::Result<Vec<String>> {
+    let mut archive = zip::ZipArchive::new(File::open(path)?)?;
+    let mut lines = Vec::new();
+    match kind {
+        DocKind::Docx => member_text_lines(&mut archive, "word/document.xml", &[b"p"], &mut lines)?,
+        DocKind::Odt => member_text_lines(&mut archive, "content.xml", &[b"p"], &mut lines)?,
+        DocKind::Xlsx => {
+            member_text_lines(&mut archive, "xl/sharedStrings.xml", &[b"t"], &mut lines)?
+        }
+        DocKind::Pptx => {
+            let mut slides: Vec<String> = archive
+                .file_names()
+                .filter(|n| n.starts_with("ppt/slides/slide") && n.ends_with(".xml"))
+                .map(str::to_owned)
+                .collect();
+            // Ascending slide number: (len, lexicographic) sorts
+            // slide2.xml before slide10.xml without parsing the N.
+            slides.sort_by_key(|n| (n.len(), n.clone()));
+            anyhow::ensure!(!slides.is_empty(), "no slides in the container");
+            for name in slides {
+                if lines.len() >= 128 {
+                    break;
+                }
+                member_text_lines(&mut archive, &name, &[b"p"], &mut lines)?;
+            }
+        }
+        DocKind::Epub => {
+            let container = archive.by_name("META-INF/container.xml")?;
+            let opf_path = xml_first_attr(
+                io::BufReader::new(container.take(512 * 1024)),
+                b"rootfile",
+                b"full-path",
+            )?;
+            for doc in epub_spine_docs(&mut archive, &opf_path)? {
+                if lines.len() >= 128 {
+                    break;
+                }
+                member_text_lines(&mut archive, &doc, &[b"p"], &mut lines)?;
+            }
+        }
+    }
+    Ok(lines)
+}
+
+/// Office/OpenDocument/epub arm: extracted text, else the file is
+/// treated as the plain zip it physically is (whose arm already chains
+/// into the unzip/error-text fallback) — the preview is never empty.
+fn doc_preview(path: &Path, kind: DocKind) -> Preview {
+    match native_doc_lines(path, kind) {
+        Ok(lines) => Preview::Text { lines },
+        Err(e) => {
+            log::debug!(
+                "{kind:?} text extraction failed, falling back to zip listing: {}: {e}",
+                path.display()
+            );
+            zip_preview(path)
+        }
+    }
+}
+
+/// Table listing of a SQLite database: read-only open, zero busy
+/// timeout (fail fast, never block the panel task), one `count  name`
+/// line per table from sqlite_master. A count failure for one table
+/// (corrupt page) prints `?` for that row; only an open/master-query
+/// failure is `Err` (→ stat fallback). Names are attacker-controlled:
+/// quoted for the COUNT (embedded quotes doubled) and scrubbed for
+/// display. 2 header lines + 126 tables = the shared 128-line cap.
+fn native_sqlite_lines(path: &Path) -> anyhow::Result<Vec<String>> {
+    // COUNT(*) is a full table/index scan: on a multi-GB database (a
+    // browser places.sqlite) up to 126 of them would churn disk/CPU
+    // in the preview task for a long time. Past this source size the
+    // counts print `?` (the same placeholder as a corrupt table) —
+    // the table NAMES still list instantly from sqlite_master.
+    const SQLITE_COUNT_MAX_BYTES: u64 = 64 * 1024 * 1024;
+    native_sqlite_lines_bounded(path, SQLITE_COUNT_MAX_BYTES)
+}
+
+/// Budget-parameterized core of [`native_sqlite_lines`].
+fn native_sqlite_lines_bounded(path: &Path, count_budget: u64) -> anyhow::Result<Vec<String>> {
+    use rusqlite::OpenFlags;
+    let count_rows = path.metadata()?.len() <= count_budget;
+    let conn = rusqlite::Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.busy_timeout(std::time::Duration::ZERO)?;
+    let mut stmt =
+        conn.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")?;
+    let names = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    let mut lines = vec![
+        format!(
+            "SQLite database · {} table{}",
+            names.len(),
+            if names.len() == 1 { "" } else { "s" }
+        ),
+        String::new(),
+    ];
+    for name in names.iter().take(126) {
+        let quoted = format!("\"{}\"", name.replace('"', "\"\""));
+        let count = if count_rows {
+            conn.query_row(&format!("SELECT COUNT(*) FROM {quoted}"), [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map(|n| n.to_string())
+            .unwrap_or_else(|_| String::from("?"))
+        } else {
+            String::from("?")
+        };
+        lines.push(scrub_line(format!("{count:>8}  {name}")));
+    }
+    Ok(lines)
+}
+
+/// SQLite arm (sniff-routed via the `SQLite format 3\0` magic): native
+/// listing, stat block as the fallback for locked/garbage databases.
+fn sqlite_preview(path: &Path, mime: &mime::Mime) -> Preview {
+    match native_sqlite_lines(path) {
+        Ok(lines) => Preview::Text { lines },
+        Err(e) => {
+            log::debug!(
+                "sqlite listing failed, falling back to stat: {}: {e}",
+                path.display()
+            );
+            stat_preview(path, mime)
         }
     }
 }
@@ -1919,6 +2737,916 @@ mod external_cmd_tests {
         prune_older_than(tmp.path(), Duration::from_secs(7 * 24 * 60 * 60));
         assert!(!old.exists(), "the stale file must be pruned");
         assert!(fresh.exists(), "the fresh file must survive");
+    }
+}
+
+#[cfg(test)]
+mod new_type_tests {
+    use super::*;
+
+    /// 100×50 with a centered red rect — the corners show the background.
+    const TEST_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50"><rect x="25" y="0" width="50" height="50" fill="red"/></svg>"#;
+
+    #[test]
+    fn svg_render_rasterises_to_the_960x540_bound() {
+        // Vectors are scaled UP to the preview bound (unlike bitmap
+        // thumbnails): 100×50 aspect-fits 960×540 as 960×480.
+        let img = native_svg_render(TEST_SVG).expect("a valid svg must render");
+        assert_eq!((img.width(), img.height()), (960, 480));
+        let rgba = img.to_rgba8();
+        // JPEG cache has no alpha: the background must be white, not
+        // transparent/black.
+        assert_eq!(rgba.get_pixel(0, 0).0, [255, 255, 255, 255]);
+        let center = rgba.get_pixel(480, 240).0;
+        assert!(
+            center[0] > 200 && center[1] < 60 && center[2] < 60,
+            "the red rect must be rendered: {center:?}"
+        );
+    }
+
+    #[test]
+    fn svg_render_of_garbage_is_none() {
+        assert!(native_svg_render(b"<not-svg").is_none());
+    }
+
+    #[test]
+    fn svg_preview_of_garbage_falls_back_to_text() {
+        // Malformed SVG: never a broken Preview::Image, the bat/text
+        // path shows the raw XML instead.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("broken.svg");
+        std::fs::write(&path, b"<not-svg").unwrap();
+        let modified = path.metadata().unwrap().modified().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        match svg_preview_in(Some(cache.path()), &path, modified) {
+            Preview::Text { lines } => assert!(!lines.is_empty(), "{lines:?}"),
+            _ => panic!("expected the text fallback"),
+        }
+        assert_eq!(
+            std::fs::read_dir(cache.path()).unwrap().count(),
+            0,
+            "no cache entry for an unrenderable svg"
+        );
+    }
+
+    #[test]
+    fn cached_svg_preview_stores_on_miss_and_hits_without_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("pic.svg");
+        std::fs::write(&path, TEST_SVG).unwrap();
+        let modified = path.metadata().unwrap().modified().unwrap();
+
+        // miss: render + store
+        match svg_preview_in(Some(cache.path()), &path, modified) {
+            Preview::Image { img, .. } => assert!(img.is_some()),
+            _ => panic!("expected an image preview"),
+        }
+        let entry = cache.path().join(raster_cache::entry_name(
+            &path,
+            mtime_secs(modified),
+            raster_cache::KIND_SVG,
+        ));
+        assert!(entry.is_file(), "miss must store the render");
+
+        // Delete the SOURCE: a second call with the same mtime must still
+        // yield pixels — proof they came from the cache, not a re-render.
+        std::fs::remove_file(&path).unwrap();
+        match svg_preview_in(Some(cache.path()), &path, modified) {
+            Preview::Image { img, .. } => assert!(img.is_some(), "hit must serve cached pixels"),
+            _ => panic!("expected an image preview from the cache"),
+        }
+    }
+
+    #[test]
+    fn svg_dispatch_reaches_the_render_arm() {
+        // mime 0.3 splits image/svg+xml into subtype "svg" + suffix
+        // "xml", so an arm matching the subtype against "svg+xml" never
+        // fires and .svg mis-lands on the bitmap decode (caught by the
+        // e2e smoke: "native image decode failed" for pic.svg).
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("pic.svg");
+        std::fs::write(&path, TEST_SVG).unwrap();
+        match FilePreview::new(path).preview {
+            Preview::Image { img, .. } => assert!(img.is_some()),
+            Preview::Text { lines } => {
+                panic!("svg must dispatch to the render arm, got text: {lines:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn font_dispatch_reaches_the_sample_arm() {
+        // font/ttf → ("font", _); pins the dispatch end-to-end.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("sample.ttf");
+        std::fs::write(&path, TEST_FONT).unwrap();
+        match FilePreview::new(path).preview {
+            Preview::Image { img, .. } => assert!(img.is_some()),
+            Preview::Text { lines } => {
+                panic!("ttf must dispatch to the font arm, got text: {lines:?}")
+            }
+        }
+    }
+
+    /// OFL-licensed ASCII subset of Noto Sans Regular (see
+    /// `testdata/OFL.txt`) — hermetic, no system-font dependency.
+    const TEST_FONT: &[u8] = include_bytes!("testdata/subset-noto-sans.ttf");
+
+    #[test]
+    fn native_font_sample_rasterises_the_pangram() {
+        let (info, img) = native_font_sample(TEST_FONT).expect("the fixture font must render");
+        assert!(
+            info.iter().any(|l| l.contains("Noto Sans")),
+            "family name expected: {info:?}"
+        );
+        let gray = img.to_luma8();
+        let dark = gray.pixels().filter(|p| p.0[0] < 128).count();
+        assert!(dark > 200, "expected >200 lit pixels, got {dark}");
+        assert!(img.width() <= 960, "sample width stays bounded");
+    }
+
+    #[test]
+    fn font_info_includes_family_and_style() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("sample.ttf");
+        std::fs::write(&path, TEST_FONT).unwrap();
+        let modified = path.metadata().unwrap().modified().unwrap();
+        let mime: mime::Mime = "font/ttf".parse().unwrap();
+        match font_preview_in(None, &path, modified, &mime) {
+            Preview::Image { img, info } => {
+                assert!(img.is_some());
+                let joined = info.join("\n");
+                assert!(joined.contains("Noto Sans"), "{joined}");
+                assert!(joined.contains("Regular"), "{joined}");
+                assert!(joined.contains("Size:"), "{joined}");
+                assert!(joined.contains("Modified:"), "{joined}");
+            }
+            _ => panic!("expected an image preview"),
+        }
+    }
+
+    #[test]
+    fn native_font_sample_on_garbage_is_an_error() {
+        // Err is what routes font_preview to the stat fallback.
+        assert!(native_font_sample(b"not a font").is_err());
+    }
+
+    #[test]
+    fn font_preview_of_a_woff_degrades_to_stat() {
+        // Documented deviation: no MSRV-1.83 pure-Rust woff decoder, so
+        // woff/woff2 land in the font arm and degrade to the stat block.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("web.woff");
+        std::fs::write(&path, b"wOFFxxxxxxxxxxxxxxxxxxxx").unwrap();
+        let modified = path.metadata().unwrap().modified().unwrap();
+        let mime: mime::Mime = "font/woff".parse().unwrap();
+        match font_preview_in(None, &path, modified, &mime) {
+            Preview::Text { lines } => {
+                let joined = lines.join("\n");
+                assert!(joined.contains("Size:"), "{joined}");
+                assert!(joined.contains("MIME type:"), "{joined}");
+            }
+            _ => panic!("expected the stat fallback"),
+        }
+    }
+
+    #[test]
+    fn font_extensions_route_to_the_font_arm() {
+        // mime_guess maps ttf/woff2 to font/*, but otf/woff to the
+        // legacy application/font-* aliases (verified on 2.0.5); the
+        // dispatch must cover both spellings. Nonexistent paths prove
+        // the resolution never reads content.
+        for ext in ["ttf", "otf", "woff", "woff2"] {
+            let path = PathBuf::from(format!("/nonexistent/sample.{ext}"));
+            let mime = get_mime_type(&path);
+            let routed = matches!(
+                (mime.type_().as_str(), mime.subtype().as_str()),
+                ("font", _) | ("application", "font-sfnt") | ("application", "font-woff")
+            );
+            assert!(routed, ".{ext} resolved to {mime}, missing the font arm");
+        }
+    }
+
+    /// Builds `dir/<file_name>` as a zip container with real member
+    /// bodies — the docx/odt/xlsx/epub fixtures are all just zips.
+    fn make_container(dir: &Path, file_name: &str, members: &[(&str, &str)]) -> PathBuf {
+        use std::io::Write;
+        let container = dir.join(file_name);
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&container).unwrap());
+        let options: zip::write::FileOptions<'_, ()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        for (name, content) in members {
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(content.as_bytes()).unwrap();
+        }
+        writer.finish().unwrap();
+        container
+    }
+
+    #[test]
+    fn docx_preview_shows_body_text_with_tags_stripped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let docx = make_container(
+            tmp.path(),
+            "report.docx",
+            &[(
+                "word/document.xml",
+                "<w:document><w:body><w:p><w:r><w:t>Hello</w:t></w:r><w:t> World</w:t></w:p></w:body></w:document>",
+            )],
+        );
+        match doc_preview(&docx, DocKind::Docx) {
+            Preview::Text { lines } => {
+                assert!(lines.iter().any(|l| l.contains("Hello World")), "{lines:?}");
+                assert!(
+                    lines.iter().all(|l| !l.contains('<')),
+                    "tags must be stripped: {lines:?}"
+                );
+            }
+            _ => panic!("expected a text preview"),
+        }
+    }
+
+    #[test]
+    fn odt_preview_reads_content_xml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let odt = make_container(
+            tmp.path(),
+            "notes.odt",
+            &[(
+                "content.xml",
+                "<office:document-content><office:body><office:text><text:p>An OpenDocument paragraph.</text:p></office:text></office:body></office:document-content>",
+            )],
+        );
+        match doc_preview(&odt, DocKind::Odt) {
+            Preview::Text { lines } => assert!(
+                lines
+                    .iter()
+                    .any(|l| l.contains("An OpenDocument paragraph.")),
+                "{lines:?}"
+            ),
+            _ => panic!("expected a text preview"),
+        }
+    }
+
+    #[test]
+    fn xlsx_preview_lists_shared_strings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let xlsx = make_container(
+            tmp.path(),
+            "table.xlsx",
+            &[(
+                "xl/sharedStrings.xml",
+                "<sst><si><t>Alpha</t></si><si><t>Beta</t></si></sst>",
+            )],
+        );
+        match doc_preview(&xlsx, DocKind::Xlsx) {
+            Preview::Text { lines } => {
+                // one shared string per line
+                assert!(lines.iter().any(|l| l == "Alpha"), "{lines:?}");
+                assert!(lines.iter().any(|l| l == "Beta"), "{lines:?}");
+            }
+            _ => panic!("expected a text preview"),
+        }
+    }
+
+    #[test]
+    fn epub_preview_follows_container_and_spine() {
+        let tmp = tempfile::tempdir().unwrap();
+        let epub = make_container(
+            tmp.path(),
+            "novel.epub",
+            &[
+                (
+                    "META-INF/container.xml",
+                    r#"<container><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#,
+                ),
+                (
+                    "OEBPS/content.opf",
+                    r#"<package><manifest><item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="ch1"/></spine></package>"#,
+                ),
+                (
+                    "OEBPS/ch1.xhtml",
+                    "<html><head><title>One</title><style>p { color: red }</style></head><body><p>It was a dark and stormy night.</p></body></html>",
+                ),
+            ],
+        );
+        match doc_preview(&epub, DocKind::Epub) {
+            Preview::Text { lines } => {
+                // Exact match: the head <title> ("One") must NOT leak
+                // into the first paragraph ("OneIt was a dark...").
+                assert!(
+                    lines.iter().any(|l| l == "It was a dark and stormy night."),
+                    "{lines:?}"
+                );
+                assert!(
+                    lines.iter().all(|l| !l.contains("color")),
+                    "style content must be skipped: {lines:?}"
+                );
+            }
+            _ => panic!("expected a text preview"),
+        }
+    }
+
+    #[test]
+    fn office_text_is_capped_at_128_lines_and_scrubbed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut body = String::from("<w:document><w:body>");
+        // First paragraph carries \r\n inside its text node — it must
+        // stay ONE line (the scrub convention), not smear across two.
+        body.push_str("<w:p><w:t>evil\r\nline</w:t></w:p>");
+        for i in 0..129 {
+            body.push_str(&format!("<w:p><w:t>paragraph {i}</w:t></w:p>"));
+        }
+        body.push_str("</w:body></w:document>");
+        let docx = make_container(tmp.path(), "long.docx", &[("word/document.xml", &body)]);
+        match doc_preview(&docx, DocKind::Docx) {
+            Preview::Text { lines } => {
+                assert_eq!(lines.len(), 128, "the 128-line cap applies");
+                assert!(
+                    lines[0].contains("evilline") && !lines[0].contains(['\r', '\n']),
+                    "newlines must be scrubbed: {:?}",
+                    lines[0]
+                );
+            }
+            _ => panic!("expected a text preview"),
+        }
+    }
+
+    #[test]
+    fn corrupt_container_falls_back_to_zip_listing() {
+        // A docx-named file that IS a valid zip but lacks the primary
+        // part: treated as a plain zip so the preview is never empty.
+        let tmp = tempfile::tempdir().unwrap();
+        let hollow = make_container(
+            tmp.path(),
+            "hollow.docx",
+            &[("word/nothing-here.xml", "<w:document/>")],
+        );
+        match doc_preview(&hollow, DocKind::Docx) {
+            Preview::Text { lines } => assert!(
+                lines.iter().any(|l| l.contains("word/nothing-here.xml")),
+                "expected the zip listing: {lines:?}"
+            ),
+            _ => panic!("expected a text preview"),
+        }
+        // Total garbage: the zip fallback errors too — still text
+        // (the unzip-fallback error block), never empty, never a panic.
+        let bogus = tmp.path().join("garbage.docx");
+        std::fs::write(&bogus, b"definitely not a zip").unwrap();
+        match doc_preview(&bogus, DocKind::Docx) {
+            Preview::Text { lines } => assert!(!lines.is_empty()),
+            _ => panic!("expected a text preview"),
+        }
+    }
+
+    #[test]
+    fn office_extensions_route_to_the_doc_arms() {
+        // Pins the dispatch spelling: mime 0.3 splits "epub+zip" into
+        // subtype "epub" + suffix "zip" (same trap as image/svg+xml),
+        // while the vnd.* types carry no suffix. Nonexistent paths
+        // prove the resolution never reads content.
+        for ext in ["docx", "xlsx", "pptx", "odt", "ods", "odp", "epub"] {
+            let path = PathBuf::from(format!("/nonexistent/file.{ext}"));
+            let mime = get_mime_type(&path);
+            let routed = matches!(
+                (mime.type_().as_str(), mime.subtype().as_str()),
+                (
+                    "application",
+                    "vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        | "vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        | "vnd.openxmlformats-officedocument.presentationml.presentation"
+                        | "vnd.oasis.opendocument.text"
+                        | "vnd.oasis.opendocument.spreadsheet"
+                        | "vnd.oasis.opendocument.presentation"
+                        | "epub"
+                )
+            );
+            assert!(routed, ".{ext} resolved to {mime}, missing the doc arms");
+        }
+    }
+
+    #[test]
+    fn docx_dispatch_reaches_the_doc_arm() {
+        // End-to-end: FilePreview::new on a real .docx must produce the
+        // extracted body text, not the generic stat block.
+        let tmp = tempfile::tempdir().unwrap();
+        let docx = make_container(
+            tmp.path(),
+            "report.docx",
+            &[(
+                "word/document.xml",
+                "<w:document><w:body><w:p><w:t>Dispatched body text</w:t></w:p></w:body></w:document>",
+            )],
+        );
+        match FilePreview::new(docx).preview {
+            Preview::Text { lines } => assert!(
+                lines.iter().any(|l| l.contains("Dispatched body text")),
+                "{lines:?}"
+            ),
+            _ => panic!("expected a text preview"),
+        }
+    }
+
+    #[test]
+    fn sqlite_preview_lists_tables_with_row_counts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("data.sqlite");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE t1(a);
+             INSERT INTO t1 VALUES (1);
+             INSERT INTO t1 VALUES (2);
+             CREATE TABLE t2(b);",
+        )
+        .unwrap();
+        drop(conn);
+        let lines = native_sqlite_lines(&db).unwrap();
+        assert!(
+            lines[0].contains("SQLite") && lines[0].contains("2 tables"),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("t1") && l.contains('2') && !l.contains("t2")),
+            "t1 must count 2 rows: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("t2") && l.contains('0')),
+            "t2 must count 0 rows: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn sqlite_table_names_are_scrubbed_and_quoted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("evil.sqlite");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        // An embedded quote in the identifier: COUNT(*) only succeeds
+        // when the listing re-quotes it by doubling; a crafted name
+        // with \n must render on ONE line (scrub convention).
+        conn.execute_batch(
+            "CREATE TABLE \"evil\"\"name\"(x);
+             INSERT INTO \"evil\"\"name\" VALUES (1);
+             CREATE TABLE \"bad\nname\"(y);",
+        )
+        .unwrap();
+        drop(conn);
+        let lines = native_sqlite_lines(&db).unwrap();
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("evil\"name") && l.contains('1') && !l.contains('?')),
+            "the quoted table must count correctly: {lines:?}"
+        );
+        assert!(
+            lines.iter().all(|l| !l.contains(['\r', '\n'])),
+            "newlines must be scrubbed: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("badname")),
+            "the scrubbed name must still be listed: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn sqlite_listing_is_capped_at_128_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("many.sqlite");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        for i in 0..130 {
+            conn.execute_batch(&format!("CREATE TABLE table_{i:03}(x);"))
+                .unwrap();
+        }
+        drop(conn);
+        // 2 header lines + 126 tables = the shared 128-line cap.
+        assert_eq!(native_sqlite_lines(&db).unwrap().len(), 128);
+    }
+
+    #[test]
+    fn sqlite_preview_of_garbage_falls_back_to_stat() {
+        // Only the 16-byte magic + garbage: the open/master query fails
+        // and the stat block (design fallback) must show instead.
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("broken.sqlite");
+        let mut data = b"SQLite format 3\0".to_vec();
+        data.extend_from_slice(&[0xffu8; 100]);
+        std::fs::write(&db, data).unwrap();
+        let mime: mime::Mime = "application/vnd.sqlite3".parse().unwrap();
+        match sqlite_preview(&db, &mime) {
+            Preview::Text { lines } => {
+                let joined = lines.join("\n");
+                assert!(joined.contains("Size:"), "{joined}");
+                assert!(joined.contains("MIME type:"), "{joined}");
+            }
+            _ => panic!("expected the stat fallback"),
+        }
+    }
+
+    #[test]
+    fn extensionless_sqlite_magic_routes_to_the_sqlite_arm() {
+        // .db/.sqlite/.sqlite3 get no mime_guess answer, so routing is
+        // sniff-driven: infer maps the `SQLite format 3\0` magic to
+        // application/vnd.sqlite3 (no get_mime_type special case).
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("statefile");
+        let mut data = b"SQLite format 3\0".to_vec();
+        data.extend_from_slice(&[0u8; 100]);
+        std::fs::write(&db, data).unwrap();
+        let mime = get_mime_type(&db);
+        assert_eq!(
+            (mime.type_().as_str(), mime.subtype().as_str()),
+            ("application", "vnd.sqlite3"),
+            "sniff resolved {mime}"
+        );
+    }
+
+    #[test]
+    fn sqlite_dispatch_reaches_the_listing_arm() {
+        // End-to-end: FilePreview::new on a real .sqlite file must show
+        // the table listing, not the generic stat block.
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("app.sqlite");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch("CREATE TABLE sessions(x);").unwrap();
+        drop(conn);
+        match FilePreview::new(db).preview {
+            Preview::Text { lines } => assert!(
+                lines.iter().any(|l| l.contains("sessions")),
+                "expected the table listing: {lines:?}"
+            ),
+            _ => panic!("expected a text preview"),
+        }
+    }
+
+    #[test]
+    fn cached_font_preview_stores_on_miss_and_hits_without_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("sample.ttf");
+        std::fs::write(&path, TEST_FONT).unwrap();
+        let modified = path.metadata().unwrap().modified().unwrap();
+        let mime: mime::Mime = "font/ttf".parse().unwrap();
+
+        // miss: rasterise + store
+        match font_preview_in(Some(cache.path()), &path, modified, &mime) {
+            Preview::Image { img, .. } => assert!(img.is_some()),
+            _ => panic!("expected an image preview"),
+        }
+        let entry = cache.path().join(raster_cache::entry_name(
+            &path,
+            mtime_secs(modified),
+            raster_cache::KIND_FONT,
+        ));
+        assert!(entry.is_file(), "miss must store the sample");
+
+        // Delete the SOURCE: the second call must still yield pixels —
+        // proof they came from the cache, not a re-rasterisation.
+        std::fs::remove_file(&path).unwrap();
+        match font_preview_in(Some(cache.path()), &path, modified, &mime) {
+            Preview::Image { img, .. } => assert!(img.is_some(), "hit must serve cached pixels"),
+            _ => panic!("expected an image preview from the cache"),
+        }
+    }
+
+    // ---- C5: extra archive formats (.7z, .tar.zst/.tar.xz/.tar.bz2) ----
+
+    use std::io::Write;
+
+    /// A small tar stream built in memory via the tar crate.
+    fn tar_bytes(names: &[&str]) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        for name in names {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(7);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, *name, &b"content"[..])
+                .unwrap();
+        }
+        builder.into_inner().unwrap()
+    }
+
+    fn expect_lines(preview: Preview) -> Vec<String> {
+        match preview {
+            Preview::Text { lines } => lines,
+            _ => panic!("expected a text preview"),
+        }
+    }
+
+    #[test]
+    fn tar_zst_preview_lists_members() {
+        let tmp = tempfile::tempdir().unwrap();
+        let compressed = ruzstd::encoding::compress_to_vec(
+            &tar_bytes(&["a.txt", "b.txt"])[..],
+            ruzstd::encoding::CompressionLevel::Fastest,
+        );
+        let path = tmp.path().join("archive.tar.zst");
+        std::fs::write(&path, compressed).unwrap();
+        let lines = expect_lines(zst_preview(&path));
+        assert!(
+            lines.iter().any(|l| l.contains("a.txt")) && lines.iter().any(|l| l.contains("b.txt")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn tar_xz_preview_lists_members() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("archive.tar.xz");
+        let mut writer = lzma_rust2::XzWriter::new(
+            File::create(&path).unwrap(),
+            lzma_rust2::XzOptions::with_preset(1),
+        )
+        .unwrap();
+        writer.write_all(&tar_bytes(&["a.txt", "b.txt"])).unwrap();
+        writer.finish().unwrap();
+        let lines = expect_lines(xz_preview(&path));
+        assert!(
+            lines.iter().any(|l| l.contains("a.txt")) && lines.iter().any(|l| l.contains("b.txt")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn tar_bz2_preview_lists_members() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("archive.tar.bz2");
+        let mut writer =
+            bzip2::write::BzEncoder::new(File::create(&path).unwrap(), bzip2::Compression::fast());
+        writer.write_all(&tar_bytes(&["a.txt", "b.txt"])).unwrap();
+        writer.finish().unwrap();
+        let lines = expect_lines(bz2_preview(&path));
+        assert!(
+            lines.iter().any(|l| l.contains("a.txt")) && lines.iter().any(|l| l.contains("b.txt")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn zst_of_a_non_tar_file_previews_the_decompressed_text() {
+        // The gz-arm behavior generalised: a compressed NON-tar file
+        // must show its decompressed head as text, not an error.
+        let tmp = tempfile::tempdir().unwrap();
+        let compressed = ruzstd::encoding::compress_to_vec(
+            &b"hello from a zstd text file\r\nsecond line\n"[..],
+            ruzstd::encoding::CompressionLevel::Fastest,
+        );
+        let path = tmp.path().join("notes.txt.zst");
+        std::fs::write(&path, compressed).unwrap();
+        let lines = expect_lines(zst_preview(&path));
+        assert!(
+            lines[0].contains("hello from a zstd text file") && !lines[0].contains('\r'),
+            "{lines:?}"
+        );
+        assert_eq!(lines[1], "second line");
+    }
+
+    #[test]
+    fn compressed_garbage_degrades_to_a_text_preview() {
+        // Unreadable streams route to the tar-binary fallback, which
+        // itself degrades to error text - never a panic, never empty.
+        let tmp = tempfile::tempdir().unwrap();
+        let garbage = [0xffu8; 64];
+        for (name, preview_fn) in [
+            ("g.tar.zst", zst_preview as fn(&Path) -> Preview),
+            ("g.tar.xz", xz_preview),
+            ("g.tar.bz2", bz2_preview),
+        ] {
+            let path = tmp.path().join(name);
+            std::fs::write(&path, garbage).unwrap();
+            let lines = expect_lines(preview_fn(&path));
+            assert!(!lines.is_empty(), "{name}: {lines:?}");
+        }
+    }
+
+    #[test]
+    fn sevenz_preview_lists_names_and_sizes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("a.txt"), b"content").unwrap();
+        std::fs::write(src.join("b.txt"), b"content").unwrap();
+        let path = tmp.path().join("archive.7z");
+        sevenz_rust::compress_to_path(&src, &path).unwrap();
+        let lines = expect_lines(sevenz_preview(&path));
+        assert!(
+            lines.iter().any(|l| l.contains("a.txt")) && lines.iter().any(|l| l.contains("b.txt")),
+            "{lines:?}"
+        );
+        // `size  name` columns like the zip/tar listings.
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("7 B") && l.contains("a.txt")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn sevenz_list_caps_at_128_and_scrubs() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Cap: 140 members list as exactly 128 lines.
+        let big = tmp.path().join("big");
+        std::fs::create_dir(&big).unwrap();
+        for i in 0..140 {
+            std::fs::write(big.join(format!("file-{i:03}.txt")), b"x").unwrap();
+        }
+        let big_archive = tmp.path().join("big.7z");
+        sevenz_rust::compress_to_path(&big, &big_archive).unwrap();
+        assert_eq!(native_sevenz_list(&big_archive).unwrap().len(), 128);
+
+        // Scrub: a member name with an embedded newline stays one line.
+        let evil = tmp.path().join("evil");
+        std::fs::create_dir(&evil).unwrap();
+        std::fs::write(evil.join("evil\nname.txt"), b"x").unwrap();
+        let evil_archive = tmp.path().join("evil.7z");
+        sevenz_rust::compress_to_path(&evil, &evil_archive).unwrap();
+        let lines = native_sevenz_list(&evil_archive).unwrap();
+        assert!(
+            lines.iter().any(|l| l.contains("evilname.txt")),
+            "newline must be scrubbed out of the member name: {lines:?}"
+        );
+        assert!(lines.iter().all(|l| !l.contains('\n')));
+    }
+
+    #[test]
+    fn sevenz_of_garbage_degrades_to_a_text_preview() {
+        // Err from the native lister routes to the 7z shell-out, whose
+        // absence still yields error text - never empty, never a panic.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("garbage.7z");
+        std::fs::write(&path, [0xffu8; 64]).unwrap();
+        assert!(native_sevenz_list(&path).is_err());
+        let lines = expect_lines(sevenz_preview(&path));
+        assert!(!lines.is_empty(), "{lines:?}");
+    }
+
+    /// CRC-32 (IEEE, reflected) — just enough to craft a start header
+    /// that passes sevenz-rust's checksum verification.
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = 0xffff_ffffu32;
+        for &b in data {
+            crc ^= b as u32;
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+            }
+        }
+        !crc
+    }
+
+    /// A syntactically valid 32-byte 7z start header (correct magic and
+    /// CRC) declaring the given next-header offset/size.
+    fn sevenz_start_header(offset: u64, size: u64) -> Vec<u8> {
+        let mut start = Vec::new();
+        start.extend_from_slice(&offset.to_le_bytes());
+        start.extend_from_slice(&size.to_le_bytes());
+        start.extend_from_slice(&0u32.to_le_bytes()); // next-header CRC
+        let mut file = vec![b'7', b'z', 0xbc, 0xaf, 0x27, 0x1c, 0, 4];
+        file.extend_from_slice(&crc32(&start).to_le_bytes());
+        file.extend_from_slice(&start);
+        file
+    }
+
+    #[test]
+    fn sevenz_rejects_an_implausible_next_header_as_an_err() {
+        // sevenz-rust allocates `vec![0; next_header_size]` before any
+        // read: a 32-byte crafted file declaring a multi-TB header
+        // aborts the whole process (allocation failure is not an Err
+        // the fallback could catch). The arm must reject it up front.
+        let tmp = tempfile::tempdir().unwrap();
+        let bomb = tmp.path().join("bomb.7z");
+        std::fs::write(&bomb, sevenz_start_header(0, 0x0000_ffff_ffff_ffff)).unwrap();
+        assert!(native_sevenz_list(&bomb).is_err());
+
+        // A header that merely lies outside the file (plausible size,
+        // absurd offset) is rejected by the same length check.
+        let out_of_bounds = tmp.path().join("oob.7z");
+        std::fs::write(&out_of_bounds, sevenz_start_header(u64::MAX - 40, 8)).unwrap();
+        assert!(native_sevenz_list(&out_of_bounds).is_err());
+    }
+
+    /// gzip `data` in memory (the .svgz / bomb fixtures).
+    fn gzipped(data: &[u8]) -> Vec<u8> {
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        enc.write_all(data).unwrap();
+        enc.finish().unwrap()
+    }
+
+    #[test]
+    fn read_bounded_truncates_at_the_cap() {
+        // The font/svg arms rely on this bound: a mislabeled huge file
+        // yields a truncated buffer (whose parse fails → fallback),
+        // never the whole file in memory.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("big.bin");
+        std::fs::write(&path, [0u8; 100]).unwrap();
+        assert_eq!(read_bounded(&path, 10).unwrap().len(), 10);
+        assert_eq!(read_bounded(&path, 1000).unwrap().len(), 100);
+    }
+
+    #[test]
+    fn svgz_bomb_is_rejected_by_the_inflate_bound() {
+        // A ~4 MiB gzip can inflate to gigabytes (usvg itself has no
+        // output bound, and an allocation failure would abort rfm,
+        // skipping the text fallback): over-budget inflate must be
+        // None, sending svg_preview_in to the bat fallback.
+        let bomb = gzipped(&vec![b' '; (SVGZ_INFLATED_MAX + 1024) as usize]);
+        assert!(
+            bomb.len() < SVG_SOURCE_MAX as usize,
+            "the bomb must pass the source-read cap to prove the inflate bound"
+        );
+        assert!(inflate_svgz_bounded(bomb).is_none());
+        // Plain XML and a sane gzip pass through unchanged/inflated.
+        assert_eq!(
+            inflate_svgz_bounded(TEST_SVG.to_vec()).as_deref(),
+            Some(TEST_SVG)
+        );
+        assert_eq!(
+            inflate_svgz_bounded(gzipped(TEST_SVG)).as_deref(),
+            Some(TEST_SVG)
+        );
+    }
+
+    #[test]
+    fn sqlite_counts_are_skipped_past_the_scan_budget() {
+        // Above the budget every count is `?` — the names still list.
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("huge.sqlite");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE t1(a);
+             INSERT INTO t1 VALUES (1);",
+        )
+        .unwrap();
+        drop(conn);
+        let lines = native_sqlite_lines_bounded(&db, 0).unwrap();
+        assert!(lines[0].contains("1 table"), "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("t1") && l.contains('?')),
+            "counts must be skipped for an over-budget database: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn svgz_still_renders_through_the_bounded_inflate() {
+        // .svgz (gzip'd SVG) must keep rendering once the arm inflates
+        // the gzip layer itself instead of trusting usvg's unbounded
+        // auto-decompression.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("pic.svgz");
+        std::fs::write(&path, gzipped(TEST_SVG)).unwrap();
+        let modified = path.metadata().unwrap().modified().unwrap();
+        match svg_preview_in(None, &path, modified) {
+            Preview::Image { img, .. } => {
+                let img = img.expect("svgz must render");
+                assert_eq!((img.width(), img.height()), (960, 480));
+            }
+            Preview::Text { lines } => panic!("expected a rendered svgz, got text: {lines:?}"),
+        }
+    }
+
+    #[test]
+    fn compressed_tar_listing_stops_at_the_decompression_budget() {
+        // tar over a non-Seek stream reaches the next header by
+        // read-and-discarding the content in between: a crafted first
+        // member spanning the whole scan budget must truncate the
+        // listing there instead of decompressing gigabytes (CPU DoS on
+        // the preview task) to reach later headers.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("padded.tar.gz");
+        let gz = flate2::write::GzEncoder::new(
+            File::create(&path).unwrap(),
+            flate2::Compression::fast(),
+        );
+        let mut builder = tar::Builder::new(gz);
+        let budget = 64 * 1024 * 1024; // = TAR_SCAN_MAX
+        let mut header = tar::Header::new_gnu();
+        header.set_size(budget);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "big.bin", io::repeat(0).take(budget))
+            .unwrap();
+        let mut header = tar::Header::new_gnu();
+        header.set_size(7);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "late.txt", &b"content"[..])
+            .unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+
+        let lines = expect_lines(gz_preview(&path));
+        assert!(lines.iter().any(|l| l.contains("big.bin")), "{lines:?}");
+        assert!(
+            lines.iter().all(|l| !l.contains("late.txt")),
+            "the scan budget must stop the listing: {lines:?}"
+        );
     }
 }
 
