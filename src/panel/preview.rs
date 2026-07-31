@@ -530,6 +530,87 @@ fn image_info_lines(
     ]
 }
 
+/// Decode an image upright: the decoder's EXIF orientation (parsed
+/// natively by the JPEG/TIFF/WebP decoders in image 0.25; every other
+/// format reports `NoTransforms` for free) is applied to the raster
+/// before it is thumbnailed or cached, so cached rasters are upright by
+/// construction and the hit path never re-applies rotation. Unreadable
+/// EXIF degrades to a no-op, never a decode failure.
+fn decode_upright(path: &Path) -> Option<DynamicImage> {
+    use image::{metadata::Orientation, ImageDecoder};
+    let mut decoder = image::ImageReader::open(path).ok()?.into_decoder().ok()?;
+    arm_alloc_limits(&mut decoder)?;
+    // Must be read BEFORE from_decoder consumes the decoder.
+    let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+    let mut img = DynamicImage::from_decoder(decoder).ok()?;
+    img.apply_orientation(orientation);
+    Some(img)
+}
+
+/// Arm image's default allocation limits (512 MiB `max_alloc`) on a
+/// decoder that will be handed to `DynamicImage::from_decoder`.
+/// `ImageReader::decode()` reserves the decoder's declared output size
+/// against those limits BEFORE allocating; the `into_decoder()` +
+/// `from_decoder()` split skips that reserve, so without this a
+/// crafted small file declaring enormous dimensions materializes a
+/// multi-GB buffer on plain cursor navigation. Mirrors `decode()`:
+/// reserve `total_bytes`, then hand the shrunk limits to the decoder —
+/// for jxl-oxide the `set_limits` also arms its internal AllocTracker,
+/// which starts at usize::MAX. `None` = over budget, caller falls back.
+fn arm_alloc_limits(decoder: &mut impl image::ImageDecoder) -> Option<()> {
+    let mut limits = image::Limits::default();
+    limits.reserve(decoder.total_bytes()).ok()?;
+    decoder.set_limits(limits).ok()
+}
+
+/// Decode dispatch for the image arm: JPEG XL goes through jxl-oxide's
+/// `ImageDecoder` integration (the image crate has no JXL support;
+/// jxl-oxide applies the codestream's own orientation during decode —
+/// do NOT also apply EXIF), everything else through [`decode_upright`].
+/// `None` routes the caller to the mediainfo fallback either way.
+fn decode_raster(path: &Path, mime: &mime::Mime) -> Option<DynamicImage> {
+    if mime.subtype().as_str() == "jxl" {
+        let reader = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+        let mut decoder = jxl_oxide::integration::JxlDecoder::new(reader).ok()?;
+        arm_alloc_limits(&mut decoder)?;
+        return DynamicImage::from_decoder(decoder).ok();
+    }
+    decode_upright(path)
+}
+
+/// Upright source dimensions without a full decode, for the cache-hit
+/// info line: w/h swapped for the transposing EXIF orientations
+/// (Rotate90/270 ± flip). "Without a full decode" bounds pixel work,
+/// not I/O — image 0.25's JpegDecoder::new slurps the whole source
+/// into memory before the header parse (zune-jpeg backend), so a hit
+/// on a large JPEG still reads the file; only the JXL branch is
+/// genuinely header-bounded. JPEG XL dispatches to jxl-oxide (whose
+/// reported dims already have the codestream orientation applied).
+/// The same allocation budget as the decode path applies — a source
+/// whose decode would be refused reports no dims either (`None` lets
+/// the caller fall back to the cached raster).
+fn upright_source_dims(path: &Path, subtype: &str) -> Option<(u32, u32)> {
+    use image::{metadata::Orientation, ImageDecoder};
+    if subtype == "jxl" {
+        let reader = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+        let mut decoder = jxl_oxide::integration::JxlDecoder::new(reader).ok()?;
+        arm_alloc_limits(&mut decoder)?;
+        return Some(decoder.dimensions());
+    }
+    let mut decoder = image::ImageReader::open(path).ok()?.into_decoder().ok()?;
+    arm_alloc_limits(&mut decoder)?;
+    let (w, h) = decoder.dimensions();
+    Some(
+        match decoder.orientation().unwrap_or(Orientation::NoTransforms) {
+            Orientation::Rotate90
+            | Orientation::Rotate270
+            | Orientation::Rotate90FlipH
+            | Orientation::Rotate270FlipH => (h, w),
+            _ => (w, h),
+        },
+    )
+}
+
 /// Image arm: decode once, derive the info lines from the decode itself
 /// (dimensions are read before the thumbnail shrink).
 fn native_image_preview(path: &Path, mime: &mime::Mime) -> Preview {
@@ -538,10 +619,7 @@ fn native_image_preview(path: &Path, mime: &mime::Mime) -> Preview {
     let modified = meta
         .and_then(|m| m.modified().ok())
         .unwrap_or(SystemTime::UNIX_EPOCH);
-    match image::io::Reader::open(path)
-        .ok()
-        .and_then(|r| r.decode().ok())
-    {
+    match decode_raster(path, mime) {
         Some(img) => {
             let info = image_info_lines(
                 img.width(),
@@ -617,14 +695,16 @@ fn cached_image_preview_in(
 }
 
 /// Info lines for a cache hit, without the full decode: original
-/// dimensions via a header-only read (falling back to the cached
-/// thumbnail's), color from the cached thumbnail (always Rgb8 after the
-/// JPEG round-trip — accepted display drift), size/mtime from metadata.
+/// dimensions via [`upright_source_dims`] (no pixel decode, though the
+/// JPEG header parse still reads the source file — see there; falling
+/// back to the cached thumbnail's), color from the cached thumbnail
+/// (always Rgb8 after the JPEG round-trip — accepted display drift),
+/// size/mtime from metadata.
+/// The header dims are raw sensor dims — swapped for a transposing EXIF
+/// orientation so the hit path agrees with the (upright) miss path.
 fn cached_image_info(path: &Path, cached: &DynamicImage, subtype: &str) -> Vec<String> {
-    let (width, height) = image::io::Reader::open(path)
-        .ok()
-        .and_then(|r| r.into_dimensions().ok())
-        .unwrap_or_else(|| (cached.width(), cached.height()));
+    let (width, height) =
+        upright_source_dims(path, subtype).unwrap_or_else(|| (cached.width(), cached.height()));
     let meta = path.metadata().ok();
     let byte_size = meta.as_ref().map(|m| m.len()).unwrap_or_default();
     let modified = meta
@@ -944,19 +1024,15 @@ fn font_preview_in(
 }
 
 fn video_preview(path: impl AsRef<Path>, modified: SystemTime) -> Preview {
-    // Check, if ffmpeg exists
+    // Check, if ffmpeg exists. Deadline-bounded: an unbounded wait()
+    // here would wedge the caller forever on a hung ffmpeg build —
+    // the exact scenario EXTERNAL_RENDER_DEADLINE exists for, except
+    // in the binary's startup instead of the render run.
     static FFMPEG_INSTALLED: OnceCell<bool> = OnceCell::new();
     FFMPEG_INSTALLED.get_or_init(|| {
-        let success = std::process::Command::new("ffmpeg")
-            .arg("-h")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .stdin(Stdio::null())
-            .spawn()
-            .and_then(|mut c| c.wait())
-            .map(|e| e.success())
-            .unwrap_or_default();
-        success
+        probe_bounded("ffmpeg", "-h", PROBE_DEADLINE)
+            .map(|out| out.status.success())
+            .unwrap_or_default()
     });
     if !FFMPEG_INSTALLED.get().unwrap() {
         return cmd_to_preview("mediainfo", mediainfo(path.as_ref()));
@@ -972,8 +1048,8 @@ fn video_preview(path: impl AsRef<Path>, modified: SystemTime) -> Preview {
     match preview {
         Ok(preview) => preview,
         Err(e) => {
-            // Expected e.g. for videos shorter than the 10s thumbnail
-            // seek - not worth an on-screen error on every visit.
+            // Expected e.g. for corrupt files or a deadline-killed
+            // ffmpeg - not worth an on-screen error on every visit.
             log::debug!("no ffmpeg thumbnail, falling back to mediainfo: {e}");
             cmd_to_preview("mediainfo", mediainfo(path.as_ref()))
         }
@@ -1021,6 +1097,91 @@ fn fallback_thumbnail_dir() -> &'static Path {
     })
 }
 
+/// Deadline for every external raster producer (ffmpeg, pdftoppm/mutool).
+const EXTERNAL_RENDER_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Deadline for the one-shot availability probes (`ffmpeg -h`,
+/// `pdftoppm -v`, `mutool -v`). A working binary answers these
+/// instantly; a wedged one must not hang the preview path forever —
+/// the probes run BEFORE `run_bounded` ever gets involved, so an
+/// unbounded `wait()`/`output()` here would defeat the render
+/// deadline whenever the hang is in the binary's startup.
+const PROBE_DEADLINE: Duration = Duration::from_secs(3);
+
+/// Retained bytes per drained pipe in [`run_bounded`].
+const DRAIN_CAP: u64 = 1024 * 1024;
+
+/// [`run_bounded`] for availability probes: `Some(output)` when `bin
+/// arg` spawned and exited within `deadline`, `None` on spawn failure
+/// or a deadline kill (a hung probe means "not usable", same as
+/// missing).
+fn probe_bounded(bin: &str, arg: &str, deadline: Duration) -> Option<std::process::Output> {
+    let mut cmd = std::process::Command::new(bin);
+    cmd.arg(arg).stdin(Stdio::null());
+    run_bounded(&mut cmd, deadline).ok()
+}
+
+/// Run `cmd` to completion — but never past `deadline`. A hung or
+/// pathological producer (corrupt file, stalled network mount) must
+/// cost one preview slot for `deadline` at most, not forever.
+///
+/// stdout/stderr are piped and drained on threads, so a chatty child
+/// can never deadlock against a full 64 KiB pipe while
+/// the main thread only polls `try_wait` (~25ms). The drains retain at
+/// most [`DRAIN_CAP`] bytes per pipe (the callers only use the status
+/// and a short stderr tail); everything past the cap is copied to a
+/// sink so the pipe keeps draining and the child never blocks — a
+/// flooding producer costs bounded memory, not deadline × pipe
+/// throughput. On deadline: kill,
+/// then wait — the kill-then-reap discipline from `tar_list` (the kill
+/// fails harmlessly if the child just exited; without the wait every
+/// timeout would leak a zombie) — then join the drain threads (EOF
+/// arrives when the killed child's pipes close) and return
+/// `Err(TimedOut)`. Partial-output cleanup is the *caller's* job: only
+/// it knows which part file its command was writing.
+fn run_bounded(
+    cmd: &mut std::process::Command,
+    deadline: Duration,
+) -> io::Result<std::process::Output> {
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = (&mut pipe).take(DRAIN_CAP).read_to_end(&mut buf);
+                // Keep draining past the cap so the child never blocks
+                // on a full pipe (the no-deadlock property).
+                let _ = io::copy(&mut pipe, &mut io::sink());
+            }
+            buf
+        })
+    }
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+    let end = std::time::Instant::now() + deadline;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) | Err(_) if std::time::Instant::now() >= end => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout.join();
+                let _ = stderr.join();
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("external command exceeded the {deadline:?} deadline"),
+                ));
+            }
+            Ok(None) | Err(_) => std::thread::sleep(Duration::from_millis(25)),
+        }
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
+}
+
 /// Build (or fetch) the `vid120` thumbnail of `path` in `dir` and wrap
 /// it in an image preview. Lookups go through the cache's corrupt-entry
 /// rule: a decode failure deletes the entry and regenerates — never a
@@ -1046,25 +1207,44 @@ fn ffmpeg_thumbnail(dir: &Path, path: impl AsRef<Path>, modified: u64) -> anyhow
     // file. The extension stays LAST so ffmpeg's container inference
     // still works.
     let part = dir.join(format!("{name}.{}.part.jpg", raster_cache::part_token()));
+    // The `thumbnail` filter picks a representative frame from the
+    // first batch (default 100 frames) — probe-free and seek-free, so
+    // short clips work and the cost stays bounded regardless of the
+    // video's length (run_bounded's deadline covers the pathological
+    // rest). Order matters: `scale` FIRST, so the selection window is
+    // buffered at 120px instead of input resolution — `thumbnail`
+    // before `scale` peaks at ~3 GB transient RSS on an ordinary 4K
+    // clip (measured; 100 full-res frames held at once), and the
+    // directory preloader spawns these per entry. The selection
+    // statistics run on scaled frames — still representative. Output
+    // semantics (`scale=120:-1`) are unchanged, so the cache kind
+    // stays `vid120`.
     let mut cmd = std::process::Command::new("ffmpeg");
-    cmd.arg("-ss")
-        .arg("00:00:10")
-        .arg("-y")
+    cmd.arg("-y")
         .arg("-i")
         .arg(path.as_ref())
-        .arg("-vframes")
+        .arg("-frames:v")
         .arg("1")
         .arg("-q:v")
         .arg("2")
         .arg("-vf")
-        .arg("scale=120:-1")
+        .arg("scale=120:-1,thumbnail")
         .arg(&part);
     cmd.stdin(Stdio::null());
-    let out = cmd.output()?;
-    // ffmpeg fails without writing the thumbnail e.g. for videos
-    // shorter than the 10s seek; report that instead of building a
-    // preview from a file that was never written (the caller falls
-    // back to mediainfo on Err).
+    let out = match run_bounded(&mut cmd, EXTERNAL_RENDER_DEADLINE) {
+        Ok(out) => out,
+        Err(e) => {
+            // Spawn failure or deadline kill: a killed ffmpeg may have
+            // left a half-written part file — drop it before
+            // propagating (the caller falls back to mediainfo).
+            let _ = std::fs::remove_file(&part);
+            return Err(e.into());
+        }
+    };
+    // ffmpeg fails without writing the thumbnail e.g. for corrupt
+    // input; report that instead of building a preview from a file
+    // that was never written (the caller falls back to mediainfo on
+    // Err).
     if !out.status.success() || !part.exists() {
         // A failed run may still have created a partial file; drop it.
         let _ = std::fs::remove_file(&part);
@@ -1818,18 +1998,15 @@ enum PdfRenderer {
 }
 
 /// OnceCell probe, ffmpeg-style but two candidates: `pdftoppm -v`,
-/// else `mutool -v`. Present = spawned AND (exit success OR output
-/// contains "version") — the -v exit codes are not uniform across
-/// packagings. Only consulted when pdf_render_enabled(), so the base
-/// install never spawns probes.
+/// else `mutool -v`. Present = spawned AND exited within the probe
+/// deadline AND (exit success OR output contains "version") — the -v
+/// exit codes are not uniform across packagings. Only consulted when
+/// pdf_render_enabled(), so the base install never spawns probes.
 fn pdf_renderer() -> Option<PdfRenderer> {
     static RENDERER: OnceCell<Option<PdfRenderer>> = OnceCell::new();
     *RENDERER.get_or_init(|| {
         let present = |bin: &str| {
-            std::process::Command::new(bin)
-                .arg("-v")
-                .stdin(Stdio::null())
-                .output()
+            probe_bounded(bin, "-v", PROBE_DEADLINE)
                 .map(|out| {
                     out.status.success()
                         || String::from_utf8_lossy(&out.stdout).contains("version")
@@ -2277,7 +2454,16 @@ fn pdf_render_first_page_in(
         }
     }
     cmd.stdin(Stdio::null());
-    let out = cmd.output()?;
+    let out = match run_bounded(&mut cmd, EXTERNAL_RENDER_DEADLINE) {
+        Ok(out) => out,
+        Err(e) => {
+            // Spawn failure or deadline kill: a killed renderer may
+            // have left a half-written part file — drop it before
+            // propagating (the caller drops to the text tier).
+            let _ = std::fs::remove_file(&part);
+            return Err(e.into());
+        }
+    };
     if !out.status.success() || !part.exists() {
         // A failed run may still have created a partial file; drop it.
         let _ = std::fs::remove_file(&part);
@@ -2289,7 +2475,7 @@ fn pdf_render_first_page_in(
             tail.into_iter().rev().collect::<Vec<_>>().join(" | ")
         );
     }
-    let decoded = image::io::Reader::open(&part)
+    let decoded = image::ImageReader::open(&part)
         .map_err(anyhow::Error::from)
         .and_then(|r| Ok(r.with_guessed_format()?.decode()?));
     let _ = std::fs::remove_file(&part);
@@ -2833,6 +3019,310 @@ mod native_backend_tests {
         );
     }
 
+    /// Writes `dir/name`: `img` JPEG-encoded with a minimal EXIF APP1
+    /// segment (little-endian TIFF header + a one-entry IFD0 carrying
+    /// tag 0x0112 = `orientation`) spliced in right after SOI — the
+    /// hermetic stand-in for a phone photo.
+    fn jpeg_with_orientation(
+        dir: &Path,
+        name: &str,
+        img: image::RgbImage,
+        orientation: u16,
+    ) -> PathBuf {
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+            .encode_image(&img)
+            .unwrap();
+        assert_eq!(&jpeg[..2], &[0xFF, 0xD8], "encoder must emit SOI first");
+        // APP1 payload: "Exif\0\0" (6) + TIFF header (8) + entry count
+        // (2) + one 12-byte IFD entry + next-IFD offset (4) = 32 bytes;
+        // the length field counts itself, so 34.
+        let mut app1: Vec<u8> = vec![0xFF, 0xE1, 0x00, 0x22];
+        app1.extend_from_slice(b"Exif\0\0");
+        app1.extend_from_slice(&[0x49, 0x49, 0x2A, 0x00]); // "II", 42 LE
+        app1.extend_from_slice(&8u32.to_le_bytes()); // IFD0 at offset 8
+        app1.extend_from_slice(&1u16.to_le_bytes()); // one entry
+        app1.extend_from_slice(&0x0112u16.to_le_bytes()); // Orientation
+        app1.extend_from_slice(&3u16.to_le_bytes()); // type SHORT
+        app1.extend_from_slice(&1u32.to_le_bytes()); // count
+        app1.extend_from_slice(&orientation.to_le_bytes());
+        app1.extend_from_slice(&[0, 0]); // value padding
+        app1.extend_from_slice(&0u32.to_le_bytes()); // no next IFD
+        let mut spliced = Vec::with_capacity(jpeg.len() + app1.len());
+        spliced.extend_from_slice(&jpeg[..2]);
+        spliced.extend_from_slice(&app1);
+        spliced.extend_from_slice(&jpeg[2..]);
+        let path = dir.join(name);
+        std::fs::write(&path, spliced).unwrap();
+        path
+    }
+
+    #[test]
+    fn native_image_preview_applies_exif_orientation() {
+        // orientation=6 (Rotate90): a 20×10 source must preview upright
+        // as 10×20, and the info line must report the UPRIGHT dims.
+        let tmp = tempfile::tempdir().unwrap();
+        let path =
+            jpeg_with_orientation(tmp.path(), "rotated.jpg", image::RgbImage::new(20, 10), 6);
+        let mime: mime::Mime = "image/jpeg".parse().unwrap();
+        match native_image_preview(&path, &mime) {
+            Preview::Image { img, info } => {
+                let img = img.unwrap();
+                assert_eq!((img.width(), img.height()), (10, 20), "raster upright");
+                assert!(info.iter().any(|l| l.contains("10 × 20")), "{info:?}");
+            }
+            _ => panic!("expected an image preview"),
+        }
+    }
+
+    #[test]
+    fn native_image_preview_orientation_1_is_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path =
+            jpeg_with_orientation(tmp.path(), "upright.jpg", image::RgbImage::new(20, 10), 1);
+        let mime: mime::Mime = "image/jpeg".parse().unwrap();
+        match native_image_preview(&path, &mime) {
+            Preview::Image { img, .. } => {
+                let img = img.unwrap();
+                assert_eq!((img.width(), img.height()), (20, 10));
+            }
+            _ => panic!("expected an image preview"),
+        }
+    }
+
+    #[test]
+    fn native_image_preview_flips_mirrored_orientations() {
+        // orientation=2 (FlipHorizontal): a white|black 2×1 must come
+        // out black|white. Luminance survives JPEG; exact values don't.
+        let mut src = image::RgbImage::new(2, 1);
+        src.put_pixel(0, 0, image::Rgb([255, 255, 255]));
+        src.put_pixel(1, 0, image::Rgb([0, 0, 0]));
+        let tmp = tempfile::tempdir().unwrap();
+        let path = jpeg_with_orientation(tmp.path(), "mirrored.jpg", src, 2);
+        let mime: mime::Mime = "image/jpeg".parse().unwrap();
+        match native_image_preview(&path, &mime) {
+            Preview::Image { img, .. } => {
+                let rgb = img.unwrap().to_rgb8();
+                let left = rgb.get_pixel(0, 0).0[0];
+                let right = rgb.get_pixel(1, 0).0[0];
+                assert!(
+                    left < right,
+                    "flip must swap pixel order: left={left} right={right}"
+                );
+            }
+            _ => panic!("expected an image preview"),
+        }
+    }
+
+    #[test]
+    fn a_png_without_exif_is_untouched() {
+        // Guards the cheap skip: decoders without EXIF report
+        // NoTransforms and the raster keeps its raw dimensions.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("plain.png");
+        image::RgbImage::new(20, 10).save(&path).unwrap();
+        let mime: mime::Mime = "image/png".parse().unwrap();
+        match native_image_preview(&path, &mime) {
+            Preview::Image { img, .. } => {
+                let img = img.unwrap();
+                assert_eq!((img.width(), img.height()), (20, 10));
+            }
+            _ => panic!("expected an image preview"),
+        }
+    }
+
+    #[test]
+    fn cached_image_preview_stores_the_upright_raster() {
+        // The cached raster itself must be upright (correct by
+        // construction — the hit path must never re-apply rotation),
+        // and the hit's info line must report upright dims too.
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let path =
+            jpeg_with_orientation(tmp.path(), "rotated.jpg", image::RgbImage::new(20, 10), 6);
+        let mime: mime::Mime = "image/jpeg".parse().unwrap();
+        let modified = path.metadata().unwrap().modified().unwrap();
+
+        // miss: decode + store
+        cached_image_preview_in(Some(cache.path()), &path, modified, &mime);
+        let cached = raster_cache::lookup_in(
+            cache.path(),
+            &path,
+            mtime_secs(modified),
+            raster_cache::KIND_IMAGE,
+        )
+        .expect("miss must store the thumbnail");
+        assert_eq!((cached.width(), cached.height()), (10, 20), "cache upright");
+
+        // hit: still upright, info reports upright dims
+        match cached_image_preview_in(Some(cache.path()), &path, modified, &mime) {
+            Preview::Image { img, info } => {
+                let img = img.unwrap();
+                assert_eq!((img.width(), img.height()), (10, 20));
+                assert!(info.iter().any(|l| l.contains("10 × 20")), "{info:?}");
+            }
+            _ => panic!("expected an image preview"),
+        }
+    }
+
+    /// A bare 8×8 solid-color JPEG XL codestream (66 bytes), produced
+    /// once with libjxl 0.11.2 (`magick -size 8x8 xc:'#3060c0'
+    /// -define jxl:effort=1 tiny-8x8.jxl`) — jxl-oxide is decode-only,
+    /// so the fixture is embedded, like testdata/subset-noto-sans.ttf.
+    const TEST_JXL: &[u8] = include_bytes!("testdata/tiny-8x8.jxl");
+
+    #[test]
+    fn a_jxl_file_previews_as_a_native_image() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("tiny.jxl");
+        std::fs::write(&path, TEST_JXL).unwrap();
+        match FilePreview::new(path).preview {
+            Preview::Image { img, info } => {
+                let img = img.expect("jxl must decode natively");
+                assert_eq!((img.width(), img.height()), (8, 8));
+                assert!(info.iter().any(|l| l.contains("8 × 8")), "{info:?}");
+            }
+            other => panic!("expected an image preview, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_jxl_preview_round_trips_through_the_raster_cache() {
+        // JXL rides the existing ("image", _) arm: miss stores under
+        // KIND_IMAGE, hit serves the cached raster without the source.
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("tiny.jxl");
+        std::fs::write(&path, TEST_JXL).unwrap();
+        let mime: mime::Mime = "image/jxl".parse().unwrap();
+        let modified = path.metadata().unwrap().modified().unwrap();
+
+        cached_image_preview_in(Some(cache.path()), &path, modified, &mime);
+        assert!(
+            raster_cache::lookup_in(
+                cache.path(),
+                &path,
+                mtime_secs(modified),
+                raster_cache::KIND_IMAGE,
+            )
+            .is_some(),
+            "miss must store the thumbnail"
+        );
+        std::fs::remove_file(&path).unwrap();
+        match cached_image_preview_in(Some(cache.path()), &path, modified, &mime) {
+            Preview::Image { img, .. } => {
+                assert_eq!(img.unwrap().to_rgb8().dimensions(), (8, 8));
+            }
+            other => panic!("expected a cached image preview, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_broken_jxl_falls_back_to_text() {
+        // Garbage under the .jxl extension must land on the existing
+        // mediainfo/info fallback — no panic, no bare error panel.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("broken.jxl");
+        std::fs::write(&path, b"not a jxl codestream at all").unwrap();
+        match FilePreview::new(path).preview {
+            Preview::Text { lines } => assert!(!lines.is_empty(), "{lines:?}"),
+            other => panic!("expected the text fallback, got {other:?}"),
+        }
+    }
+
+    /// A valid ~600-byte 8×8 JPEG whose SOF0 dimensions are patched to
+    /// claim `w`×`h` — the classic decompression bomb: tiny on disk,
+    /// `w*h*3` bytes once decoded (zune-jpeg pads the missing scan
+    /// data, so without a limit the decode SUCCEEDS at full size).
+    fn jpeg_claiming(dir: &Path, w: u16, h: u16) -> PathBuf {
+        let mut jpeg = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::new(8, 8))
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpeg),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+        let sof = jpeg
+            .windows(2)
+            .position(|m| m == [0xFF, 0xC0])
+            .expect("encoder must emit a baseline SOF0");
+        // SOF0 payload: len(2) precision(1) height(2) width(2), big-endian.
+        jpeg[sof + 5..sof + 7].copy_from_slice(&h.to_be_bytes());
+        jpeg[sof + 7..sof + 9].copy_from_slice(&w.to_be_bytes());
+        let path = dir.join("bomb.jpg");
+        std::fs::write(&path, jpeg).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_jpeg_claiming_enormous_dims_is_rejected_not_decoded() {
+        // `ImageReader::decode()` reserved `total_bytes` against the
+        // default 512 MiB `max_alloc` BEFORE allocating; the
+        // `into_decoder()` + `from_decoder()` path must keep that
+        // guard — 30000×30000×3 = 2.7 GB declared from ~600 bytes on
+        // disk, reachable by plain cursor navigation.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = jpeg_claiming(tmp.path(), 30000, 30000);
+        let mime: mime::Mime = "image/jpeg".parse().unwrap();
+        assert!(
+            decode_raster(&path, &mime).is_none(),
+            "an over-budget decode must be refused, not materialized"
+        );
+        assert!(
+            upright_source_dims(&path, "jpeg").is_none(),
+            "the cache-hit dims probe must apply the same budget"
+        );
+    }
+
+    /// A hand-packed bare JXL codestream claiming a 16384×16384 image
+    /// (768 MiB decoded at RGB8) in 7 header bytes plus zero padding
+    /// for the frame section. After the FF 0A signature, LSB-first:
+    /// div8=0 (1 bit), height selector 3 (2 bits) + 16384-1 (30 bits),
+    /// ratio=1 → width=height (3 bits), ImageMetadata all_default=1
+    /// (1 bit). Larger dims trip jxl-oxide's own frame validation
+    /// (2^30 per dim / 2^40 area / TOC-entry cap) already at
+    /// `JxlDecoder::new` — 16384² passes the header parse and lands
+    /// squarely on OUR allocation budget instead.
+    fn jxl_claiming_enormous_dims(dir: &Path) -> PathBuf {
+        let mut acc: u64 = 0;
+        let mut n: u32 = 0;
+        for (val, bits) in [(0, 1), (3, 2), (16384u64 - 1, 30), (1, 3), (1, 1)] {
+            acc |= val << n;
+            n += bits;
+        }
+        let mut bytes = vec![0xFF, 0x0A];
+        while n > 0 {
+            bytes.push((acc & 0xFF) as u8);
+            acc >>= 8;
+            n = n.saturating_sub(8);
+        }
+        // Zero padding: the decoder parses the first frame header (all
+        // defaults) during init, before any pixel data is needed.
+        bytes.extend(std::iter::repeat(0u8).take(64));
+        let path = dir.join("bomb.jxl");
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_jxl_claiming_enormous_dims_is_rejected_not_decoded() {
+        // jxl-oxide's JxlDecoder starts with its AllocTracker at
+        // usize::MAX — unlike every ImageReader format it gets NO
+        // limit unless set_limits is called. The header-only dims
+        // probe is the red observable: without the budget it happily
+        // reports 16384 × 16384 (the decode path shares the same
+        // guard; a red decode would materialize the 768 MiB buffer
+        // before failing on the truncated stream).
+        let tmp = tempfile::tempdir().unwrap();
+        let path = jxl_claiming_enormous_dims(tmp.path());
+        assert!(
+            upright_source_dims(&path, "jxl").is_none(),
+            "an over-budget jxl must be refused"
+        );
+        let mime: mime::Mime = "image/jxl".parse().unwrap();
+        assert!(decode_raster(&path, &mime).is_none());
+    }
+
     /// Builds `dir/archive.zip` containing `files` via the zip crate.
     fn make_zip(dir: &Path, files: &[String]) -> PathBuf {
         use std::io::Write;
@@ -3329,14 +3819,32 @@ mod external_cmd_tests {
     }
 
     #[test]
-    fn ffmpeg_thumbnail_of_a_too_short_video_is_an_error() {
+    fn ffmpeg_thumbnail_of_a_short_video_produces_a_thumbnail() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
         let video = make_video(tmp.path(), "short.mp4", 1);
-        // The hardcoded 10s seek is past the end of this clip, so
-        // ffmpeg fails and writes no thumbnail - that must surface as
-        // Err (the caller then falls back to mediainfo) instead of a
-        // phantom image preview.
+        // The `thumbnail` filter picks a representative frame from the
+        // first batch — no seek, so even a 1s clip yields a real
+        // thumbnail (the old hardcoded 10s seek made every short video
+        // silently degrade to mediainfo text).
+        match ffmpeg_thumbnail(cache.path(), &video, 0).unwrap() {
+            Preview::Image { img, .. } => assert!(img.is_some(), "a real decoded thumbnail"),
+            _ => panic!("expected an image preview"),
+        }
+        // the vid120 entry landed, and no .part siblings remain
+        let name = raster_cache::entry_name(&video, 0, raster_cache::KIND_VIDEO);
+        assert_eq!(thumbnail_dir_entries_of(cache.path(), &video), vec![name]);
+    }
+
+    #[test]
+    fn ffmpeg_thumbnail_of_an_invalid_video_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let video = tmp.path().join("corrupt.mp4");
+        std::fs::write(&video, b"this is not a video container").unwrap();
+        // Genuine decode failure: ffmpeg writes no thumbnail — that
+        // must surface as Err (the caller then falls back to
+        // mediainfo) instead of a phantom image preview.
         assert!(ffmpeg_thumbnail(cache.path(), &video, 0).is_err());
         // the failed run leaves no .part file behind
         assert!(
@@ -3445,6 +3953,108 @@ mod external_cmd_tests {
         prune_older_than(tmp.path(), Duration::from_secs(7 * 24 * 60 * 60));
         assert!(!old.exists(), "the stale file must be pruned");
         assert!(fresh.exists(), "the fresh file must survive");
+    }
+
+    /// `sh -c <script>` with stdin null — the shape both real callers
+    /// (ffmpeg, pdftoppm/mutool) hand to `run_bounded`.
+    fn sh(script: &str) -> std::process::Command {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg(script).stdin(Stdio::null());
+        cmd
+    }
+
+    #[test]
+    fn run_bounded_kills_a_child_that_outlives_the_deadline() {
+        let started = std::time::Instant::now();
+        let result = run_bounded(&mut sh("sleep 30"), Duration::from_millis(200));
+        assert!(result.is_err(), "an overrunning child must surface as Err");
+        // The point is "not 30s": the child was killed at the deadline,
+        // not waited for. 2s is a generous CI margin.
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the call must return promptly after the deadline, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn run_bounded_returns_output_of_a_fast_child() {
+        let out = run_bounded(&mut sh("echo out; echo err 1>&2"), Duration::from_secs(10)).unwrap();
+        assert!(out.status.success());
+        assert_eq!(out.stdout, b"out\n");
+        assert_eq!(out.stderr, b"err\n");
+    }
+
+    #[test]
+    fn run_bounded_does_not_deadlock_on_a_stderr_flood() {
+        // 200 KiB of stderr — well past the 64 KiB pipe buffer. A naive
+        // try_wait poll without drain threads deadlocks here: the child
+        // blocks on the full pipe, the poll waits on the child, forever
+        // (well, until the deadline — but the output would be lost).
+        let out = run_bounded(
+            &mut sh("head -c 200000 /dev/zero | tr '\\0' x 1>&2"),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert!(out.status.success());
+        assert_eq!(out.stderr.len(), 200000);
+    }
+
+    #[test]
+    fn run_bounded_surfaces_a_nonzero_exit() {
+        // Policy: a non-zero exit is the caller's domain (both call
+        // sites branch on `out.status.success()`), not an Err here.
+        let out = run_bounded(&mut sh("exit 3"), Duration::from_secs(10)).unwrap();
+        assert!(!out.status.success());
+    }
+
+    #[test]
+    fn run_bounded_caps_retained_output_without_blocking_the_child() {
+        // Callers only use status, the written part file and a 3-line
+        // stderr tail — a flooding child must not grow an unbounded
+        // Vec for the whole deadline window. The cap must NOT stop
+        // the pipe from draining: 4 MiB is far past the 64 KiB pipe
+        // buffer, so a child that stopped being read would block and
+        // hit the deadline instead of exiting successfully.
+        let out = run_bounded(
+            &mut sh("head -c 4194304 /dev/zero"),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert!(out.status.success(), "the child must run to completion");
+        assert_eq!(
+            out.stdout.len() as u64,
+            DRAIN_CAP,
+            "retained output must stop at the cap"
+        );
+    }
+
+    #[test]
+    fn a_hung_probe_binary_reports_unavailable_within_the_deadline() {
+        // The availability probes (`ffmpeg -h`, `pdftoppm -v`) run
+        // BEFORE run_bounded gets involved — a wedged binary on PATH
+        // must read as "not usable", not hang the caller forever.
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = tmp.path().join("fake-ffmpeg");
+        // `exec`: the hung binary IS the child (a non-exec'd grandchild
+        // would keep the pipes open past the deadline kill).
+        std::fs::write(&fake, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        let mut perms = std::fs::metadata(&fake).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&fake, perms).unwrap();
+        let started = std::time::Instant::now();
+        let out = probe_bounded(fake.to_str().unwrap(), "-h", Duration::from_millis(200));
+        assert!(out.is_none(), "a hung probe must read as unavailable");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the probe must return at its deadline, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_missing_probe_binary_reports_unavailable() {
+        assert!(probe_bounded("/no/such/binary", "-h", Duration::from_secs(1)).is_none());
     }
 }
 

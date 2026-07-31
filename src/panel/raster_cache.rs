@@ -17,8 +17,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Kind tag for image thumbnails (bounded to 960×540 by the producer).
-pub(crate) const KIND_IMAGE: &str = "img960";
+/// Kind tag for image thumbnails (bounded to 960×540 by the producer,
+/// EXIF orientation applied — upright by construction). The `u` is the
+/// upright bump: a plain `img960` entry written by a pre-orientation
+/// build may hold a sideways raster the hit path would never
+/// re-rotate, so those entries must miss (they age out via the 30-day
+/// prune; the stale-sibling sweep only removes old *mtimes*).
+pub(crate) const KIND_IMAGE: &str = "img960u";
 /// Kind tag for ffmpeg video frames (`scale=120:-1`).
 pub(crate) const KIND_VIDEO: &str = "vid120";
 /// Kind tag for resvg SVG renders: aspect-fit to 960×540 (vectors are
@@ -90,7 +95,7 @@ pub(crate) fn lookup_in(
     kind: &str,
 ) -> Option<DynamicImage> {
     let entry = dir.join(entry_name(src, mtime_secs, kind));
-    match image::io::Reader::open(&entry).ok()?.decode() {
+    match image::ImageReader::open(&entry).ok()?.decode() {
         Ok(img) => Some(img),
         Err(e) => {
             log::debug!("removing corrupt cache entry {}: {e}", entry.display());
@@ -121,7 +126,7 @@ pub(crate) fn store_in(
     let part = dir.join(part_name(&name));
     let write = || -> anyhow::Result<()> {
         let mut out = BufWriter::new(File::create(&part)?);
-        // to_rgb8() is load-bearing: JPEG in image 0.24 rejects RGBA input.
+        // to_rgb8() is load-bearing: JPEG in image 0.24/0.25 rejects RGBA input.
         JpegEncoder::new_with_quality(&mut out, JPEG_QUALITY).encode_image(&img.to_rgb8())?;
         out.flush()?;
         Ok(())
@@ -570,7 +575,7 @@ mod tests {
         let name = entry_name(Path::new("/some/pic.png"), 1700000000, KIND_IMAGE);
         let (hash, rest) = name.split_at(16);
         assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
-        assert_eq!(rest, "-1700000000-img960.jpg");
+        assert_eq!(rest, "-1700000000-img960u.jpg");
         // same path+kind, different mtime → same hash prefix, different name
         let other = entry_name(Path::new("/some/pic.png"), 1700000001, KIND_IMAGE);
         assert_eq!(other[..17], name[..17]);

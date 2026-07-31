@@ -26,7 +26,17 @@ seahash = "4.1.0"
 flate2 = "1"
 fs_extra = "1.3.0"
 futures = "0.3.31"
-image = "0.24.9"
+# 0.25.8+ need cargo >=1.85 (moxcms/ravif/tiff edition2024); 0.25.5 is the
+# floor for jxl-oxide's `image` integration. default-features off drops
+# `rayon`, which must stay OFF: image 0.25's rayon feature references
+# `ravif?/threading`, and on cargo 1.83 that weak-dep mention alone pulls
+# an edition2024 avif-serialize into resolution (manifest parse failure).
+# Feature list = default-formats minus avif (decode is dav1d, a system C
+# library; the avif feature itself is encode-only anyway).
+image = { version = ">=0.25.5, <0.25.7", default-features = false, features = [
+    "jpeg", "png", "gif", "webp", "bmp", "ico", "tiff", "pnm", "tga",
+    "qoi", "hdr", "exr", "ff", "dds",
+] }
 # content sniffing (magic numbers) for get_mime_type; its cfb dep pulls
 # uuid, whose newest versions need rustc >=1.85 - pinned to 1.12.1 in
 # Cargo.lock.
@@ -36,6 +46,11 @@ infer = "0.22"
 # Declared directly for TIOCGWINSZ pixel geometry and the poll()-bounded
 # graphics-protocol probe read (crossterm 0.26 has no pixel-size API).
 libc = "0.2"
+# JPEG XL decode, pure Rust (no system C libraries). 0.12+ needs cargo
+# >=1.85 (jxl-coding is edition2024); cap below it. The `image` feature
+# provides the ImageDecoder integration (requires image >=0.25.5, the
+# floor pinned above); its default rayon feature stays on.
+jxl-oxide = { version = ">=0.11, <0.12", features = ["image"] }
 log = { version ="0.4.22", features = ["std"] }
 # lofty 0.22.3 bumps MSRV to 1.85; cap below it (its ogg_pager dep 0.7.1
 # does too - pinned to 0.7.0 in Cargo.lock).

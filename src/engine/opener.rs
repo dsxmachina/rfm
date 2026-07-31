@@ -372,7 +372,10 @@ impl OpenEngine {
     /// Creates a zip archive in `dir` and returns the path it was written to.
     pub fn zip(&self, items: Vec<PathBuf>, dir: &Path) -> Result<PathBuf> {
         info!("Creating zip archive from {} files", items.len());
-        require_binary("zip", "zip is not installed - install it to create zip archives")?;
+        require_binary(
+            "zip",
+            "zip is not installed - install it to create zip archives",
+        )?;
         let mut process = std::process::Command::new("zip");
         let archive_path = check_filename("output", dir, "zip")?;
         process.current_dir(dir);
@@ -388,7 +391,10 @@ impl OpenEngine {
     /// Creates a tar.gz archive in `dir` and returns the path it was written to.
     pub fn tar(&self, items: Vec<PathBuf>, dir: &Path) -> Result<PathBuf> {
         info!("Creating tar.gz archive from {} files", items.len());
-        require_binary("tar", "tar is not installed - install it to create tar archives")?;
+        require_binary(
+            "tar",
+            "tar is not installed - install it to create tar archives",
+        )?;
         let mut process = std::process::Command::new("tar");
         process.current_dir(dir);
         process.arg("-czf");
@@ -414,7 +420,10 @@ impl OpenEngine {
 
         match (mime.type_().as_str(), mime.subtype().as_str()) {
             ("application", "gzip") => {
-                require_binary("tar", "tar is not installed - install it to extract tar archives")?;
+                require_binary(
+                    "tar",
+                    "tar is not installed - install it to extract tar archives",
+                )?;
                 let mut process = std::process::Command::new("tar");
                 process
                     .current_dir(dir)
@@ -455,11 +464,7 @@ fn require_binary(name: &str, msg: &str) -> Result<()> {
 /// Runs a prepared archiver invocation and checks its exit status. On
 /// failure the partially written `archive_path` (if any) is removed and the
 /// exit code plus the first lines of stderr are surfaced in the error.
-fn run_archive_tool(
-    process: &mut Command,
-    tool: &str,
-    archive_path: Option<&Path>,
-) -> Result<()> {
+fn run_archive_tool(process: &mut Command, tool: &str, archive_path: Option<&Path>) -> Result<()> {
     let output = process.stdin(std::process::Stdio::null()).output()?;
     if output.status.success() {
         return Ok(());
@@ -571,6 +576,19 @@ mod mime_tests {
     fn an_unreadable_extensionless_path_falls_back_to_text_plain() {
         // Sniff read errors must never fail the caller.
         assert_eq!(get_mime_type(Path::new("/no/such/file")), mime::TEXT_PLAIN);
+    }
+
+    #[test]
+    fn jxl_extension_resolves_to_image_jxl() {
+        // Pins the .jxl -> image-arm routing. No special-case exists
+        // (or is needed): mime_guess 2.0.5 already maps jxl to
+        // image/jxl in its registry — this test guards against a
+        // future mime_guess bump losing the mapping. Nonexistent path
+        // proves no content was read.
+        assert_eq!(
+            get_mime_type(Path::new("/no/such/photo.jxl")).to_string(),
+            "image/jxl"
+        );
     }
 
     #[test]

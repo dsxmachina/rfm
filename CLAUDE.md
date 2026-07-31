@@ -281,6 +281,40 @@ OR "version" in output)); it renders into the raster cache under kind
 where `video_thumbnail_dir()` allows — `preview_cache = false` skips
 the tier entirely (an external render IS a write).
 
+Image decoding: `image` is pinned `>=0.25.5, <0.25.7` with
+`default-features = false` and an explicit format list (= defaults
+minus `avif`) — naive `image = "0.25"` resolves to 0.25.10 (rustc
+1.88) and 0.25.8 pulls edition2024 crates; cargo 1.83 fails at
+manifest parse. **image's `rayon` feature must stay OFF**: its
+`ravif?/threading` weak-dep reference alone drags edition2024
+`avif-serialize` into resolution and breaks the 1.83 build even with
+no avif feature enabled (verified feature-by-feature). JPEG XL is
+native via `jxl-oxide` (pinned `>=0.11, <0.12`, pure Rust; the
+`image` feature is its ImageDecoder integration and needs image
+≥ 0.25.5). AVIF/HEIC stay on the mediainfo fallback deliberately:
+the decoders (dav1d, libheif) are system C libraries. EXIF
+orientation is applied at decode time (`decode_upright`), so cached
+rasters are upright by construction — the cache-hit path never
+re-rotates (kind `img960u`; the `u` bump invalidates pre-orientation
+entries). All decodes go through `arm_alloc_limits`: the
+`into_decoder()`/`from_decoder()` split skips `decode()`'s
+512 MiB `Limits::default()` reserve, and jxl-oxide's tracker starts
+at usize::MAX — without the explicit reserve+set_limits a crafted
+small file claiming huge dimensions materializes a multi-GB buffer
+on cursor navigation (bomb-tested for both JPEG and JXL).
+
+External producers (ffmpeg, pdftoppm/mutool) run under `run_bounded`
+(`EXTERNAL_RENDER_DEADLINE`, 10s): kill-then-reap on overrun, capped
+pipe drains, caller removes its `.part` on Err. The availability
+probes (`ffmpeg -h`, `pdftoppm/mutool -v`) are bounded too
+(`PROBE_DEADLINE`) — an unbounded probe `wait()` wedges the preview
+path forever when the *binary's startup* hangs, defeating the render
+deadline. The video thumbnail filter is `scale=120:-1,thumbnail`
+(scale FIRST: `thumbnail` buffers its ~100-frame selection window at
+whatever resolution it is fed — at input resolution that is ~3 GB
+transient RSS for a 4K clip, at 120px it is negligible; selection on
+scaled frames is still representative).
+
 Diagnostics: every native-backend failure logs a debug-level
 "... failed, trying <tool>" line before falling back. With
 `--debug-socket` these land in the `log` history — a preview that
@@ -336,8 +370,9 @@ Debug socket `state` exposes
 Persistent image/video preview rasters in `$XDG_CACHE_HOME/rfm/thumbnails/`
 (`src/panel/raster_cache.rs`; created 0700 per the XDG basedir spec). The
 filename is the entire metadata: `<seahash(abs path):016x>-<mtime_secs>-
-<kind>.jpg`, with kinds `img960` (image thumbnails, bounded to 960×540 —
-never upscaled) and `vid120` (ffmpeg frames, `scale=120:-1`). Same
+<kind>.jpg`, with kinds `img960u` (image thumbnails, bounded to 960×540 —
+never upscaled — EXIF-upright by construction; the `u` is the
+orientation bump) and `vid120` (ffmpeg frames, `scale=120:-1`). Same
 path+mtime with two kinds coexist; a store's stale-sibling sweep deletes
 everything with the `<hash>-` prefix OUTSIDE the keep scope
 `<hash>-<mtime>-` (old mtimes of any kind, plus their orphaned `.part`s).
