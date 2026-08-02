@@ -305,36 +305,39 @@ impl Draw for FilePreview {
                             let cx = x_range.start.saturating_add(1);
                             queue!(stdout, cursor::MoveTo(cx, y), Print(" "), Print(line))?;
                         } else {
-                            for x in 0..width {
-                                let cx = x_range.start.saturating_add(x).saturating_add(1);
-                                queue!(stdout, cursor::MoveTo(cx, y), Print(" "),)?;
-                            }
+                            // One run per row, not per cell (see the Text arm).
+                            graphics::blank_cells(
+                                stdout,
+                                x_range.start.saturating_add(1)
+                                    ..x_range.start.saturating_add(1).saturating_add(width),
+                                y..y + 1,
+                            )?;
                         }
                     }
                 } else {
+                    // Clear the pane first (per row), then the message on top.
+                    graphics::blank_cells(
+                        stdout,
+                        x_range.start + 1..x_range.end,
+                        y_range.start + 1..y_range.end,
+                    )?;
                     queue!(
                         stdout,
                         cursor::MoveTo(x_range.start + 1, y_range.start + 1),
                         Print(format!("Failed to load image '{}'", path.display())),
                     )?;
-                    for y in y_range.start + 1..y_range.end {
-                        for x in x_range.start + 1..x_range.end {
-                            queue!(stdout, cursor::MoveTo(x, y), Print(" "),)?;
-                        }
-                    }
                 }
             }
             Preview::Text { lines } => {
-                // Print preview
-                let mut idx = 0;
-                // Clear entire panel
-                for x in x_range.start + 1..x_range.end {
-                    for y in y_range.clone() {
-                        queue!(stdout, cursor::MoveTo(x, y), Print(" "),)?;
-                    }
-                }
-                for line in lines.iter().take(height as usize) {
-                    let cy = idx + y_range.start;
+                // Clear entire panel — one full-width run per row, not a
+                // cursor-addressed space per cell. Over a sixel image preview
+                // each written cell forces xterm to erase the graphics beneath
+                // it; per-cell clears are ~60x slower (≈1.3 s vs ≈22 ms for a
+                // full pane) and produced the visible left-to-right wipe when
+                // navigating off an image.
+                graphics::blank_cells(stdout, x_range.start + 1..x_range.end, y_range.clone())?;
+                for (idx, line) in lines.iter().take(height as usize).enumerate() {
+                    let cy = idx as u16 + y_range.start;
                     let line = truncate_with_color_codes(line, width.saturating_sub(1) as usize);
                     queue!(
                         stdout,
@@ -343,7 +346,6 @@ impl Draw for FilePreview {
                         cursor::MoveTo(x_range.start + 2, cy),
                         Print(line)
                     )?;
-                    idx += 1;
                 }
             }
         }
@@ -503,29 +505,79 @@ fn mtime_secs(modified: SystemTime) -> u64 {
 
 /// Info footer for an image preview, built from the decode and file
 /// metadata instead of a mediainfo shell-out.
+///
+/// A structured `label : value` block in the spirit of mediainfo's
+/// output, but every field derives from the native decode. The
+/// modification time is intentionally omitted — the footer already shows
+/// it. Compression mode (lossy/lossless) and chroma subsampling, which
+/// mediainfo reported, need per-format bitstream parsing and are left
+/// out rather than shelled out for.
 fn image_info_lines(
     width: u32,
     height: u32,
     color: image::ColorType,
     byte_size: u64,
-    modified: SystemTime,
     subtype: &str,
 ) -> Vec<String> {
-    use time::OffsetDateTime;
-    let t = OffsetDateTime::from(modified);
+    let labeled = |label: &str, value: String| format!("{label:<12} : {value}");
+    let aspect = if height == 0 {
+        "-".to_string()
+    } else {
+        format!("{:.3}", f64::from(width) / f64::from(height))
+    };
     vec![
-        format!("{width} × {height}  {color:?}"),
-        format!("{subtype} · {}", crate::util::file_size_str(byte_size)),
-        format!(
-            "{}-{:02}-{:02} {:02}:{:02}:{:02}",
-            t.year(),
-            u8::from(t.month()),
-            t.day(),
-            t.hour(),
-            t.minute(),
-            t.second()
-        ),
+        labeled("Format", format_label(subtype)),
+        labeled("Dimensions", format!("{width} × {height}")),
+        labeled("Aspect ratio", aspect),
+        labeled("Color", color_label(color).to_string()),
+        labeled("Bit depth", bit_depth_label(color)),
+        labeled("File size", crate::util::file_size_str(byte_size)),
     ]
+}
+
+/// Display name for an image format from its mime subtype. Common
+/// formats get their conventional casing; anything else is upper-cased.
+fn format_label(subtype: &str) -> String {
+    match subtype {
+        "jpeg" => "JPEG".into(),
+        "png" => "PNG".into(),
+        "gif" => "GIF".into(),
+        "webp" => "WebP".into(),
+        "bmp" | "x-bmp" | "x-ms-bmp" => "BMP".into(),
+        "tiff" => "TIFF".into(),
+        "jxl" => "JPEG XL".into(),
+        "svg" | "svg+xml" => "SVG".into(),
+        "x-icon" | "vnd.microsoft.icon" => "ICO".into(),
+        "x-tga" | "x-targa" => "TGA".into(),
+        "x-portable-anymap" | "x-portable-pixmap" | "x-portable-graymap"
+        | "x-portable-bitmap" => "PNM".into(),
+        "vnd.radiance" | "x-hdr" => "HDR".into(),
+        "x-exr" => "OpenEXR".into(),
+        "x-qoi" | "qoi" => "QOI".into(),
+        other => other.to_uppercase(),
+    }
+}
+
+/// Channel layout label from the decoded color type.
+fn color_label(color: image::ColorType) -> &'static str {
+    match (color.has_color(), color.has_alpha()) {
+        (true, true) => "RGBA",
+        (true, false) => "RGB",
+        (false, true) => "Grayscale + Alpha",
+        (false, false) => "Grayscale",
+    }
+}
+
+/// Per-channel bit depth label; the float color types render as such.
+fn bit_depth_label(color: image::ColorType) -> String {
+    use image::ColorType::{Rgb32F, Rgba32F};
+    match color {
+        Rgb32F | Rgba32F => "32-bit float".to_string(),
+        _ => {
+            let per_channel = color.bits_per_pixel() / u16::from(color.channel_count());
+            format!("{per_channel}-bit")
+        }
+    }
 }
 
 /// Decode an image upright: the decoder's EXIF orientation (parsed
@@ -587,36 +639,33 @@ fn decode_raster(path: &Path, mime: &mime::Mime) -> Option<DynamicImage> {
 /// The same allocation budget as the decode path applies — a source
 /// whose decode would be refused reports no dims either (`None` lets
 /// the caller fall back to the cached raster).
-fn upright_source_dims(path: &Path, subtype: &str) -> Option<(u32, u32)> {
+fn upright_source_meta(path: &Path, subtype: &str) -> Option<(u32, u32, image::ColorType)> {
     use image::{metadata::Orientation, ImageDecoder};
     if subtype == "jxl" {
         let reader = std::io::BufReader::new(std::fs::File::open(path).ok()?);
         let mut decoder = jxl_oxide::integration::JxlDecoder::new(reader).ok()?;
         arm_alloc_limits(&mut decoder)?;
-        return Some(decoder.dimensions());
+        let (w, h) = decoder.dimensions();
+        return Some((w, h, decoder.color_type()));
     }
     let mut decoder = image::ImageReader::open(path).ok()?.into_decoder().ok()?;
     arm_alloc_limits(&mut decoder)?;
     let (w, h) = decoder.dimensions();
-    Some(
-        match decoder.orientation().unwrap_or(Orientation::NoTransforms) {
-            Orientation::Rotate90
-            | Orientation::Rotate270
-            | Orientation::Rotate90FlipH
-            | Orientation::Rotate270FlipH => (h, w),
-            _ => (w, h),
-        },
-    )
+    let color = decoder.color_type();
+    let (w, h) = match decoder.orientation().unwrap_or(Orientation::NoTransforms) {
+        Orientation::Rotate90
+        | Orientation::Rotate270
+        | Orientation::Rotate90FlipH
+        | Orientation::Rotate270FlipH => (h, w),
+        _ => (w, h),
+    };
+    Some((w, h, color))
 }
 
 /// Image arm: decode once, derive the info lines from the decode itself
 /// (dimensions are read before the thumbnail shrink).
 fn native_image_preview(path: &Path, mime: &mime::Mime) -> Preview {
-    let meta = path.metadata().ok();
-    let byte_size = meta.as_ref().map(|m| m.len()).unwrap_or_default();
-    let modified = meta
-        .and_then(|m| m.modified().ok())
-        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let byte_size = path.metadata().map(|m| m.len()).unwrap_or_default();
     match decode_raster(path, mime) {
         Some(img) => {
             let info = image_info_lines(
@@ -624,7 +673,6 @@ fn native_image_preview(path: &Path, mime: &mime::Mime) -> Preview {
                 img.height(),
                 img.color(),
                 byte_size,
-                modified,
                 mime.subtype().as_str(),
             );
             // thumbnail() UPscales smaller-than-bound sources; keep
@@ -693,22 +741,19 @@ fn cached_image_preview_in(
 }
 
 /// Info lines for a cache hit, without the full decode: original
-/// dimensions via [`upright_source_dims`] (no pixel decode, though the
+/// dimensions via [`upright_source_meta`] (no pixel decode, though the
 /// JPEG header parse still reads the source file — see there; falling
-/// back to the cached thumbnail's), color from the cached thumbnail
-/// (always Rgb8 after the JPEG round-trip — accepted display drift),
-/// size/mtime from metadata.
+/// back to the cached thumbnail's), color from the source header too
+/// (the cached JPEG thumbnail is always Rgb8 — reading the original's
+/// color type keeps Color/Bit depth accurate on a hit), size from
+/// metadata.
 /// The header dims are raw sensor dims — swapped for a transposing EXIF
 /// orientation so the hit path agrees with the (upright) miss path.
 fn cached_image_info(path: &Path, cached: &DynamicImage, subtype: &str) -> Vec<String> {
-    let (width, height) =
-        upright_source_dims(path, subtype).unwrap_or_else(|| (cached.width(), cached.height()));
-    let meta = path.metadata().ok();
-    let byte_size = meta.as_ref().map(|m| m.len()).unwrap_or_default();
-    let modified = meta
-        .and_then(|m| m.modified().ok())
-        .unwrap_or(SystemTime::UNIX_EPOCH);
-    image_info_lines(width, height, cached.color(), byte_size, modified, subtype)
+    let (width, height, color) = upright_source_meta(path, subtype)
+        .unwrap_or_else(|| (cached.width(), cached.height(), cached.color()));
+    let byte_size = path.metadata().map(|m| m.len()).unwrap_or_default();
+    image_info_lines(width, height, color, byte_size, subtype)
 }
 
 /// Render an SVG to a white-backed RGBA raster, aspect-fit to the same
@@ -785,19 +830,14 @@ fn inflate_svgz_bounded(data: Vec<u8>) -> Option<Vec<u8>> {
 }
 
 /// Info footer for a rendered SVG: the render's dimensions (the source
-/// has no pixel dims), source size and mtime.
+/// has no pixel dims) and source size.
 fn svg_info_lines(path: &Path, rendered: &DynamicImage) -> Vec<String> {
-    let meta = path.metadata().ok();
-    let byte_size = meta.as_ref().map(|m| m.len()).unwrap_or_default();
-    let modified = meta
-        .and_then(|m| m.modified().ok())
-        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let byte_size = path.metadata().map(|m| m.len()).unwrap_or_default();
     image_info_lines(
         rendered.width(),
         rendered.height(),
         rendered.color(),
         byte_size,
-        modified,
         "svg",
     )
 }
@@ -2777,17 +2817,17 @@ impl PreviewPanel {
             PreviewPanel::Dir(panel) => panel.draw_active(stdout, x_range, y_range, active),
             PreviewPanel::File(preview) => preview.draw(stdout, x_range, y_range),
             PreviewPanel::Empty => {
-                // Draw empty panel
-                for y in y_range {
+                // Draw empty panel. Clear per row, not per cell — per-cell is
+                // ~60x slower over a sixel image preview in xterm (see the
+                // FilePreview Text arm).
+                for y in y_range.clone() {
                     queue!(
                         stdout,
                         cursor::MoveTo(x_range.start, y),
                         print_vertical_bar(),
                     )?;
-                    for x in x_range.start + 1..x_range.end {
-                        queue!(stdout, cursor::MoveTo(x, y), Print(" "),)?;
-                    }
                 }
+                graphics::blank_cells(stdout, x_range.start + 1..x_range.end, y_range)?;
                 Ok(())
             }
         }
@@ -2867,18 +2907,12 @@ mod native_backend_tests {
 
     #[test]
     fn image_info_lines_contain_dimensions_format_and_size() {
-        let lines = image_info_lines(
-            64,
-            48,
-            image::ColorType::Rgb8,
-            1234,
-            SystemTime::UNIX_EPOCH,
-            "png",
-        );
+        let lines = image_info_lines(64, 48, image::ColorType::Rgb8, 1234, "png");
         let joined = lines.join("\n");
         assert!(joined.contains("64 × 48"), "{joined}");
-        assert!(joined.contains("Rgb8"), "{joined}");
-        assert!(joined.contains("png"), "{joined}");
+        assert!(joined.contains("PNG"), "{joined}");
+        assert!(joined.contains("RGB"), "{joined}");
+        assert!(joined.contains("8-bit"), "{joined}");
         assert!(joined.contains("1.2 K"), "{joined}");
     }
 
@@ -3267,7 +3301,7 @@ mod native_backend_tests {
             "an over-budget decode must be refused, not materialized"
         );
         assert!(
-            upright_source_dims(&path, "jpeg").is_none(),
+            upright_source_meta(&path, "jpeg").is_none(),
             "the cache-hit dims probe must apply the same budget"
         );
     }
@@ -3314,7 +3348,7 @@ mod native_backend_tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = jxl_claiming_enormous_dims(tmp.path());
         assert!(
-            upright_source_dims(&path, "jxl").is_none(),
+            upright_source_meta(&path, "jxl").is_none(),
             "an over-budget jxl must be refused"
         );
         let mime: mime::Mime = "image/jxl".parse().unwrap();

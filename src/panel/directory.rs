@@ -793,16 +793,18 @@ impl DirPanel {
             }
         }
 
-        for y in (y_range.start + y_offset)..y_range.end {
+        let tail = (y_range.start + y_offset)..y_range.end;
+        for y in tail.clone() {
             queue!(
                 stdout,
                 cursor::MoveTo(x_range.start, y),
                 print_vertical_bar(),
             )?;
-            for x in x_range.start + 1..x_range.end {
-                queue!(stdout, cursor::MoveTo(x, y), Print(" "),)?;
-            }
         }
+        // One full-width run per row, not a space per cell — per-cell clears
+        // are ~60x slower over a sixel image preview in xterm (see the
+        // FilePreview Text arm in preview.rs).
+        super::graphics::blank_cells(stdout, x_range.start + 1..x_range.end, tail)?;
 
         // Check if we are loading or not
         if self.loading {
