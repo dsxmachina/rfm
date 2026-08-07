@@ -570,7 +570,7 @@ impl ModalInput for Zoxide {
             }
             Err(e) => {
                 let err_msg = format!("failed to execute zoxide: {e}");
-                error!("{err_msg}");
+                warn!("{err_msg}");
                 self.path = err_msg;
             }
         }

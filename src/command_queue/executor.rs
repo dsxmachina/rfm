@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::process::Command;
 
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use tokio::sync::{mpsc, watch};
 
 use super::types::{QueueStatus, QueuedCommand};
@@ -112,11 +112,11 @@ impl CommandExecutor {
                             info!("Command '{}' completed successfully", name);
                         } else {
                             let code = output.status.code().unwrap_or(-1);
-                            error!("Command '{}' failed with exit code {}", name, code);
+                            warn!("Command '{}' failed with exit code {}", name, code);
                         }
                     }
                     Err(e) => {
-                        error!("Command '{}' failed to execute: {}", name, e);
+                        warn!("Command '{}' failed to execute: {}", name, e);
                     }
                 }
             }

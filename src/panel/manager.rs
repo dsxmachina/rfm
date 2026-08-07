@@ -7,7 +7,7 @@ use crossterm::{
     ExecutableCommand,
 };
 use futures::{FutureExt, StreamExt};
-use log::{debug, error, info, trace, warn, Level};
+use log::{debug, info, trace, warn, Level};
 use tokio::sync::watch;
 
 use crate::{
@@ -1191,7 +1191,7 @@ impl PanelManager {
                 // Record the visited directory with zoxide.
                 if let Some(cmd) = zoxide_add_dir(&dir) {
                     if let Err(e) = self.command_tx.send(cmd) {
-                        error!("Failed to queue command: {}", e);
+                        warn!("Failed to queue command: {}", e);
                     }
                 }
                 self.mark_dirty();
@@ -1202,11 +1202,11 @@ impl PanelManager {
                 // Change working directory so that child processes gets spawned
                 // from the currently active directory.
                 if let Err(e) = std::env::set_current_dir(&cwd) {
-                    error!("Failed to set working-directory for process: {e}");
+                    warn!("Failed to set working-directory for process: {e}");
                 }
                 if let Err(e) = self.opener.open(file) {
                     /* failed to open selected */
-                    error!("Opening failed: {e}");
+                    warn!("Opening failed: {e}");
                 }
                 self.mark_dirty();
                 self.unmark_left_right();
@@ -1230,7 +1230,7 @@ impl PanelManager {
         if let Some(path) = self.active_mut().jump(path, drive) {
             if let Some(cmd) = zoxide_add_dir(&path) {
                 if let Err(e) = self.command_tx.send(cmd) {
-                    error!("Failed to queue command: {}", e);
+                    warn!("Failed to queue command: {}", e);
                 }
             }
             self.mark_dirty();
@@ -1325,7 +1325,7 @@ impl PanelManager {
             // guard_trash contains any panic from the trash crate (it asserts
             // instead of erroring on odd states), so a delete can never crash.
             if let Err(e) = crate::undo::guard_trash(|| Ok(trash::delete(file)?)) {
-                error!("Cannot trash {}: {e}", file.display());
+                warn!("Cannot trash {}: {e}", file.display());
                 return None;
             }
             match capture_trashed(file) {
@@ -1344,11 +1344,11 @@ impl PanelManager {
         } else {
             if file.is_file() {
                 if let Err(e) = std::fs::remove_file(file) {
-                    error!("Cannot delete {}: {e}", file.display());
+                    warn!("Cannot delete {}: {e}", file.display());
                 }
             } else if file.is_dir() {
                 if let Err(e) = std::fs::remove_dir_all(file) {
-                    error!("Cannot delete {}: {e}", file.display());
+                    warn!("Cannot delete {}: {e}", file.display());
                 }
             }
             None
@@ -1374,7 +1374,7 @@ impl PanelManager {
         {
             Ok(f) => f,
             Err(e) => {
-                error!("Failed to create temp file for bulkrename: {e}");
+                warn!("Failed to create temp file for bulkrename: {e}");
                 return;
             }
         };
@@ -1396,7 +1396,7 @@ impl PanelManager {
             file.flush()?;
             Ok(())
         })() {
-            error!("Failed to write temp file for bulkrename: {e}");
+            warn!("Failed to write temp file for bulkrename: {e}");
             return;
         }
 
@@ -1412,7 +1412,7 @@ impl PanelManager {
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    error!("Failed to open editor: {e}");
+                    warn!("Failed to open editor: {e}");
                     return;
                 }
             }
@@ -1421,7 +1421,7 @@ impl PanelManager {
             let new_content = match std::fs::read_to_string(&temp_path) {
                 Ok(c) => c,
                 Err(e) => {
-                    error!("Failed to read temp file after editing: {e}");
+                    warn!("Failed to read temp file after editing: {e}");
                     return;
                 }
             };
@@ -1441,7 +1441,7 @@ impl PanelManager {
 
             // Validate: line count must match
             if new_names.len() != original_names.len() {
-                error!(
+                warn!(
                     "Bulkrename: line count mismatch ({} vs {}). Lines must not be added or removed.",
                     new_names.len(),
                     original_names.len()
@@ -1455,7 +1455,7 @@ impl PanelManager {
                     file.flush()?;
                     Ok(())
                 })() {
-                    error!("Failed to rewrite temp file: {e}");
+                    warn!("Failed to rewrite temp file: {e}");
                     return;
                 }
                 continue;
@@ -1503,7 +1503,7 @@ impl PanelManager {
                     file.flush()?;
                     Ok(())
                 })() {
-                    error!("Failed to rewrite temp file with errors: {e}");
+                    warn!("Failed to rewrite temp file with errors: {e}");
                     return;
                 }
                 continue;
@@ -1552,7 +1552,7 @@ impl PanelManager {
             // Execute temp renames first
             for (from, to) in &temp_renames {
                 if let Err(e) = std::fs::rename(from, to) {
-                    error!(
+                    warn!(
                         "Failed to rename {} -> {}: {e}",
                         from.display(),
                         to.display()
@@ -1581,7 +1581,7 @@ impl PanelManager {
                         success_count += 1;
                     }
                     Err(e) => {
-                        error!("Failed to rename to '{}': {e}", new_name);
+                        warn!("Failed to rename to '{}': {e}", new_name);
                     }
                 }
             }
@@ -1916,7 +1916,7 @@ impl PanelManager {
                 if n > 0 {
                     match crate::undo::guard_trash(|| Ok(trash::os_limited::restore_all(live)?)) {
                         Ok(()) => info!("wiederhergestellt: {n} Element(e) aus dem Papierkorb"),
-                        Err(e) => error!("Wiederherstellen fehlgeschlagen: {e}"),
+                        Err(e) => warn!("Wiederherstellen fehlgeschlagen: {e}"),
                     }
                 }
                 // Restore from the trash view is intentionally not recorded on
@@ -2053,7 +2053,7 @@ impl PanelManager {
                 // Prevent overwriting existing files
                 warn!("Cannot rename: '{}' already exists", to_path.display());
             } else if let Err(e) = std::fs::rename(&from, &to_path) {
-                error!("{e}");
+                warn!("{e}");
             } else {
                 let mut tx = Transaction::new(format!(
                     "rename {} → {to}",
@@ -2097,7 +2097,7 @@ impl PanelManager {
         // undo would `remove` the user's pre-existing file/dir (data loss).
         let existed = target.exists();
         if let Err(e) = create_fn(target.clone()) {
-            error!("{e}");
+            warn!("{e}");
         } else if !existed {
             let mut tx = Transaction::new(format!("create {}", name.trim()));
             tx.push(FsChange::Create {
@@ -2130,7 +2130,7 @@ impl PanelManager {
             UndoOutcome::Blocked(reason) => {
                 warn!("kann nicht rückgängig gemacht werden: {reason}")
             }
-            UndoOutcome::Failed(e) => error!("undo fehlgeschlagen: {e}"),
+            UndoOutcome::Failed(e) => warn!("undo fehlgeschlagen: {e}"),
         }
         self.reload_all();
         self.mark_dirty();
@@ -2142,7 +2142,7 @@ impl PanelManager {
             UndoOutcome::Done(label) => info!("wiederhergestellt: {label}"),
             UndoOutcome::Empty => info!("nichts wiederherzustellen"),
             UndoOutcome::Blocked(reason) => warn!("redo blockiert: {reason}"),
-            UndoOutcome::Failed(e) => error!("redo fehlgeschlagen: {e}"),
+            UndoOutcome::Failed(e) => warn!("redo fehlgeschlagen: {e}"),
         }
         self.reload_all();
         self.mark_dirty();
@@ -2338,14 +2338,14 @@ impl PanelManager {
                                                 Ok(Some(change)) => tx.push(change),
                                                 Ok(None) => {}
                                                 Err(e) => {
-                                                    error!("Failed to move {}: {e}", file.display())
+                                                    warn!("Failed to move {}: {e}", file.display())
                                                 }
                                             }
                                         } else {
                                             match copy_item(file, &current_path) {
                                                 Ok(change) => tx.push(change),
                                                 Err(e) => {
-                                                    error!("Failed to copy {}: {e}", file.display())
+                                                    warn!("Failed to copy {}: {e}", file.display())
                                                 }
                                             }
                                         }
@@ -2360,7 +2360,7 @@ impl PanelManager {
                             let items = self.marked_or_selected();
                             let dir = self.active().center.panel().path().to_path_buf();
                             if let Err(e) = std::env::set_current_dir(&dir) {
-                                error!("Failed to set working-directory for process: {e}");
+                                warn!("Failed to set working-directory for process: {e}");
                             }
                             let archive = self.opener.zip(items, &dir);
                             self.record_archive("zip", &dir, archive);
@@ -2369,7 +2369,7 @@ impl PanelManager {
                             let items = self.marked_or_selected();
                             let dir = self.active().center.panel().path().to_path_buf();
                             if let Err(e) = std::env::set_current_dir(&dir) {
-                                error!("Failed to set working-directory for process: {e}");
+                                warn!("Failed to set working-directory for process: {e}");
                             }
                             let archive = self.opener.tar(items, &dir);
                             self.record_archive("tar", &dir, archive);
@@ -2384,7 +2384,7 @@ impl PanelManager {
                             if let Some(archive) = archive {
                                 let dir = self.active().center.panel().path().to_path_buf();
                                 if let Err(e) = std::env::set_current_dir(&dir) {
-                                    error!("Failed to set working-directory for process: {e}");
+                                    warn!("Failed to set working-directory for process: {e}");
                                 }
                                 if let Err(e) = self.opener.extract(archive, &dir) {
                                     warn!("Failed to extract archive: {e}");
@@ -2415,7 +2415,7 @@ impl PanelManager {
                                 // Run interactively in foreground
                                 info!("Running interactive command '{}': {}", name, expanded_cmd);
                                 if let Err(e) = std::env::set_current_dir(&working_dir) {
-                                    error!("Failed to set working directory: {e}");
+                                    warn!("Failed to set working directory: {e}");
                                 }
                                 // TODO: Implement terminal suspend/resume for interactive commands
                                 // For now, just run it blocking
@@ -2430,14 +2430,14 @@ impl PanelManager {
                                             info!("Command '{}' completed successfully", name);
                                         } else {
                                             let code = status.code().unwrap_or(-1);
-                                            error!(
+                                            warn!(
                                                 "Command '{}' failed with exit code {}",
                                                 name, code
                                             );
                                         }
                                     }
                                     Err(e) => {
-                                        error!("Failed to run command '{}': {}", name, e);
+                                        warn!("Failed to run command '{}': {}", name, e);
                                     }
                                 }
                             } else {
@@ -2449,7 +2449,7 @@ impl PanelManager {
                                     working_dir,
                                 };
                                 if let Err(e) = self.command_tx.send(queued) {
-                                    error!("Failed to queue command: {}", e);
+                                    warn!("Failed to queue command: {}", e);
                                 }
                             }
                             self.unmark_all_items();
