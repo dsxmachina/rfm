@@ -120,6 +120,17 @@ Facts this section relies on (verified in source):
   update. TRACE lines `watching <path>` / `unwatching <path>` and
   `panel-update:` lines appear in the socket log. `await-idle` does NOT
   guarantee the notify event has arrived — poll `entries` (bounded) instead.
+- Which notify events reload which pane is decided by the pure
+  `reload_on_event(kind, reload_on_modify)` (`src/panel/mod.rs`, unit-tested):
+  `Create` / `Remove` **and rename** reload every pane; plain content/metadata
+  writes reload only the preview. The rename case is the subtle one — a file
+  *moved* into or out of a directory (or renamed in place) does NOT arrive as
+  `Create`/`Remove`; inotify reports it as `MOVED_TO`/`MOVED_FROM`, which the
+  notify crate maps to `Modify(ModifyKind::Name(_))`. Historically the listing
+  panes ignored all `Modify` events, so a moved-away file lingered as a phantom
+  entry while its preview went empty (fixed by treating `Modify(Name)` as
+  structural). Step 10.8b guards this; 10.8/10.12 (touch/rm) only cover the
+  `Create`/`Remove` kinds.
 
 **Section helper — poll a socket condition** (never bare-sleep-and-hope):
 
@@ -299,6 +310,56 @@ disappears. Screen and `entries` must agree at both checkpoints — `entries`
 updated but screen stale is a render-path bug; both stale is a
 watcher/DirManager bug (note which, per the README diagnosis rule).
 
+### 10.8b — Watcher: external MOVE (rename) in and out — the `Modify(Name)` kind
+
+Companion to 10.8. A **move** is not a create/delete: inotify reports it as
+`MOVED_TO` / `MOVED_FROM`, which notify maps to `Modify(Name(_))`, a different
+event kind than 10.8's `Create`/`Remove`. This step exists because that kind
+was once dropped by the listing panes — a file moved away lingered as a phantom
+entry while its preview went empty (the exact real-world report that motivated
+the `reload_on_event` fix). 10.8 passing does NOT imply this passes.
+
+**Critical harness requirement — same filesystem.** `mv` is a rename *only*
+within one filesystem; across a filesystem boundary `mv` degrades to
+copy-then-unlink, which emits `Create`+`Remove` and would make this step pass
+**even against the bug**, defeating its purpose. Stage the file on the same fs
+as `$FIXTURE` (both under `/tmp` via `mktemp` here) and **not** inside `$FIXTURE`
+or `$PARENT` (the left pane watches `$PARENT` — staging there would pollute it):
+
+```bash
+STAGE=$(mktemp -d)                     # same fs as $FIXTURE (both /tmp), unwatched
+printf 'moved\n' > "$STAGE/moved-in.txt"
+```
+
+**Action:** record the pre-move selection first
+(`SEL=$(echo state | timeout 12 socat - UNIX-CONNECT:$SOCK | jq -r .selection)`).
+Then move the staged file **into** the watched dir (a rename, not a copy):
+`mv "$STAGE/moved-in.txt" "$FIXTURE/moved-in.txt"`. Poll for arrival:
+`poll "echo 'entries center' | socat - UNIX-CONNECT:$SOCK | grep -qF 'moved-in.txt'"`,
+one `await-idle`, `capture-pane`. Then move it back **out**:
+`mv "$FIXTURE/moved-in.txt" "$STAGE/moved-in.txt"`, poll for disappearance
+`poll "! (echo 'entries center' | socat - UNIX-CONNECT:$SOCK | grep -qF 'moved-in.txt')"`,
+`await-idle`, `state`, `capture-pane`.
+**Expect (socket):** `entries center` gains `moved-in.txt` within the poll
+window (≤10 s; typically <1 s) — **this is the assertion that fails against the
+bug** (the move-in is a `Modify(Name(To))` the listing would have ignored, so
+the file never appears) — then loses it after the move-out. Selection preserved
+across both events (`state.selection == $SEL` before and after; its
+`selected_idx` may shift while the extra file exists). `log` shows fresh TRACE
+`panel-update:` lines for both events, and NO stale-listing mismatch.
+**Expect (screen):** `moved-in.txt` appears in the center column, then
+disappears; the pre-move selection stays highlighted. Belief and screen must
+agree at both checkpoints (both stale = the watcher/`reload_on_event`
+regression; `entries` fresh but screen stale = render path).
+**Note (in-place rename).** The same `Modify(Name)` kind also fires for a rename
+*within* the dir (`mv "$FIXTURE/plain.txt" "$FIXTURE/plain2.txt"`): the old name
+must vanish and the new appear in one update. Not asserted as a separate step to
+keep the fixture net-zero for 10.14, but it is the same code path — spot-check it
+manually if `reload_on_event` is ever touched.
+**Teardown of this step:** `rm -rf "$STAGE"` (the file was moved back into it).
+Fixture is net-zero — `moved-in.txt` is gone, so 10.14's integrity sweep is
+unaffected.
+
 ### 10.9 — Descend into "a directory with spaces" (+ zoxide add escaping)
 
 **Action:** `tmux send-keys -t $SESSION g g`, `await-idle` (selection back to
@@ -436,6 +497,8 @@ mention it in the run report.
 - Backtick and newline characters in file names (only space, `&`, `$()`
   tested).
 - Watcher behavior for the left pane / non-focused tabs, and watcher event
-  storms (rapid create/delete loops).
+  storms (rapid create/delete loops). Rename detection (`Modify(Name)`) is now
+  covered for the **center** pane in 10.8b; the same event reaching the **left**
+  pane (move a sibling of the cwd) and a **non-focused tab** is still untested.
 - `error.log` post-mortem content after the intentional `failer` error
   (would require quitting rfm mid-section).

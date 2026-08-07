@@ -4,7 +4,7 @@ use crossterm::{
     terminal::{self, Clear, ClearType},
     QueueableCommand, Result,
 };
-use log::{debug, error, info, trace, warn};
+use log::{debug, info, trace, warn};
 use notify::{RecommendedWatcher, Watcher};
 use parking_lot::Mutex;
 use std::{
@@ -188,6 +188,36 @@ fn unwatch_path<P: AsRef<Path>>(watcher: &mut RecommendedWatcher, path: P) {
     }
 }
 
+/// Decides whether a file-watcher event should trigger a panel reload.
+///
+/// `Create` / `Remove` always change the set of entries, so every panel
+/// reloads on them.
+///
+/// A rename arrives from `notify` as `Modify(Name(_))` (inotify
+/// `IN_MOVED_FROM` / `IN_MOVED_TO`). Even though it lives under the `Modify`
+/// umbrella, a rename is a *structural* change (a move): an entry appears in
+/// or disappears from the directory. So the listing panes (left/center) must
+/// reload on it too — otherwise a file moved out by another tool lingers as a
+/// phantom entry, and a file moved in never shows up.
+///
+/// Plain content/metadata modifications (`Modify(Data | Metadata)`) are NOT
+/// structural — the set of entries is unchanged — so there is still no reload
+/// on (non-rename) modify for center and left. Only the preview pane
+/// (`reload_on_modify == true`) reflects those, so that a previewed file's
+/// live content stays fresh without reloading the whole listing on every
+/// write (which would be a reload storm for an actively written file).
+fn reload_on_event(kind: &notify::EventKind, reload_on_modify: bool) -> bool {
+    use notify::event::ModifyKind;
+    use notify::EventKind;
+    match kind {
+        EventKind::Create(_)
+        | EventKind::Remove(_)
+        | EventKind::Modify(ModifyKind::Name(_)) => true,
+        EventKind::Modify(_) => reload_on_modify,
+        _ => false,
+    }
+}
+
 // Helper function to call 'watch' on some watcher
 fn watch_path<P: AsRef<Path>>(watcher: &mut RecommendedWatcher, path: P) {
     let path = path.as_ref();
@@ -246,24 +276,12 @@ impl<PanelType: BasePanel> ManagedPanel<PanelType> {
         let watcher = notify::recommended_watcher(
             move |res: std::result::Result<notify::Event, notify::Error>| {
                 if let Ok(event) = res {
-                    match event.kind {
-                        notify::EventKind::Create(_) | notify::EventKind::Remove(_) => {
-                            let state = watcher_state.lock().clone();
-                            info!("Updating: {}", state.path().display());
-                            if let Err(e) = watcher_tx.send(PanelUpdate { state }) {
-                                error!("{e}");
-                            }
+                    if reload_on_event(&event.kind, reload_on_modify) {
+                        let state = watcher_state.lock().clone();
+                        info!("Updating: {}", state.path().display());
+                        if let Err(e) = watcher_tx.send(PanelUpdate { state }) {
+                            debug!("panel watcher send failed (receiver gone): {e}");
                         }
-                        notify::EventKind::Modify(_) => {
-                            if reload_on_modify {
-                                let state = watcher_state.lock().clone();
-                                info!("Updating: {}", state.path().display());
-                                if let Err(e) = watcher_tx.send(PanelUpdate { state }) {
-                                    error!("{e}");
-                                }
-                            }
-                        }
-                        _ => (),
                     }
                 }
             },
@@ -457,5 +475,70 @@ impl MillerColumns {
         let left = 0..mid; // left half
         let right = (mid + 1)..w; // right half (mid column = divider)
         Some((left, right, mid)) // mid = divider column x
+    }
+}
+
+#[cfg(test)]
+mod reload_on_event_tests {
+    use super::reload_on_event;
+    use notify::event::{
+        CreateKind, DataChange, MetadataKind, ModifyKind, RemoveKind, RenameMode,
+    };
+    use notify::EventKind;
+
+    #[test]
+    fn create_and_remove_always_reload() {
+        for reload_on_modify in [false, true] {
+            assert!(reload_on_event(
+                &EventKind::Create(CreateKind::File),
+                reload_on_modify
+            ));
+            assert!(reload_on_event(
+                &EventKind::Remove(RemoveKind::File),
+                reload_on_modify
+            ));
+        }
+    }
+
+    #[test]
+    fn rename_is_structural_and_reloads_even_without_reload_on_modify() {
+        // A move in/out of the directory (inotify MOVED_FROM / MOVED_TO)
+        // surfaces as Modify(Name(_)) — it must reload the listing panes
+        // (reload_on_modify == false) too, or the entry goes stale.
+        for mode in [
+            RenameMode::From,
+            RenameMode::To,
+            RenameMode::Both,
+            RenameMode::Any,
+            RenameMode::Other,
+        ] {
+            assert!(
+                reload_on_event(&EventKind::Modify(ModifyKind::Name(mode)), false),
+                "rename mode {mode:?} should reload the left/center panes"
+            );
+        }
+    }
+
+    #[test]
+    fn content_and_metadata_modify_reload_only_when_opted_in() {
+        // Non-structural: gated on reload_on_modify (true only for the preview).
+        let non_structural = [
+            EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+            EventKind::Modify(ModifyKind::Metadata(MetadataKind::WriteTime)),
+        ];
+        for kind in non_structural {
+            assert!(!reload_on_event(&kind, false)); // left/center: no reload
+            assert!(reload_on_event(&kind, true)); // preview: reload
+        }
+    }
+
+    #[test]
+    fn other_events_never_reload() {
+        for reload_on_modify in [false, true] {
+            assert!(!reload_on_event(&EventKind::Access(
+                notify::event::AccessKind::Read
+            ), reload_on_modify));
+            assert!(!reload_on_event(&EventKind::Any, reload_on_modify));
+        }
     }
 }
