@@ -1000,8 +1000,14 @@ impl PanelManager {
         self.draw_footer()?;
         self.draw_header()?;
         self.draw_panels()?;
-        self.draw_console()?;
+        // Log before the console overlay: the console overlay is the
+        // topmost layer AND it parks the visible text cursor at its input
+        // line via `cursor::Show`. `draw_log` ends with its own `MoveTo`
+        // down in the bottom log region, so drawing it after the console
+        // would strand the blinking cursor on the log line instead of the
+        // input. Keeping the overlay last fixes both z-order and cursor.
         self.draw_log()?;
+        self.draw_console()?;
         // Reconcile: drop any graphics placement no draw claimed this
         // frame (selection moved, overlay opened, split toggled, ...).
         // Kitty is deleted by id; sixel cells were already repainted by

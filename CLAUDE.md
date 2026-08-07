@@ -167,8 +167,11 @@ one); `Q` / `exit` always quit outright.
 
 Event-driven, not a render loop: the select loop draws only when an event
 sets the single `dirty` bit (PanelManager). `draw()` repaints everything
-in call order (footer → header → panels → console → log, overlay last —
-that ordering *is* the z-order) and clears the bit. No per-element dirty
+in call order (footer → header → panels → log → console, overlay last —
+that ordering *is* the z-order) and clears the bit. The console overlay
+draws last on purpose: it parks the visible text cursor at its input line
+(`cursor::Show`), and `draw_log` ends with its own `MoveTo` in the bottom
+log region — drawing it after the console would strand the cursor there. No per-element dirty
 flags: any state change calls `mark_dirty()`, so panels can't go stale.
 Full repaint is cheap because every draw is a blit except the image
 preview, whose resize is cached (FilePreview, keyed on cell dimensions).
