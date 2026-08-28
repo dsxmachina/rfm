@@ -33,6 +33,7 @@ const PROBE_BUDGET: Duration = Duration::from_millis(250);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphicsProtocol {
     Kitty,
+    Iterm2,
     Sixel,
     HalfBlock,
 }
@@ -43,6 +44,7 @@ impl GraphicsProtocol {
     pub fn name(&self) -> &'static str {
         match self {
             GraphicsProtocol::Kitty => "kitty",
+            GraphicsProtocol::Iterm2 => "iterm2",
             GraphicsProtocol::Sixel => "sixel",
             GraphicsProtocol::HalfBlock => "half-block",
         }
@@ -170,6 +172,7 @@ pub fn resolve(
 ) -> GraphicsProtocol {
     match choice {
         ImageProtocolChoice::Kitty => GraphicsProtocol::Kitty,
+        ImageProtocolChoice::Iterm2 => GraphicsProtocol::Iterm2,
         ImageProtocolChoice::Sixel => GraphicsProtocol::Sixel,
         ImageProtocolChoice::HalfBlock => GraphicsProtocol::HalfBlock,
         ImageProtocolChoice::Auto => {
@@ -422,6 +425,23 @@ pub fn emit_sixel(
     });
     *CLAIMED.lock() = Some(key);
     Ok(Emitted::Transmitted)
+}
+
+/// Transmit `rgb` via the iTerm2 inline-images protocol (OSC 1337 File=).
+///
+/// Stub: the real emitter lands with the protocol arm's follow-up; the
+/// error degrades this frame to the half-block loop like any emit error.
+pub fn emit_iterm2(
+    _w: &mut impl Write,
+    _key: EmitKey,
+    _rgb: &image::RgbImage,
+    _cols: u16,
+    _rows: u16,
+) -> io::Result<Emitted> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "iterm2 emitter: not yet implemented",
+    ))
 }
 
 /// Base64 payload chunk size in chars (kitty protocol limit).
@@ -752,7 +772,7 @@ fn init_from(
         ImageProtocolChoice::HalfBlock => {
             (GraphicsProtocol::HalfBlock, geometry, "explicit config")
         }
-        ImageProtocolChoice::Kitty | ImageProtocolChoice::Sixel => {
+        ImageProtocolChoice::Kitty | ImageProtocolChoice::Iterm2 | ImageProtocolChoice::Sixel => {
             if geometry.is_none() {
                 // The only stdin read for an explicit choice: fetch the
                 // pixel size when the ioctl reported zeros.
@@ -963,6 +983,7 @@ mod tests {
         };
         for (choice, want) in [
             (ImageProtocolChoice::Kitty, GraphicsProtocol::Kitty),
+            (ImageProtocolChoice::Iterm2, GraphicsProtocol::Iterm2),
             (ImageProtocolChoice::Sixel, GraphicsProtocol::Sixel),
             (ImageProtocolChoice::HalfBlock, GraphicsProtocol::HalfBlock),
         ] {
@@ -1239,6 +1260,7 @@ mod tests {
     #[test]
     fn protocol_names_match_config_values() {
         assert_eq!(GraphicsProtocol::Kitty.name(), "kitty");
+        assert_eq!(GraphicsProtocol::Iterm2.name(), "iterm2");
         assert_eq!(GraphicsProtocol::Sixel.name(), "sixel");
         assert_eq!(GraphicsProtocol::HalfBlock.name(), "half-block");
     }

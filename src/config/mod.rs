@@ -74,6 +74,7 @@ pub enum ImageProtocolChoice {
     #[default]
     Auto,
     Kitty,
+    Iterm2,
     Sixel,
     HalfBlock,
 }
@@ -93,9 +94,9 @@ pub struct GeneralConfig {
     /// install stays pure-Rust — PDFs then get the native text tier.
     #[serde(default)]
     pub pdf_render: bool,
-    /// Graphics protocol for image previews: auto | kitty | sixel |
-    /// half-block. Defaults to `auto` (detect at startup, fall back to
-    /// half-blocks on any uncertainty).
+    /// Graphics protocol for image previews: auto | kitty | iterm2 |
+    /// sixel | half-block. Defaults to `auto` (detect at startup, fall
+    /// back to half-blocks on any uncertainty).
     #[serde(default)]
     pub image_protocol: ImageProtocolChoice,
     /// Rate limit interval for preview updates in milliseconds
@@ -145,6 +146,7 @@ mod defaults_tests {
         for (raw, want) in [
             ("auto", ImageProtocolChoice::Auto),
             ("kitty", ImageProtocolChoice::Kitty),
+            ("iterm2", ImageProtocolChoice::Iterm2),
             ("sixel", ImageProtocolChoice::Sixel),
             ("half-block", ImageProtocolChoice::HalfBlock),
         ] {
