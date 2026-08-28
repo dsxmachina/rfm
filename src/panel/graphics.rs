@@ -1277,6 +1277,25 @@ mod tests {
     }
 
     #[test]
+    fn init_iterm2_pin_with_geometry_never_probes() {
+        // Explicit iterm2 pin with usable ioctl geometry: no stdin read.
+        let (proto, geo, _reason) = init_from(
+            ImageProtocolChoice::Iterm2,
+            &|_| None,
+            &mut || Some((100, 50, 800, 1000)),
+            &mut |_| panic!("probe must not run for an explicit choice with geometry"),
+        );
+        assert_eq!(proto, GraphicsProtocol::Iterm2);
+        assert_eq!(
+            geo,
+            Some(CellGeometry {
+                cell_w: 8,
+                cell_h: 20
+            })
+        );
+    }
+
+    #[test]
     fn init_auto_env_hit_skips_probe() {
         let env = env_of(&[("TMUX", "/tmp/tmux-1000/default,42,0")]);
         let (proto, _geo, _reason) = init_from(
@@ -1332,6 +1351,20 @@ mod tests {
             &mut |_| Vec::new(),
         );
         assert_eq!(proto, GraphicsProtocol::Kitty);
+        assert_eq!(geo, None);
+    }
+
+    #[test]
+    fn init_iterm2_pin_without_geometry_keeps_iterm2() {
+        // iTerm2 sizes in cells (width=/height=), so like kitty it survives
+        // missing pixel geometry — the sixel degrade must stay sixel-only.
+        let (proto, geo, _reason) = init_from(
+            ImageProtocolChoice::Iterm2,
+            &|_| None,
+            &mut || None,
+            &mut |_| Vec::new(), // probe answers nothing
+        );
+        assert_eq!(proto, GraphicsProtocol::Iterm2);
         assert_eq!(geo, None);
     }
 
