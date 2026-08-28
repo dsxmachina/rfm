@@ -27,6 +27,10 @@ mod sixel;
 
 /// Wall-clock budget for the whole startup probe (D1).
 const PROBE_BUDGET: Duration = Duration::from_millis(250);
+/// Silence required to end the post-fence drain in [`read_probe_replies`]:
+/// long enough to bridge the observed ~90 ms gaps between multiplexer
+/// chatter fragments, short enough to keep probing startups snappy.
+const PROBE_QUIET: Duration = Duration::from_millis(100);
 
 /// The graphics protocol the preview column draws images with.
 ///
@@ -897,10 +901,27 @@ fn read_probe_replies(fd: RawFd, deadline: Instant) -> Vec<u8> {
             PollResult::Error => break,
         }
     }
-    // Final zero-timeout drain of late/partial reply bytes.
-    while matches!(poll_in(fd, 0), PollResult::Ready) {
-        if !read_chunk(fd, &mut buf) {
-            break;
+    // Quiet-window drain of late/partial reply bytes. The DA1 fence means
+    // OUR replies are in, not that the line is silent: a multiplexer's own
+    // startup queries to the outer terminal produce replies that dribble in
+    // for a few hundred ms after attach, and tmux leaks fragments of them
+    // into the pane as literal keys (observed live with tmux 3.6a inside
+    // kitty: XTVERSION/OSC-color reply fragments arriving ~90 ms apart).
+    // Keep reading until the line has been PROBE_QUIET long silent, still
+    // bounded by the overall deadline (degenerates to the old zero-timeout
+    // drain once the budget is spent).
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let quiet_ms = PROBE_QUIET.min(remaining).as_millis() as i32;
+        match poll_in(fd, quiet_ms) {
+            PollResult::Ready => {
+                if !read_chunk(fd, &mut buf) {
+                    break;
+                }
+            }
+            PollResult::Timeout => break,
+            PollResult::Interrupted => continue,
+            PollResult::Error => break,
         }
     }
     buf
@@ -1523,6 +1544,48 @@ mod tests {
         assert!(
             elapsed < Duration::from_millis(400),
             "overslept: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn probe_drain_absorbs_post_fence_chatter() {
+        use std::io::Write;
+        use std::os::fd::AsRawFd;
+        use std::os::unix::net::UnixStream;
+        use std::time::{Duration, Instant};
+
+        // Multiplexer chatter races the probe: tmux's own attach-time
+        // queries to the outer terminal produce replies that dribble in for
+        // a few hundred ms AFTER our DA1 fence, and tmux leaks fragments of
+        // them into the pane as literal keys (observed live: tmux 3.6a +
+        // kitty 0.47 — a leaked 'l' opened the selected file in vim). The
+        // drain must keep listening until the line is quiet, not stop at
+        // the fence, so stragglers cannot become phantom keys.
+        let (mut writer, reader) = UnixStream::pair().unwrap();
+        writer.write_all(b"\x1b_Gi=4242;OK\x1b\\\x1b[?62;52;c").unwrap();
+        let t = std::thread::spawn(move || {
+            // Two chatter fragments with a ~60 ms inter-arrival gap, well
+            // after the fence bytes above.
+            std::thread::sleep(Duration::from_millis(40));
+            writer.write_all(b"r").unwrap();
+            std::thread::sleep(Duration::from_millis(60));
+            writer.write_all(b"i").unwrap();
+            writer // keep the peer open past the drain
+        });
+        let buf = read_probe_replies(
+            reader.as_raw_fd(),
+            Instant::now() + Duration::from_millis(250),
+        );
+        let _writer = t.join().unwrap();
+        assert!(parse_probe(&buf).da1_seen);
+        assert!(
+            buf.ends_with(b"ri"),
+            "post-fence chatter must be consumed by the drain, got {buf:?}"
+        );
+        // Nothing may be left on the fd for the EventStream to pick up.
+        assert!(
+            matches!(poll_in(reader.as_raw_fd(), 0), PollResult::Timeout),
+            "bytes left unread on the fd would leak as phantom keys"
         );
     }
 
