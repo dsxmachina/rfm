@@ -393,7 +393,7 @@ pub fn emit_kitty(
     move_to(w, key.origin_cell)?;
 
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    transmit_kitty(w, id, rgb, cols, rows)?;
+    transmit_kitty(w, id, rgb, cols, rows, false)?;
     log::trace!(
         "graphics: transmit kitty id={id} {}x{}",
         rgb.width(),
@@ -517,21 +517,57 @@ pub fn emit_iterm2(
 }
 
 /// Transmit `rgb` as a kitty virtual placement (`U=1`) rendered through
-/// U+10EEEE placeholder cells — the tmux-passthrough-capable kitty variant.
+/// U+10EEEE placeholder cells — the tmux-passthrough-capable kitty variant
+/// — gated on `key` exactly like [`emit_kitty`]:
+/// - live key equals `key` → write nothing, claim the frame, `Gated`;
+/// - otherwise delete the previous placement (by id), blank the target
+///   region (half-block remnants), transmit the virtual placement and
+///   write the placeholder grid over the region.
 ///
-/// Stub: the real emitter lands with the protocol arm's follow-up; the
-/// error degrades this frame to the half-block loop like any emit error.
+/// A hybrid of the kitty and sixel disciplines: the placeholder cells are
+/// ordinary CELL CONTENT (the frame repaint overwrites them, like sixel),
+/// but the transmitted image data is id-addressed, so the placement
+/// carries its id and the reconcile still deletes by id to free the
+/// terminal-side pixels. Every APC goes through [`write_apc`] — inside
+/// tmux ([`passthrough`]) the chunks are envelope-wrapped while the grid
+/// text passes through untouched, which is the entire point.
 pub fn emit_kitty_unicode(
-    _w: &mut impl Write,
-    _key: EmitKey,
-    _rgb: &image::RgbImage,
-    _cols: u16,
-    _rows: u16,
+    w: &mut impl Write,
+    key: EmitKey,
+    rgb: &image::RgbImage,
+    cols: u16,
+    rows: u16,
 ) -> io::Result<Emitted> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "kitty-unicode emitter: not yet implemented",
-    ))
+    if LIVE.lock().as_ref().map_or(false, |l| l.key == key) {
+        *CLAIMED.lock() = Some(key);
+        log::trace!("graphics: gated (unchanged)");
+        return Ok(Emitted::Gated);
+    }
+    if let Some(old) = LIVE.lock().take() {
+        delete_placement(w, &old)?;
+    }
+    let region = (
+        key.origin_cell.0..key.origin_cell.0.saturating_add(cols),
+        key.origin_cell.1..key.origin_cell.1.saturating_add(rows),
+    );
+    blank_region(w, &region)?;
+
+    // No origin move_to: a virtual placement ignores the cursor, and the
+    // grid positions every row absolutely itself.
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    transmit_kitty(w, id, rgb, cols, rows, true)?;
+    placeholder::placeholder_grid(w, key.origin_cell, cols, rows, id)?;
+    log::debug!(
+        "graphics: kitty-unicode emit id={id} {}x{}px into {cols}x{rows} cells",
+        rgb.width(),
+        rgb.height()
+    );
+    *LIVE.lock() = Some(LiveImage {
+        key: key.clone(),
+        id: Some(id),
+    });
+    *CLAIMED.lock() = Some(key);
+    Ok(Emitted::Transmitted)
 }
 
 /// JPEG for the OSC 1337 payload (the protocol carries encoded image
@@ -550,13 +586,18 @@ fn encode_jpeg(rgb: &image::RgbImage) -> io::Result<Vec<u8>> {
 const KITTY_CHUNK: usize = 4096;
 
 /// Direct transmission `a=T,f=24`: the raw RGB bytes, base64, chunked at
-/// 4096 chars with `m=1` continuations and a final `m=0`.
+/// 4096 chars with `m=1` continuations and a final `m=0`. With
+/// `virtual_placement` the first chunk adds `U=1` (transmit + virtual
+/// placement in one APC, spec-blessed); `c=`/`r=` stay — they pin the
+/// cell box the placeholder cells address. Each chunk is one complete
+/// APC through [`write_apc`], so passthrough wraps chunk-by-chunk.
 fn transmit_kitty(
     w: &mut impl Write,
     id: u32,
     rgb: &image::RgbImage,
     cols: u16,
     rows: u16,
+    virtual_placement: bool,
 ) -> io::Result<()> {
     let payload = b64(rgb.as_raw());
     let bytes = payload.as_bytes();
@@ -565,12 +606,14 @@ fn transmit_kitty(
         chunks.push(&[]); // degenerate raster: still send one command
     }
     let last = chunks.len() - 1;
+    let u = if virtual_placement { ",U=1" } else { "" };
     for (i, chunk) in chunks.iter().enumerate() {
         let m = u8::from(i < last);
+        let mut seq = Vec::with_capacity(chunk.len() + 64);
         if i == 0 {
             write!(
-                w,
-                "\x1b_Ga=T,f=24,s={},v={},i={},c={},r={},q=2,m={};",
+                seq,
+                "\x1b_Ga=T{u},f=24,s={},v={},i={},c={},r={},q=2,m={};",
                 rgb.width(),
                 rgb.height(),
                 id,
@@ -579,10 +622,11 @@ fn transmit_kitty(
                 m
             )?;
         } else {
-            write!(w, "\x1b_Gm={m};")?;
+            write!(seq, "\x1b_Gm={m};")?;
         }
-        w.write_all(chunk)?;
-        w.write_all(b"\x1b\\")?;
+        seq.extend_from_slice(chunk);
+        seq.extend_from_slice(b"\x1b\\");
+        write_apc(w, &seq)?;
     }
     Ok(())
 }
@@ -595,10 +639,22 @@ fn transmit_kitty(
 /// drawn this frame (or, after a resize, land on unrelated cells).
 fn delete_placement(w: &mut impl Write, live: &LiveImage) -> io::Result<()> {
     if let Some(id) = live.id {
-        write!(w, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
+        write_apc(w, format!("\x1b_Ga=d,d=I,i={id},q=2\x1b\\").as_bytes())?;
         log::trace!("graphics: erase id={id}");
     }
     Ok(())
+}
+
+/// Write one complete APC sequence, tmux-passthrough-wrapped when
+/// [`passthrough`] says so. Classic-kitty placements outside tmux are
+/// unaffected: the flag is only ever true when the resolved protocol is
+/// kitty-unicode inside tmux.
+fn write_apc(w: &mut impl Write, seq: &[u8]) -> io::Result<()> {
+    if passthrough() {
+        w.write_all(&wrap_passthrough(seq))
+    } else {
+        w.write_all(seq)
+    }
 }
 
 /// Overwrite a cell region with default-colored spaces. Public entry for
@@ -662,9 +718,6 @@ fn b64(data: &[u8]) -> String {
 /// payload must be doubled — including the inner terminator's — or tmux
 /// would end the DCS at the first inner ESC. One envelope per sequence
 /// (chunked APCs are wrapped chunk-by-chunk, far below tmux's DCS cap).
-// Not called outside tests yet: the kitty-unicode emitter routes its APC
-// chunks through this in the protocol arm's follow-up.
-#[allow(dead_code)]
 fn wrap_passthrough(seq: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(seq.len() + 10);
     out.extend_from_slice(b"\x1bPtmux;");
@@ -2071,6 +2124,179 @@ mod tests {
             Emitted::Transmitted,
             "empty LIVE must retransmit, not gate"
         );
+    }
+
+    // --- kitty-unicode emitter
+
+    #[test]
+    fn emit_kitty_unicode_transmits_virtual_placement_with_grid() {
+        let _g = emit_guard();
+        // 64x64 RGB = 12288 raw bytes -> 16384 base64 chars -> 4 chunks.
+        let rgb = RgbImage::from_pixel(64, 64, Rgb([1, 2, 3]));
+        let key = test_key("u.png", 512, 512);
+        let mut sink = Vec::new();
+        let emitted = emit_kitty_unicode(&mut sink, key.clone(), &rgb, 12, 4).unwrap();
+        assert_eq!(emitted, Emitted::Transmitted);
+
+        let apcs = apc_sequences(&sink);
+        assert!(apcs.len() > 1, "base64 > 4096 chars must be chunked");
+        let first = &apcs[0].0;
+        for want in [
+            "a=T", "U=1", "q=2", "f=24", "s=64", "v=64", "c=12", "r=4", "m=1",
+        ] {
+            assert!(
+                first.split(',').any(|kv| kv == want),
+                "first chunk missing {want}: {first}"
+            );
+        }
+        let id: u32 = key_val(first, "i")
+            .expect("first chunk carries the id")
+            .parse()
+            .unwrap();
+        for (i, (keys, payload)) in apcs.iter().enumerate() {
+            assert!(payload.len() <= 4096, "chunk {i} payload over 4096");
+            if i > 0 {
+                let m = if i == apcs.len() - 1 { "m=0" } else { "m=1" };
+                assert_eq!(keys, m, "continuation chunk {i}");
+            }
+        }
+        // The placeholder grid follows the LAST chunk: one row per `r=`,
+        // U+10EEEE cells, and the fg-SGR carrying the very same id the
+        // transmission used.
+        let s = String::from_utf8_lossy(&sink);
+        let last_apc_end = s.rfind("\x1b\\").expect("terminated APC") + 2;
+        let grid = &s[last_apc_end..];
+        assert!(grid.contains('\u{10EEEE}'), "grid after chunks: {grid:?}");
+        let (r, g, b) = ((id >> 16) as u8, (id >> 8) as u8, id as u8);
+        assert!(
+            grid.contains(&format!("\x1b[38;2;{r};{g};{b}m")),
+            "fg-SGR must encode id {id}: {grid:?}"
+        );
+        assert_eq!(grid.matches("\x1b[39m").count(), 4, "one reset per row");
+        let (live_key, live_id) = live_snapshot_for_test().expect("live after emit");
+        assert_eq!(live_key, key);
+        assert_eq!(live_id, Some(id), "placement is id-addressed");
+    }
+
+    #[test]
+    fn emit_kitty_unicode_wraps_chunks_when_passthrough() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(64, 64, Rgb([1, 2, 3]));
+
+        // Passthrough off: zero envelopes.
+        let mut sink = Vec::new();
+        emit_kitty_unicode(&mut sink, test_key("v.png", 512, 512), &rgb, 12, 4).unwrap();
+        let s = String::from_utf8_lossy(&sink);
+        assert!(!s.contains("\x1bPtmux;"), "no envelope while off: {s:?}");
+        let chunk_count = apc_sequences(&sink).len();
+
+        // Passthrough on: every APC chunk is individually enveloped, the
+        // inner terminators are ESC-doubled, and the placeholder text stays
+        // bare — passing through tmux untouched is its entire point.
+        reset_emit_state_for_test();
+        set_passthrough_for_test(true);
+        let mut sink = Vec::new();
+        emit_kitty_unicode(&mut sink, test_key("w.png", 512, 512), &rgb, 12, 4).unwrap();
+        let s = String::from_utf8_lossy(&sink);
+        assert_eq!(
+            s.matches("\x1bPtmux;").count(),
+            chunk_count,
+            "one envelope per APC chunk: {s:?}"
+        );
+        assert!(
+            s.contains("\x1b\x1b\\\x1b\\"),
+            "inner APC terminator must be ESC-doubled: {s:?}"
+        );
+        let grid_start = s.find('\u{10EEEE}').expect("grid present");
+        assert!(
+            !s[grid_start..].contains("\x1bPtmux;"),
+            "placeholder grid must not be wrapped: {s:?}"
+        );
+    }
+
+    #[test]
+    fn emit_kitty_unicode_gates_on_unchanged_key() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(2, 2, Rgb([5, 5, 5]));
+        let key = test_key("x.png", 16, 32);
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_kitty_unicode(&mut sink, key.clone(), &rgb, 2, 1).unwrap(),
+            Emitted::Transmitted
+        );
+        // Unrelated repaint: same key -> zero bytes — the grid persists as
+        // cell content and the image data persists terminal-side.
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_kitty_unicode(&mut sink, key, &rgb, 2, 1).unwrap(),
+            Emitted::Gated
+        );
+        assert!(sink.is_empty(), "gated emit wrote bytes: {sink:?}");
+    }
+
+    #[test]
+    fn emit_kitty_unicode_end_frame_deletes_by_id() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(2, 2, Rgb([5, 5, 5]));
+        let key = test_key("y.png", 16, 32);
+        let mut sink = Vec::new();
+        emit_kitty_unicode(&mut sink, key.clone(), &rgb, 2, 1).unwrap();
+        let (_, id) = live_snapshot_for_test().unwrap();
+        let id = id.unwrap();
+
+        // A gated emit claims the frame: end_frame keeps the placement.
+        begin_frame(true);
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_kitty_unicode(&mut sink, key, &rgb, 2, 1).unwrap(),
+            Emitted::Gated
+        );
+        let mut sink = Vec::new();
+        end_frame(&mut sink).unwrap();
+        assert!(sink.is_empty(), "claimed placement must survive end_frame");
+        assert!(live_snapshot_for_test().is_some());
+
+        // Unclaimed frame: the image data is id-addressed like classic
+        // kitty, so the reconcile deletes by id — and writes NO cell
+        // content: the placeholder cells are ordinary text this frame's
+        // repaint has already overwritten.
+        begin_frame(true);
+        let mut sink = Vec::new();
+        end_frame(&mut sink).unwrap();
+        let s = String::from_utf8_lossy(&sink);
+        assert!(
+            s.contains(&format!("\x1b_Ga=d,d=I,i={id},q=2\x1b\\")),
+            "unclaimed placement not deleted: {s:?}"
+        );
+        assert!(
+            !s.contains("\x1b["),
+            "end_frame must not write cell content: {s:?}"
+        );
+        assert!(live_snapshot_for_test().is_none());
+    }
+
+    #[test]
+    fn emit_kitty_unicode_end_frame_wraps_delete_when_passthrough() {
+        let _g = emit_guard();
+        set_passthrough_for_test(true);
+        let rgb = RgbImage::from_pixel(2, 2, Rgb([5, 5, 5]));
+        let mut sink = Vec::new();
+        emit_kitty_unicode(&mut sink, test_key("z.png", 16, 32), &rgb, 2, 1).unwrap();
+        let (_, id) = live_snapshot_for_test().unwrap();
+        let id = id.unwrap();
+
+        // The delete APC must reach the outer terminal too: exactly the
+        // enveloped, ESC-doubled form and nothing else.
+        begin_frame(true);
+        let mut sink = Vec::new();
+        end_frame(&mut sink).unwrap();
+        let s = String::from_utf8_lossy(&sink);
+        assert_eq!(
+            s,
+            format!("\x1bPtmux;\x1b\x1b_Ga=d,d=I,i={id},q=2\x1b\x1b\\\x1b\\"),
+            "wrapped delete only"
+        );
+        assert!(live_snapshot_for_test().is_none());
     }
 
     #[test]

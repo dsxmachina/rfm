@@ -72,9 +72,6 @@ pub(super) static DIACRITICS: [char; 297] = [
 ///
 /// Rows/columns past the diacritics table are clamped: cells beyond index
 /// 296 are unaddressable and simply not emitted.
-// Not called outside tests yet: the kitty-unicode emitter drives this in
-// the protocol arm's follow-up.
-#[allow(dead_code)]
 pub(super) fn placeholder_grid(
     w: &mut impl Write,
     origin: (u16, u16),
