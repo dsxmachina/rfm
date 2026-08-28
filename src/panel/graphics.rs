@@ -427,21 +427,75 @@ pub fn emit_sixel(
     Ok(Emitted::Transmitted)
 }
 
-/// Transmit `rgb` via the iTerm2 inline-images protocol (OSC 1337 File=).
+/// Transmit `rgb` via the iTerm2 inline-images protocol (OSC 1337 File=),
+/// gated on `key` exactly like [`emit_kitty`]:
+/// - live key equals `key` → write nothing, claim the frame, `Gated`;
+/// - otherwise blank the target region (half-block remnants), place the
+///   cursor at the origin and send ONE un-chunked base64 JPEG payload.
 ///
-/// Stub: the real emitter lands with the protocol arm's follow-up; the
-/// error degrades this frame to the half-block loop like any emit error.
+/// Sized in cells (`width=`/`height=`), `preserveAspectRatio=1` (the
+/// raster is pre-fitted; this only guards cell-aspect drift —
+/// [`blank_cells`] repaints any letterbox strip). Inline images are cell
+/// content like sixel — no placement ids, the frame repaint erases them —
+/// so the placement is recorded id-less and the reconcile stays
+/// write-free. `doNotMoveCursor=1` is WezTerm-only sugar, ignored
+/// elsewhere.
 pub fn emit_iterm2(
-    _w: &mut impl Write,
-    _key: EmitKey,
-    _rgb: &image::RgbImage,
-    _cols: u16,
-    _rows: u16,
+    w: &mut impl Write,
+    key: EmitKey,
+    rgb: &image::RgbImage,
+    cols: u16,
+    rows: u16,
 ) -> io::Result<Emitted> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "iterm2 emitter: not yet implemented",
-    ))
+    if LIVE.lock().as_ref().map_or(false, |l| l.key == key) {
+        *CLAIMED.lock() = Some(key);
+        log::trace!("graphics: gated (unchanged)");
+        return Ok(Emitted::Gated);
+    }
+    // Forget the predecessor without touching its cells (delete_placement
+    // is a no-op for id-less placements — see its doc).
+    if let Some(old) = LIVE.lock().take() {
+        delete_placement(w, &old)?;
+    }
+    let region = (
+        key.origin_cell.0..key.origin_cell.0.saturating_add(cols),
+        key.origin_cell.1..key.origin_cell.1.saturating_add(rows),
+    );
+    blank_region(w, &region)?;
+    move_to(w, key.origin_cell)?;
+
+    let jpeg = encode_jpeg(rgb)?;
+    log::debug!(
+        "graphics: iterm2 emit {}x{}px, {} JPEG bytes into {cols}x{rows} cells",
+        key.px_w,
+        key.px_h,
+        jpeg.len()
+    );
+    write!(
+        w,
+        "\x1b]1337;File=inline=1;size={};width={cols};height={rows};preserveAspectRatio=1;doNotMoveCursor=1:{}\x07",
+        jpeg.len(),
+        b64(&jpeg)
+    )?;
+
+    *LIVE.lock() = Some(LiveImage {
+        key: key.clone(),
+        id: None,
+    });
+    *CLAIMED.lock() = Some(key);
+    Ok(Emitted::Transmitted)
+}
+
+/// JPEG for the OSC 1337 payload (the protocol carries encoded image
+/// FILES, not raw pixels — PNG/JPEG are the universally accepted formats,
+/// JPEG is ~10x smaller for photographic previews). Quality 85 keeps a
+/// 960×540 raster far below every implementation's size cap.
+fn encode_jpeg(rgb: &image::RgbImage) -> io::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 85)
+        .encode_image(rgb)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    Ok(out)
 }
 
 /// Base64 payload chunk size in chars (kitty protocol limit).
@@ -1602,6 +1656,128 @@ mod tests {
         let target_blank = s.find("\x1b[1;1H").expect("target region blanked");
         let dcs = s.find("\x1bP").expect("new raster transmitted");
         assert!(target_blank < dcs, "blank must precede the raster: {s:?}");
+    }
+
+    // --- iterm2 emitter
+
+    #[test]
+    fn emit_iterm2_single_osc_jpeg_payload() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(8, 6, Rgb([0, 128, 255]));
+        let key = test_key("i.png", 64, 48);
+
+        // First emit transmits: cursor to the origin (10,2) -> CSI 3;11H,
+        // then ONE un-chunked OSC 1337 with a JPEG payload, and the live
+        // state records an id-less placement (inline images are cell
+        // content like sixel — no delete command).
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_iterm2(&mut sink, key.clone(), &rgb, 12, 4).unwrap(),
+            Emitted::Transmitted
+        );
+        let s = String::from_utf8_lossy(&sink);
+        assert!(s.contains("\x1b[3;11H"), "origin missing: {s:?}");
+        assert_eq!(
+            s.matches("\x1b]1337;File=").count(),
+            1,
+            "exactly one OSC 1337: {s:?}"
+        );
+        let (live_key, id) = live_snapshot_for_test().expect("live after emit");
+        assert_eq!(live_key, key);
+        assert_eq!(id, None, "iterm2 placements are id-less");
+
+        let args_start = s.find("\x1b]1337;File=").unwrap() + "\x1b]1337;File=".len();
+        let colon = s[args_start..].find(':').expect("payload separator") + args_start;
+        let args = &s[args_start..colon];
+        for want in [
+            "inline=1",
+            "width=12",
+            "height=4",
+            "preserveAspectRatio=1",
+            "doNotMoveCursor=1",
+        ] {
+            assert!(
+                args.split(';').any(|kv| kv == want),
+                "argument list missing {want}: {args}"
+            );
+        }
+        // size= is the advisory pre-base64 byte count of the JPEG payload.
+        let size: usize = args
+            .split(';')
+            .find_map(|kv| kv.strip_prefix("size="))
+            .expect("size argument")
+            .parse()
+            .unwrap();
+        assert!(s.ends_with('\x07'), "BEL-terminated: {s:?}");
+        let payload = &s[colon + 1..s.len() - 1];
+        assert_eq!(payload.len(), size.div_ceil(3) * 4, "size matches payload");
+        // base64 of the JPEG magic FF D8 FF.
+        assert!(payload.starts_with("/9j/"), "JPEG payload: {payload:?}");
+        assert!(
+            !payload.contains('\x1b'),
+            "single un-chunked payload, no ESC bytes: {payload:?}"
+        );
+    }
+
+    #[test]
+    fn emit_iterm2_gates_on_unchanged_key() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(8, 6, Rgb([0, 128, 255]));
+        let key = test_key("j.png", 64, 48);
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_iterm2(&mut sink, key.clone(), &rgb, 12, 4).unwrap(),
+            Emitted::Transmitted
+        );
+        // Unrelated repaint: same key -> zero bytes.
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_iterm2(&mut sink, key, &rgb, 12, 4).unwrap(),
+            Emitted::Gated
+        );
+        assert!(sink.is_empty(), "gated emit wrote bytes: {sink:?}");
+    }
+
+    #[test]
+    fn emit_iterm2_end_frame_reconciles_without_writes() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(8, 6, Rgb([0, 128, 255]));
+        let key = test_key("k.png", 64, 48);
+        let mut sink = Vec::new();
+        emit_iterm2(&mut sink, key.clone(), &rgb, 12, 4).unwrap();
+
+        // A gated emit claims the frame: end_frame keeps the placement.
+        begin_frame(true);
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_iterm2(&mut sink, key.clone(), &rgb, 12, 4).unwrap(),
+            Emitted::Gated
+        );
+        let mut sink = Vec::new();
+        end_frame(&mut sink).unwrap();
+        assert!(sink.is_empty(), "claimed placement must survive end_frame");
+        assert!(live_snapshot_for_test().is_some());
+
+        // Unclaimed frame (selection moved away): the live state is
+        // forgotten but NOTHING is written — inline images are ordinary
+        // cell content like sixel, already overwritten by this frame's
+        // full repaint (cell-content discipline, id-less).
+        begin_frame(true);
+        let mut sink = Vec::new();
+        end_frame(&mut sink).unwrap();
+        assert!(
+            sink.is_empty(),
+            "iterm2 reconcile must not write: {:?}",
+            String::from_utf8_lossy(&sink)
+        );
+        assert!(live_snapshot_for_test().is_none());
+
+        // Forgotten LIVE means a re-emit of the same key transmits again.
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_iterm2(&mut sink, key, &rgb, 12, 4).unwrap(),
+            Emitted::Transmitted
+        );
     }
 
     #[test]
