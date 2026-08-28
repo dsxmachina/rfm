@@ -83,8 +83,21 @@ pdf_render = false
 #                    heuristics first (kitty/WezTerm/Ghostty → kitty,
 #                    iTerm2 → iterm2), then a short (<250ms) terminal probe
 #                    for the kitty graphics protocol and sixel support.
-#                    Anything uncertain falls back to "half-block".
+#                    Anything uncertain falls back to "half-block". Inside
+#                    tmux, a leftover KITTY_WINDOW_ID/GHOSTTY_RESOURCES_DIR
+#                    variable hints at a capable outer terminal and triggers
+#                    a passthrough-wrapped probe that can resolve
+#                    "kitty-unicode"; without the hint tmux/screen stay on
+#                    "half-block" instantly.
 #   - "kitty"      : pin the kitty graphics protocol (kitty, WezTerm, Ghostty).
+#   - "kitty-unicode": kitty graphics transmitted as a virtual placement and
+#                    drawn as U+10EEEE placeholder cells — ordinary text
+#                    that survives tmux. Needs 'allow-passthrough on' in
+#                    tmux (>= 3.3; earlier versions pass through
+#                    unconditionally) and an outer terminal that composes
+#                    virtual placements: kitty >= 0.28 or Ghostty (not
+#                    WezTerm/Konsole). Also valid outside tmux in those
+#                    terminals.
 #   - "iterm2"     : pin the iTerm2 inline-images protocol (iTerm2; also
 #                    WezTerm, mintty, and VSCode — VSCode only renders it
 #                    when terminal.integrated.enableImages is on, which
@@ -93,17 +106,22 @@ pdf_render = false
 #   - "half-block" : the universal cell-based renderer ("▄" glyphs, two
 #                    pixels per cell). Works in every truecolor terminal.
 #
-# Inside tmux/screen, "auto" always resolves to "half-block" (multiplexers
-# swallow graphics escape sequences). Explicit values skip probing and are
-# honored even inside tmux, but rfm does not wrap its output in tmux's
-# passthrough sequences: pinning "kitty" inside tmux leaves the preview
-# region blank regardless of 'allow-passthrough', pinning "iterm2" leaves
-# it just as blank (tmux discards OSC 1337 too), and "sixel" renders only
-# if tmux itself was built with sixel support (--enable-sixel). The
-# explicit values are the escape hatch for terminals that misreport their
-# capabilities.
-# Note: when the startup probe runs (auto in an unrecognized terminal, or
-# an explicit kitty/iterm2/sixel pin without pixel geometry), keystrokes
+# Inside tmux/screen, "auto" resolves to "half-block" (multiplexers swallow
+# graphics escape sequences) unless the hinted tmux probe above finds a
+# kitty-unicode-capable outer terminal. Explicit values skip capability
+# probing and are honored even inside tmux. "kitty-unicode" is the one
+# protocol rfm wraps in tmux's passthrough envelope: its placeholder cells
+# are plain text and always survive tmux, while the image data reaches the
+# outer terminal only with 'allow-passthrough on' set (your job — rfm never
+# runs the tmux CLI). The other pins stay unwrapped: pinning "kitty" inside
+# tmux leaves the preview region blank regardless of 'allow-passthrough',
+# pinning "iterm2" leaves it just as blank (tmux discards OSC 1337 too),
+# and "sixel" renders only if tmux itself was built with sixel support
+# (--enable-sixel). The explicit values are the escape hatch for terminals
+# that misreport their capabilities.
+# Note: when the startup probe runs (auto in an unrecognized terminal, auto
+# inside tmux with a kitty/Ghostty hint, or an explicit
+# kitty/kitty-unicode/iterm2/sixel pin without pixel geometry), keystrokes
 # typed during its short (<250ms) window are consumed with the probe
 # replies.
 #

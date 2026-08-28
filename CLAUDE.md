@@ -182,22 +182,30 @@ Log lines shown in the widget expire after DISPLAY_TTL (logger.rs, 10s);
 the 1 s task wakes the UI only when a line actually expires.
 
 Graphics-protocol image previews (`src/panel/graphics.rs` + the sixel
-encoder in `graphics/sixel.rs`): the protocol (kitty | iterm2 | sixel |
-half-block) is resolved once at startup — `graphics::init` in main.rs,
-right after `enable_raw_mode` and before the EventStream exists — in
-this order: explicit `image_protocol` config pins it (no probe); else
-env heuristics ($TMUX / TERM=tmux*/screen* → half-block, kitty/WezTerm/
+encoder in `graphics/sixel.rs`): the protocol (kitty | kitty-unicode |
+iterm2 | sixel | half-block) is resolved once at startup —
+`graphics::init` in main.rs, right after `enable_raw_mode` and before
+the EventStream exists — in this order: explicit `image_protocol`
+config pins it (no probe); else env heuristics (TERM=screen* →
+half-block; $TMUX / TERM=tmux* → half-block, UNLESS a
+KITTY_WINDOW_ID/GHOSTTY_RESOURCES_DIR fossil hints at a capable outer
+terminal — then fall through to a passthrough-wrapped probe where
+kitty_ok → kitty-unicode, anything else → half-block; kitty/WezTerm/
 Ghostty vars → kitty, iTerm2 vars → iterm2, env-only since OSC 1337 is
 unprobeable — a contradicting TERM_PROGRAM disables the leaked
 LC_TERMINAL/ITERM_SESSION_ID vars); else a 250 ms poll-bounded probe
 (kitty APC query + DA1; DA1 attribute `4` = sixel; kitty beats sixel;
 timeout → half-block). iterm2 is cell-content and id-less like sixel —
 one base64 JPEG per OSC 1337 emit, erased by the frame repaint.
-Cell→pixel geometry comes from TIOCGWINSZ (CSI 14 t at startup as
-fallback) and is refreshed on `Event::Resize`; sixel *requires* it and
-degrades to half-block without it, kitty and iterm2 assume an 8×16
-cell. The resolved protocol is on the debug socket `state` as
-`image_protocol`; decisions/emits are `graphics:` trace/debug log lines.
+kitty-unicode transmits kitty image data as a virtual placement (`U=1`)
+and draws a grid of U+10EEEE placeholder cells — ordinary text that
+survives tmux. Cell→pixel geometry comes from TIOCGWINSZ (CSI 14 t at
+startup as fallback) and is refreshed on `Event::Resize`; sixel
+*requires* it and degrades to half-block without it, kitty,
+kitty-unicode and iterm2 assume an 8×16 cell. The resolved protocol is
+on the debug socket `state` as `image_protocol` (passthrough wrapping
+as `graphics_passthrough`); decisions/emits are `graphics:` trace/debug
+log lines.
 
 The emitters are the second exception to blit-cheapness, so re-emission
 is gated: a module-global `EmitKey` (path, mtime, pixel box, origin) —
@@ -210,16 +218,24 @@ draw pass, so it must never write cell content — kitty deletes by id
 (`a=d,d=I`; pixels float above cells), sixel and iterm2 need nothing at
 all (their pixels ARE cell content and the frame's full repaint already
 overwrote them; a space-overwrite here would wipe the freshly drawn
-cells). The only cell writes the emitters do are for their own target
+cells). kitty-unicode is the hybrid: its placeholder cells are cell
+content the repaint overwrites, but the transmitted image data is
+id-addressed and the reconcile deletes it by id like kitty. The only
+cell writes the emitters do are for their own target
 region, right before the raster; the image draw also repaints the pane
 strip beside a narrower-than-pane raster every frame (`blank_cells`),
 keeping the full-repaint invariant. The sixel raster is pre-fitted to
 the pane pixel box and truncated to whole 6-row bands, so it cannot
 overflow neighbouring panels. Emit errors fall back to the half-block
-loop for that frame. Caveat: tmux/screen swallow all three protocols —
-auto always resolves to half-block there. Explicit pins are honored but
-NOT passthrough-wrapped: pinned kitty or iterm2 inside tmux stays blank
-regardless of allow-passthrough, pinned sixel renders only in a
+loop for that frame. Caveat: tmux/screen swallow raw kitty/iterm2/
+sixel APCs — auto inside them resolves to half-block, except tmux with
+the fossil hint above (wrapped probe → kitty-unicode). kitty-unicode is
+the one protocol whose APCs rfm wraps in tmux's passthrough envelope:
+its placeholder cells are plain text and always survive tmux, but the
+image data reaches the screen only with `allow-passthrough on` set
+(tmux ≥ 3.3; pre-3.3 unconditional) and an outer kitty ≥ 0.28/Ghostty.
+The other pins stay unwrapped: pinned kitty or iterm2 inside tmux is
+blank regardless of allow-passthrough, pinned sixel renders only in a
 sixel-enabled tmux build. The startup probe consumes any keystrokes
 typed during its bounded window along with the reply bytes (accepted D1
 trade-off).

@@ -107,15 +107,16 @@ right of the second `│` separator on each row. Assert preview content as
 fixture strings do not collide with center-column file names.
 
 **Graphics note:** this section is text-only, but should a raster preview
-ever appear (it must not, in these steps), remember tmux forces
-`image_protocol == "half-block"`: rasters are colored half-block cells
+ever appear (it must not, in these steps), remember tmux resolves
+`image_protocol == "half-block"` (auto config, no passthrough hint in the
+harness env): rasters are colored half-block cells
 (`▄`), assert non-empty colored area, never exact glyphs.
 
 ---
 
 ### 08.1 — Launch baseline: half-block protocol, empty-file initial preview
 **Action:** launch per section fixture; `await-idle`; then `echo state | socat - UNIX-CONNECT:$SOCK` and `echo "entries center" | socat - UNIX-CONNECT:$SOCK`; `tmux capture-pane -t $SESSION -p`.
-**Expect (socket):** `mode=="normal"`, `view=="single"`, `total==17`, `selection=="a.txt"`, `selected_idx==0`, `image_protocol=="half-block"` (rfm runs inside tmux), `preview_path` ends in `/work/a.txt`. `entries center` lists all 17 names above, exactly `a.txt` has `selected:true`.
+**Expect (socket):** `mode=="normal"`, `view=="single"`, `total==17`, `selection=="a.txt"`, `selected_idx==0`, `image_protocol=="half-block"` (auto inside tmux, no passthrough hint in the harness env), `preview_path` ends in `/work/a.txt`. `entries center` lists all 17 names above, exactly `a.txt` has `selected:true`.
 **Expect (screen):** header row contains `<FIXTURE>/work/a.txt`; center column lists the 17 entries with `a.txt` on the highlighted row; the preview column is blank (a.txt is a 0-byte file — zero preview lines is correct, not an error; there must be NO `Failed to open` / `Error:` text in the right column).
 **Note:** there are no directories in the fixture, so the dirs-sort-first rule leaves `a.txt` (alphabetically first file) selected — do not expect a directory.
 

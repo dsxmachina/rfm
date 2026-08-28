@@ -154,8 +154,13 @@ graphics_passthrough`
 - Log lines vanish from the *screen* after 10s but stay in the socket `log`
   history (200 lines). Background-command failures land there — check `log`
   first when something "silently" fails.
-- Inside tmux the graphics protocol resolves to **half-block**: image previews
-  are colored half-block cells. Assert "non-empty raster area", never glyphs.
+- Inside tmux, with the default `auto` config, the graphics protocol resolves
+  to **half-block** (the harness env carries no kitty/Ghostty passthrough
+  hint): image previews are colored half-block cells. Assert "non-empty
+  raster area", never glyphs. Exception: a pinned
+  `image_protocol = "kitty-unicode"` draws U+10EEEE placeholder cells, which
+  survive `capture-pane -p` byte-for-byte and ARE directly assertable
+  (cells only — the harness's outer terminal renders no pixels).
 - **Empty-panel sentinels.** For an *empty* directory, `state.preview_path` is
   the sentinel string `"path-of-empty-panel"`, not a real path; `left_path` at
   the filesystem root (`/`) is likewise the same sentinel, not a directory

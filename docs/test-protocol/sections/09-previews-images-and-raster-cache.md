@@ -89,9 +89,9 @@ step instead of trusting counted `j` presses.
 **Expect (socket):**
 - `state.selection == "a-blue.png"`, `state.selected_idx == 0`,
   `state.preview_path == "$FIXTURE/a-blue.png"`, `state.mode == "normal"`.
-- `state.image_protocol == "half-block"` — rfm runs inside tmux, so `auto`
-  always resolves to half-block (no graphics-protocol env hit or probe
-  result can apply).
+- `state.image_protocol == "half-block"` — rfm runs inside tmux with the
+  default `auto` config and no kitty/Ghostty passthrough hint in the harness
+  env, so `auto` resolves to half-block instantly (no graphics probe runs).
 - `echo "log 50" | socat - UNIX-CONNECT:$SOCK` contains NO
   `raster cache hit` line yet (first visit is a miss+store, which logs nothing
   on success).
@@ -367,8 +367,11 @@ raster in the right pane.
 rm -rf "$FIXTURE" "$CFG" "$CFG2" "$CACHE" "$CACHE2" "$STATE" "$ZO"; rm -f $SOCK`
 
 **Section coverage gaps** (deliberate — for the meta-review):
-- kitty/iterm2/sixel graphics protocols (tmux forces half-block; explicit
-  `image_protocol` pins untested here — needs a non-tmux/sixel-capable harness)
+- kitty/iterm2/sixel graphics protocols (auto in the hint-free harness
+  resolves to half-block; those explicit `image_protocol` pins render nothing
+  under tmux — needs a non-tmux/sixel-capable harness). A `"kitty-unicode"`
+  pin is now partially testable in-harness: its U+10EEEE placeholder cells
+  are capture-assertable, the composited pixels are not
 - SVG (`svg960`), font (`font-s1-24`) and PDF-render (`pdf-p1-960`) cache
   kinds; `pdf_render = true` end-to-end (PDF text tier is section-scope of the
   preview-types section)
