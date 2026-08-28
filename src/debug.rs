@@ -84,7 +84,7 @@ pub struct StateSnapshot {
     /// Session-only jump-marks: letter -> directory. Sorted for determinism.
     pub jump_marks: std::collections::BTreeMap<String, PathBuf>,
     /// Graphics protocol resolved for image previews at startup:
-    /// "kitty" | "sixel" | "half-block"
+    /// "kitty" | "iterm2" | "sixel" | "half-block"
     pub image_protocol: String,
 }
 

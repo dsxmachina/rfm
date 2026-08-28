@@ -182,17 +182,21 @@ Log lines shown in the widget expire after DISPLAY_TTL (logger.rs, 10s);
 the 1 s task wakes the UI only when a line actually expires.
 
 Graphics-protocol image previews (`src/panel/graphics.rs` + the sixel
-encoder in `graphics/sixel.rs`): the protocol (kitty | sixel |
+encoder in `graphics/sixel.rs`): the protocol (kitty | iterm2 | sixel |
 half-block) is resolved once at startup — `graphics::init` in main.rs,
 right after `enable_raw_mode` and before the EventStream exists — in
 this order: explicit `image_protocol` config pins it (no probe); else
 env heuristics ($TMUX / TERM=tmux*/screen* → half-block, kitty/WezTerm/
-Ghostty vars → kitty); else a 250 ms poll-bounded probe (kitty APC
-query + DA1; DA1 attribute `4` = sixel; kitty beats sixel; timeout →
-half-block). Cell→pixel geometry comes from TIOCGWINSZ (CSI 14 t at
-startup as fallback) and is refreshed on `Event::Resize`; sixel
-*requires* it and degrades to half-block without it, kitty assumes an
-8×16 cell. The resolved protocol is on the debug socket `state` as
+Ghostty vars → kitty, iTerm2 vars → iterm2, env-only since OSC 1337 is
+unprobeable — a contradicting TERM_PROGRAM disables the leaked
+LC_TERMINAL/ITERM_SESSION_ID vars); else a 250 ms poll-bounded probe
+(kitty APC query + DA1; DA1 attribute `4` = sixel; kitty beats sixel;
+timeout → half-block). iterm2 is cell-content and id-less like sixel —
+one base64 JPEG per OSC 1337 emit, erased by the frame repaint.
+Cell→pixel geometry comes from TIOCGWINSZ (CSI 14 t at startup as
+fallback) and is refreshed on `Event::Resize`; sixel *requires* it and
+degrades to half-block without it, kitty and iterm2 assume an 8×16
+cell. The resolved protocol is on the debug socket `state` as
 `image_protocol`; decisions/emits are `graphics:` trace/debug log lines.
 
 The emitters are the second exception to blit-cheapness, so re-emission
@@ -203,8 +207,8 @@ handled by frame reconcile, not per-panel plumbing: `begin_frame`
 overlay) → the image draw claims its key → `end_frame` drops any
 unclaimed live placement. Erase discipline: the reconcile runs AFTER the
 draw pass, so it must never write cell content — kitty deletes by id
-(`a=d,d=I`; pixels float above cells), sixel needs nothing at all
-(sixel pixels ARE cell content and the frame's full repaint already
+(`a=d,d=I`; pixels float above cells), sixel and iterm2 need nothing at
+all (their pixels ARE cell content and the frame's full repaint already
 overwrote them; a space-overwrite here would wipe the freshly drawn
 cells). The only cell writes the emitters do are for their own target
 region, right before the raster; the image draw also repaints the pane
@@ -212,12 +216,13 @@ strip beside a narrower-than-pane raster every frame (`blank_cells`),
 keeping the full-repaint invariant. The sixel raster is pre-fitted to
 the pane pixel box and truncated to whole 6-row bands, so it cannot
 overflow neighbouring panels. Emit errors fall back to the half-block
-loop for that frame. Caveat: tmux/screen swallow both protocols — auto
-always resolves to half-block there. Explicit pins are honored but NOT
-passthrough-wrapped: pinned kitty inside tmux stays blank regardless of
-allow-passthrough, pinned sixel renders only in a sixel-enabled tmux
-build. The startup probe consumes any keystrokes typed during its
-bounded window along with the reply bytes (accepted D1 trade-off).
+loop for that frame. Caveat: tmux/screen swallow all three protocols —
+auto always resolves to half-block there. Explicit pins are honored but
+NOT passthrough-wrapped: pinned kitty or iterm2 inside tmux stays blank
+regardless of allow-passthrough, pinned sixel renders only in a
+sixel-enabled tmux build. The startup probe consumes any keystrokes
+typed during its bounded window along with the reply bytes (accepted D1
+trade-off).
 
 ## Architecture: native preview backends
 

@@ -1,8 +1,9 @@
 //! Terminal graphics protocol support for image previews.
 //!
-//! This module owns which protocol (kitty graphics / sixel / half-block
-//! fallback) the preview column may use, the cell→pixel geometry needed
-//! to place real pixels into a cell layout, and the emitters themselves.
+//! This module owns which protocol (kitty graphics / iTerm2 inline
+//! images / sixel / half-block fallback) the preview column may use, the
+//! cell→pixel geometry needed to place real pixels into a cell layout,
+//! and the emitters themselves.
 //! The detection core is pure — env lookups and probe replies are
 //! injected — so the whole decision matrix is unit-testable without a
 //! terminal; the emitters write to any `impl Write`, so their byte
@@ -33,6 +34,7 @@ const PROBE_BUDGET: Duration = Duration::from_millis(250);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphicsProtocol {
     Kitty,
+    Iterm2,
     Sixel,
     HalfBlock,
 }
@@ -43,6 +45,7 @@ impl GraphicsProtocol {
     pub fn name(&self) -> &'static str {
         match self {
             GraphicsProtocol::Kitty => "kitty",
+            GraphicsProtocol::Iterm2 => "iterm2",
             GraphicsProtocol::Sixel => "sixel",
             GraphicsProtocol::HalfBlock => "half-block",
         }
@@ -71,6 +74,29 @@ pub fn detect_from_env(env: &dyn Fn(&str) -> Option<String>) -> Option<GraphicsP
         // WezTerm and Ghostty implement the kitty graphics protocol.
         if prog.eq_ignore_ascii_case("wezterm") || prog.eq_ignore_ascii_case("ghostty") {
             return Some(GraphicsProtocol::Kitty);
+        }
+    }
+    // iTerm2: OSC 1337 has no probeable capability (no DA1 attribute, and
+    // the Capabilities query is implemented by iTerm2 alone) — env is the
+    // only signal. TERM_PROGRAM=iTerm.app always wins. The leaked vars
+    // (LC_TERMINAL, ITERM_SESSION_ID) are exported, not scrubbed — a nested
+    // terminal launched from an iTerm2 shell inherits them while setting its
+    // own TERM_PROGRAM — so they count only when TERM_PROGRAM is entirely
+    // unset (ssh strips TERM_PROGRAM, keeping the LC_TERMINAL-over-ssh path;
+    // a contradicting TERM_PROGRAM disables them). VSCode/Warp/Tabby are
+    // deliberately absent: VSCode ships images off, the others don't
+    // render OSC 1337.
+    match env("TERM_PROGRAM") {
+        Some(prog) if prog.eq_ignore_ascii_case("iTerm.app") => {
+            return Some(GraphicsProtocol::Iterm2);
+        }
+        Some(_) => {}
+        None => {
+            if env("LC_TERMINAL").map_or(false, |v| v.eq_ignore_ascii_case("iTerm2"))
+                || env("ITERM_SESSION_ID").is_some()
+            {
+                return Some(GraphicsProtocol::Iterm2);
+            }
         }
     }
     None
@@ -170,6 +196,7 @@ pub fn resolve(
 ) -> GraphicsProtocol {
     match choice {
         ImageProtocolChoice::Kitty => GraphicsProtocol::Kitty,
+        ImageProtocolChoice::Iterm2 => GraphicsProtocol::Iterm2,
         ImageProtocolChoice::Sixel => GraphicsProtocol::Sixel,
         ImageProtocolChoice::HalfBlock => GraphicsProtocol::HalfBlock,
         ImageProtocolChoice::Auto => {
@@ -266,7 +293,7 @@ pub struct EmitKey {
 #[derive(Debug, Clone)]
 struct LiveImage {
     key: EmitKey,
-    /// Kitty image id; `None` for protocols without ids (sixel).
+    /// Kitty image id; `None` for protocols without ids (sixel, iterm2).
     id: Option<u32>,
 }
 
@@ -315,9 +342,9 @@ pub fn frame_allows_image() -> bool {
 /// The reconcile must never write cell content: it runs AFTER the draw pass
 /// has fully repainted the screen, so stamping spaces here would wipe the
 /// freshly drawn cells (and any overlay on top). Kitty placements float
-/// above cells and need the delete-by-id; id-less (sixel) placements *are*
-/// cell content and were already overwritten by this frame's repaint — for
-/// them the reconcile only forgets the live state.
+/// above cells and need the delete-by-id; id-less (sixel, iterm2)
+/// placements *are* cell content and were already overwritten by this
+/// frame's repaint — for them the reconcile only forgets the live state.
 pub fn end_frame(w: &mut impl Write) -> io::Result<()> {
     let claimed = CLAIMED.lock().take();
     let mut live = LIVE.lock();
@@ -424,6 +451,79 @@ pub fn emit_sixel(
     Ok(Emitted::Transmitted)
 }
 
+/// Transmit `rgb` via the iTerm2 inline-images protocol (OSC 1337 File=),
+/// gated on `key` exactly like [`emit_kitty`]:
+/// - live key equals `key` → write nothing, claim the frame, `Gated`;
+/// - otherwise blank the target region (half-block remnants), place the
+///   cursor at the origin and send ONE un-chunked base64 JPEG payload.
+///
+/// Sized in cells (`width=`/`height=`), `preserveAspectRatio=1` (the
+/// raster is pre-fitted; this only guards cell-aspect drift — any
+/// letterbox it produces lies inside the `width=`×`height=` box, which
+/// the pre-emit target-region blank has already cleared on transmit
+/// frames, and gated frames inherit it). Inline images are cell
+/// content like sixel — no placement ids, the frame repaint erases them —
+/// so the placement is recorded id-less and the reconcile stays
+/// write-free. `doNotMoveCursor=1` is WezTerm-only sugar, ignored
+/// elsewhere.
+pub fn emit_iterm2(
+    w: &mut impl Write,
+    key: EmitKey,
+    rgb: &image::RgbImage,
+    cols: u16,
+    rows: u16,
+) -> io::Result<Emitted> {
+    if LIVE.lock().as_ref().map_or(false, |l| l.key == key) {
+        *CLAIMED.lock() = Some(key);
+        log::trace!("graphics: gated (unchanged)");
+        return Ok(Emitted::Gated);
+    }
+    // Forget the predecessor without touching its cells (delete_placement
+    // is a no-op for id-less placements — see its doc).
+    if let Some(old) = LIVE.lock().take() {
+        delete_placement(w, &old)?;
+    }
+    let region = (
+        key.origin_cell.0..key.origin_cell.0.saturating_add(cols),
+        key.origin_cell.1..key.origin_cell.1.saturating_add(rows),
+    );
+    blank_region(w, &region)?;
+    move_to(w, key.origin_cell)?;
+
+    let jpeg = encode_jpeg(rgb)?;
+    log::debug!(
+        "graphics: iterm2 emit {}x{}px, {} JPEG bytes into {cols}x{rows} cells",
+        key.px_w,
+        key.px_h,
+        jpeg.len()
+    );
+    write!(
+        w,
+        "\x1b]1337;File=inline=1;size={};width={cols};height={rows};preserveAspectRatio=1;doNotMoveCursor=1:{}\x07",
+        jpeg.len(),
+        b64(&jpeg)
+    )?;
+
+    *LIVE.lock() = Some(LiveImage {
+        key: key.clone(),
+        id: None,
+    });
+    *CLAIMED.lock() = Some(key);
+    Ok(Emitted::Transmitted)
+}
+
+/// JPEG for the OSC 1337 payload (the protocol carries encoded image
+/// FILES, not raw pixels — PNG/JPEG are the universally accepted formats,
+/// JPEG is ~10x smaller for photographic previews). Quality 85 keeps a
+/// 960×540 raster far below every implementation's size cap.
+fn encode_jpeg(rgb: &image::RgbImage) -> io::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 85)
+        .encode_image(rgb)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    Ok(out)
+}
+
 /// Base64 payload chunk size in chars (kitty protocol limit).
 const KITTY_CHUNK: usize = 4096;
 
@@ -466,11 +566,11 @@ fn transmit_kitty(
 }
 
 /// Remove a placement from the terminal. Kitty: `a=d,d=I` — capital `I`
-/// also frees the pixel data. Id-less placements (sixel) have no delete
-/// command and need none: their pixels are ordinary cell content, replaced
-/// whenever the owning cells are repainted — every draw pass is a full
-/// repaint, so writing spaces here would only destroy content drawn this
-/// frame (or, after a resize, land on unrelated cells).
+/// also frees the pixel data. Id-less placements (sixel, iterm2) have no
+/// delete command and need none: their pixels are ordinary cell content,
+/// replaced whenever the owning cells are repainted — every draw pass is
+/// a full repaint, so writing spaces here would only destroy content
+/// drawn this frame (or, after a resize, land on unrelated cells).
 fn delete_placement(w: &mut impl Write, live: &LiveImage) -> io::Result<()> {
     if let Some(id) = live.id {
         write!(w, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
@@ -732,7 +832,8 @@ fn send_probe_and_read(want_pixels: bool) -> Vec<u8> {
 /// (argument: also request `CSI 14 t` pixel size) and returns the reply
 /// bytes. Explicit choices never probe unless they need missing geometry;
 /// sixel without geometry degrades to half-block (D2: a sixel raster must
-/// be pre-sized in pixels, while kitty scales into the cell rectangle).
+/// be pre-sized in pixels, while kitty and iterm2 scale into the cell
+/// rectangle).
 fn init_from(
     choice: ImageProtocolChoice,
     env: &dyn Fn(&str) -> Option<String>,
@@ -752,7 +853,7 @@ fn init_from(
         ImageProtocolChoice::HalfBlock => {
             (GraphicsProtocol::HalfBlock, geometry, "explicit config")
         }
-        ImageProtocolChoice::Kitty | ImageProtocolChoice::Sixel => {
+        ImageProtocolChoice::Kitty | ImageProtocolChoice::Iterm2 | ImageProtocolChoice::Sixel => {
             if geometry.is_none() {
                 // The only stdin read for an explicit choice: fetch the
                 // pixel size when the ioctl reported zeros.
@@ -876,6 +977,81 @@ mod tests {
     }
 
     #[test]
+    fn env_term_program_iterm_resolves_iterm2() {
+        let env = env_of(&[("TERM", "xterm-256color"), ("TERM_PROGRAM", "iTerm.app")]);
+        assert_eq!(detect_from_env(&env), Some(GraphicsProtocol::Iterm2));
+    }
+
+    #[test]
+    fn env_lc_terminal_iterm_resolves_iterm2() {
+        // LC_TERMINAL survives ssh (forwarded by iTerm2's shell integration)
+        // where TERM_PROGRAM does not.
+        let env = env_of(&[("TERM", "xterm-256color"), ("LC_TERMINAL", "iTerm2")]);
+        assert_eq!(detect_from_env(&env), Some(GraphicsProtocol::Iterm2));
+    }
+
+    #[test]
+    fn env_iterm_session_id_resolves_iterm2() {
+        let env = env_of(&[
+            ("TERM", "xterm-256color"),
+            ("ITERM_SESSION_ID", "w0t0p0:5E2B9A1C-0000-0000-0000-000000000000"),
+        ]);
+        assert_eq!(detect_from_env(&env), Some(GraphicsProtocol::Iterm2));
+    }
+
+    #[test]
+    fn env_contradicting_term_program_disables_leaked_iterm_vars() {
+        // LC_TERMINAL/ITERM_SESSION_ID are exported, not scrubbed: a VSCode
+        // terminal launched from an iTerm2 shell inherits them while setting
+        // its own TERM_PROGRAM. VSCode discards OSC 1337 silently, so
+        // trusting the leaked vars would mean permanently blank previews.
+        let env = env_of(&[
+            ("TERM", "xterm-256color"),
+            ("TERM_PROGRAM", "vscode"),
+            ("ITERM_SESSION_ID", "w0t0p0:5E2B9A1C-0000-0000-0000-000000000000"),
+        ]);
+        assert_eq!(detect_from_env(&env), None);
+        let env = env_of(&[
+            ("TERM", "xterm-256color"),
+            ("TERM_PROGRAM", "vscode"),
+            ("LC_TERMINAL", "iTerm2"),
+        ]);
+        assert_eq!(detect_from_env(&env), None);
+    }
+
+    #[test]
+    fn env_kitty_vars_beat_iterm_vars() {
+        // The kitty check runs first: kitty-with-leaked-iTerm2-vars (e.g.
+        // kitty launched from an iTerm2 shell) must resolve kitty.
+        let env = env_of(&[
+            ("TERM", "xterm-256color"),
+            ("KITTY_WINDOW_ID", "1"),
+            ("ITERM_SESSION_ID", "w0t0p0:5E2B9A1C-0000-0000-0000-000000000000"),
+        ]);
+        assert_eq!(detect_from_env(&env), Some(GraphicsProtocol::Kitty));
+    }
+
+    #[test]
+    fn env_tmux_beats_iterm_vars() {
+        // tmux swallows OSC 1337 like the other protocols — tmux-on-iTerm2
+        // must stay on half-blocks even though the iTerm2 vars leak through.
+        let env = env_of(&[
+            ("TMUX", "/tmp/tmux-1000/default,42,0"),
+            ("TERM", "screen-256color"),
+            ("TERM_PROGRAM", "iTerm.app"),
+        ]);
+        assert_eq!(detect_from_env(&env), Some(GraphicsProtocol::HalfBlock));
+    }
+
+    #[test]
+    fn env_term_program_vscode_is_inconclusive() {
+        // VSCode ships terminal.integrated.enableImages off — TERM_PROGRAM
+        // alone does not imply images render, so never auto-detect it.
+        let env = env_of(&[("TERM", "xterm-256color"), ("TERM_PROGRAM", "vscode")]);
+        assert_eq!(detect_from_env(&env), None);
+    }
+
+    #[test]
     fn env_plain_xterm_is_inconclusive() {
         // None means "run the probe", not "half-block".
         let env = env_of(&[("TERM", "xterm-256color")]);
@@ -963,6 +1139,7 @@ mod tests {
         };
         for (choice, want) in [
             (ImageProtocolChoice::Kitty, GraphicsProtocol::Kitty),
+            (ImageProtocolChoice::Iterm2, GraphicsProtocol::Iterm2),
             (ImageProtocolChoice::Sixel, GraphicsProtocol::Sixel),
             (ImageProtocolChoice::HalfBlock, GraphicsProtocol::HalfBlock),
         ] {
@@ -1147,6 +1324,25 @@ mod tests {
     }
 
     #[test]
+    fn init_iterm2_pin_with_geometry_never_probes() {
+        // Explicit iterm2 pin with usable ioctl geometry: no stdin read.
+        let (proto, geo, _reason) = init_from(
+            ImageProtocolChoice::Iterm2,
+            &|_| None,
+            &mut || Some((100, 50, 800, 1000)),
+            &mut |_| panic!("probe must not run for an explicit choice with geometry"),
+        );
+        assert_eq!(proto, GraphicsProtocol::Iterm2);
+        assert_eq!(
+            geo,
+            Some(CellGeometry {
+                cell_w: 8,
+                cell_h: 20
+            })
+        );
+    }
+
+    #[test]
     fn init_auto_env_hit_skips_probe() {
         let env = env_of(&[("TMUX", "/tmp/tmux-1000/default,42,0")]);
         let (proto, _geo, _reason) = init_from(
@@ -1206,6 +1402,20 @@ mod tests {
     }
 
     #[test]
+    fn init_iterm2_pin_without_geometry_keeps_iterm2() {
+        // iTerm2 sizes in cells (width=/height=), so like kitty it survives
+        // missing pixel geometry — the sixel degrade must stay sixel-only.
+        let (proto, geo, _reason) = init_from(
+            ImageProtocolChoice::Iterm2,
+            &|_| None,
+            &mut || None,
+            &mut |_| Vec::new(), // probe answers nothing
+        );
+        assert_eq!(proto, GraphicsProtocol::Iterm2);
+        assert_eq!(geo, None);
+    }
+
+    #[test]
     fn init_auto_probe_timeout_is_half_block() {
         let (proto, _geo, reason) = init_from(
             ImageProtocolChoice::Auto,
@@ -1239,6 +1449,7 @@ mod tests {
     #[test]
     fn protocol_names_match_config_values() {
         assert_eq!(GraphicsProtocol::Kitty.name(), "kitty");
+        assert_eq!(GraphicsProtocol::Iterm2.name(), "iterm2");
         assert_eq!(GraphicsProtocol::Sixel.name(), "sixel");
         assert_eq!(GraphicsProtocol::HalfBlock.name(), "half-block");
     }
@@ -1580,6 +1791,195 @@ mod tests {
         let target_blank = s.find("\x1b[1;1H").expect("target region blanked");
         let dcs = s.find("\x1bP").expect("new raster transmitted");
         assert!(target_blank < dcs, "blank must precede the raster: {s:?}");
+    }
+
+    // --- iterm2 emitter
+
+    #[test]
+    fn emit_iterm2_single_osc_jpeg_payload() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(8, 6, Rgb([0, 128, 255]));
+        let key = test_key("i.png", 64, 48);
+
+        // First emit transmits: cursor to the origin (10,2) -> CSI 3;11H,
+        // then ONE un-chunked OSC 1337 with a JPEG payload, and the live
+        // state records an id-less placement (inline images are cell
+        // content like sixel — no delete command).
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_iterm2(&mut sink, key.clone(), &rgb, 12, 4).unwrap(),
+            Emitted::Transmitted
+        );
+        let s = String::from_utf8_lossy(&sink);
+        assert_eq!(
+            s.matches("\x1b]1337;File=").count(),
+            1,
+            "exactly one OSC 1337: {s:?}"
+        );
+        // Ordering: blank pass first (its rows 3..6 CUP to column 11; row 6
+        // is written by blank_region ONLY), then the cursor parks at the
+        // origin — the LAST `\x1b[3;11H` is that move_to, the first one is
+        // the blank pass's top row — then the OSC payload.
+        let osc = s.find("\x1b]1337;File=").unwrap();
+        let last_blank_row = s.find("\x1b[6;11H").expect("blank pass missing");
+        let origin = s.rfind("\x1b[3;11H").expect("origin missing");
+        assert!(
+            last_blank_row < origin && origin < osc,
+            "blank pass -> origin CUP -> OSC ordering violated: {s:?}"
+        );
+        let (live_key, id) = live_snapshot_for_test().expect("live after emit");
+        assert_eq!(live_key, key);
+        assert_eq!(id, None, "iterm2 placements are id-less");
+
+        let args_start = s.find("\x1b]1337;File=").unwrap() + "\x1b]1337;File=".len();
+        let colon = s[args_start..].find(':').expect("payload separator") + args_start;
+        let args = &s[args_start..colon];
+        for want in [
+            "inline=1",
+            "width=12",
+            "height=4",
+            "preserveAspectRatio=1",
+            "doNotMoveCursor=1",
+        ] {
+            assert!(
+                args.split(';').any(|kv| kv == want),
+                "argument list missing {want}: {args}"
+            );
+        }
+        // size= is the advisory pre-base64 byte count of the JPEG payload.
+        let size: usize = args
+            .split(';')
+            .find_map(|kv| kv.strip_prefix("size="))
+            .expect("size argument")
+            .parse()
+            .unwrap();
+        assert!(s.ends_with('\x07'), "BEL-terminated: {s:?}");
+        let payload = &s[colon + 1..s.len() - 1];
+        // Pin the payload exactly: the base64 of encode_jpeg over the very
+        // same fixture (deterministic encoder), and size= as its pre-base64
+        // byte count.
+        let jpeg = encode_jpeg(&rgb).unwrap();
+        assert_eq!(size, jpeg.len(), "size= must be the JPEG byte count");
+        assert_eq!(payload, b64(&jpeg), "payload must be b64(encode_jpeg)");
+        assert!(
+            !payload.contains('\x1b'),
+            "single un-chunked payload, no ESC bytes: {payload:?}"
+        );
+    }
+
+    #[test]
+    fn emit_iterm2_gates_on_unchanged_key() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(8, 6, Rgb([0, 128, 255]));
+        let key = test_key("j.png", 64, 48);
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_iterm2(&mut sink, key.clone(), &rgb, 12, 4).unwrap(),
+            Emitted::Transmitted
+        );
+        // Unrelated repaint: same key -> zero bytes.
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_iterm2(&mut sink, key, &rgb, 12, 4).unwrap(),
+            Emitted::Gated
+        );
+        assert!(sink.is_empty(), "gated emit wrote bytes: {sink:?}");
+    }
+
+    #[test]
+    fn emit_iterm2_end_frame_reconciles_without_writes() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(8, 6, Rgb([0, 128, 255]));
+        let key = test_key("k.png", 64, 48);
+        let mut sink = Vec::new();
+        emit_iterm2(&mut sink, key.clone(), &rgb, 12, 4).unwrap();
+
+        // A gated emit claims the frame: end_frame keeps the placement.
+        begin_frame(true);
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_iterm2(&mut sink, key.clone(), &rgb, 12, 4).unwrap(),
+            Emitted::Gated
+        );
+        let mut sink = Vec::new();
+        end_frame(&mut sink).unwrap();
+        assert!(sink.is_empty(), "claimed placement must survive end_frame");
+        assert!(live_snapshot_for_test().is_some());
+
+        // Unclaimed frame (selection moved away): the live state is
+        // forgotten but NOTHING is written — inline images are ordinary
+        // cell content like sixel, already overwritten by this frame's
+        // full repaint (cell-content discipline, id-less).
+        begin_frame(true);
+        let mut sink = Vec::new();
+        end_frame(&mut sink).unwrap();
+        assert!(
+            sink.is_empty(),
+            "iterm2 reconcile must not write: {:?}",
+            String::from_utf8_lossy(&sink)
+        );
+        assert!(live_snapshot_for_test().is_none());
+
+        // Forgotten LIVE means a re-emit of the same key transmits again.
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_iterm2(&mut sink, key, &rgb, 12, 4).unwrap(),
+            Emitted::Transmitted
+        );
+    }
+
+    #[test]
+    fn emit_iterm2_new_key_skips_predecessor_blank() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(8, 6, Rgb([0, 128, 255]));
+        let mut sink = Vec::new();
+        emit_iterm2(&mut sink, test_key("old.png", 64, 48), &rgb, 12, 4).unwrap();
+
+        // New selection at a different origin: the old placement's region
+        // must NOT be touched mid-frame — those cells belong to whichever
+        // draw owns them in this frame's full repaint (blanking them could
+        // wipe panes drawn earlier, e.g. after a resize). Only the new
+        // target region is blanked, before the raster.
+        let mut key = test_key("new.png", 64, 48);
+        key.origin_cell = (0, 0);
+        let mut sink = Vec::new();
+        emit_iterm2(&mut sink, key, &rgb, 12, 4).unwrap();
+        let s = String::from_utf8_lossy(&sink);
+        assert!(
+            !s.contains("\x1b[3;11H"),
+            "old region must not be blanked: {s:?}"
+        );
+        let target_blank = s.find("\x1b[1;1H").expect("target region blanked");
+        let osc = s.find("\x1b]1337").expect("new raster transmitted");
+        assert!(target_blank < osc, "blank must precede the raster: {s:?}");
+    }
+
+    #[test]
+    fn emit_iterm2_encode_failure_leaves_no_placement() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(8, 6, Rgb([0, 128, 255]));
+        let key = test_key("m.png", 64, 48);
+        let mut sink = Vec::new();
+        emit_iterm2(&mut sink, key.clone(), &rgb, 12, 4).unwrap();
+
+        // encode_jpeg fails on a width past JPEG's 65535 limit (a 0x0
+        // raster encodes fine — verified empirically). The emit must
+        // propagate the Err, write no OSC (the blank pass may have run),
+        // and forget the predecessor so the NEXT emit retransmits rather
+        // than gating on a placement that no longer exists on screen.
+        let bomb = RgbImage::new(65536, 1);
+        let mut sink = Vec::new();
+        emit_iterm2(&mut sink, test_key("n.png", 64, 48), &bomb, 12, 4)
+            .expect_err("encode failure must propagate");
+        let s = String::from_utf8_lossy(&sink);
+        assert!(!s.contains("]1337"), "no OSC on encode failure: {s:?}");
+        assert!(live_snapshot_for_test().is_none(), "LIVE must be empty");
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_iterm2(&mut sink, key, &rgb, 12, 4).unwrap(),
+            Emitted::Transmitted,
+            "empty LIVE must retransmit, not gate"
+        );
     }
 
     #[test]
