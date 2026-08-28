@@ -74,6 +74,7 @@ pub enum ImageProtocolChoice {
     #[default]
     Auto,
     Kitty,
+    KittyUnicode,
     Iterm2,
     Sixel,
     HalfBlock,
@@ -94,9 +95,9 @@ pub struct GeneralConfig {
     /// install stays pure-Rust — PDFs then get the native text tier.
     #[serde(default)]
     pub pdf_render: bool,
-    /// Graphics protocol for image previews: auto | kitty | iterm2 |
-    /// sixel | half-block. Defaults to `auto` (detect at startup, fall
-    /// back to half-blocks on any uncertainty).
+    /// Graphics protocol for image previews: auto | kitty | kitty-unicode |
+    /// iterm2 | sixel | half-block. Defaults to `auto` (detect at startup,
+    /// fall back to half-blocks on any uncertainty).
     #[serde(default)]
     pub image_protocol: ImageProtocolChoice,
     /// Rate limit interval for preview updates in milliseconds
@@ -146,6 +147,7 @@ mod defaults_tests {
         for (raw, want) in [
             ("auto", ImageProtocolChoice::Auto),
             ("kitty", ImageProtocolChoice::Kitty),
+            ("kitty-unicode", ImageProtocolChoice::KittyUnicode),
             ("iterm2", ImageProtocolChoice::Iterm2),
             ("sixel", ImageProtocolChoice::Sixel),
             ("half-block", ImageProtocolChoice::HalfBlock),
@@ -156,6 +158,7 @@ mod defaults_tests {
         }
         // serde rename is exact: no aliasing of the kebab-case value
         assert!(toml::from_str::<GeneralConfig>("image_protocol = \"halfblock\"").is_err());
+        assert!(toml::from_str::<GeneralConfig>("image_protocol = \"kittyunicode\"").is_err());
     }
 
     #[test]
