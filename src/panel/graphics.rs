@@ -1807,11 +1807,21 @@ mod tests {
             Emitted::Transmitted
         );
         let s = String::from_utf8_lossy(&sink);
-        assert!(s.contains("\x1b[3;11H"), "origin missing: {s:?}");
         assert_eq!(
             s.matches("\x1b]1337;File=").count(),
             1,
             "exactly one OSC 1337: {s:?}"
+        );
+        // Ordering: blank pass first (its rows 3..6 CUP to column 11; row 6
+        // is written by blank_region ONLY), then the cursor parks at the
+        // origin — the LAST `\x1b[3;11H` is that move_to, the first one is
+        // the blank pass's top row — then the OSC payload.
+        let osc = s.find("\x1b]1337;File=").unwrap();
+        let last_blank_row = s.find("\x1b[6;11H").expect("blank pass missing");
+        let origin = s.rfind("\x1b[3;11H").expect("origin missing");
+        assert!(
+            last_blank_row < origin && origin < osc,
+            "blank pass -> origin CUP -> OSC ordering violated: {s:?}"
         );
         let (live_key, id) = live_snapshot_for_test().expect("live after emit");
         assert_eq!(live_key, key);
@@ -1841,9 +1851,12 @@ mod tests {
             .unwrap();
         assert!(s.ends_with('\x07'), "BEL-terminated: {s:?}");
         let payload = &s[colon + 1..s.len() - 1];
-        assert_eq!(payload.len(), size.div_ceil(3) * 4, "size matches payload");
-        // base64 of the JPEG magic FF D8 FF.
-        assert!(payload.starts_with("/9j/"), "JPEG payload: {payload:?}");
+        // Pin the payload exactly: the base64 of encode_jpeg over the very
+        // same fixture (deterministic encoder), and size= as its pre-base64
+        // byte count.
+        let jpeg = encode_jpeg(&rgb).unwrap();
+        assert_eq!(size, jpeg.len(), "size= must be the JPEG byte count");
+        assert_eq!(payload, b64(&jpeg), "payload must be b64(encode_jpeg)");
         assert!(
             !payload.contains('\x1b'),
             "single un-chunked payload, no ESC bytes: {payload:?}"
@@ -1908,6 +1921,60 @@ mod tests {
         assert_eq!(
             emit_iterm2(&mut sink, key, &rgb, 12, 4).unwrap(),
             Emitted::Transmitted
+        );
+    }
+
+    #[test]
+    fn emit_iterm2_new_key_skips_predecessor_blank() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(8, 6, Rgb([0, 128, 255]));
+        let mut sink = Vec::new();
+        emit_iterm2(&mut sink, test_key("old.png", 64, 48), &rgb, 12, 4).unwrap();
+
+        // New selection at a different origin: the old placement's region
+        // must NOT be touched mid-frame — those cells belong to whichever
+        // draw owns them in this frame's full repaint (blanking them could
+        // wipe panes drawn earlier, e.g. after a resize). Only the new
+        // target region is blanked, before the raster.
+        let mut key = test_key("new.png", 64, 48);
+        key.origin_cell = (0, 0);
+        let mut sink = Vec::new();
+        emit_iterm2(&mut sink, key, &rgb, 12, 4).unwrap();
+        let s = String::from_utf8_lossy(&sink);
+        assert!(
+            !s.contains("\x1b[3;11H"),
+            "old region must not be blanked: {s:?}"
+        );
+        let target_blank = s.find("\x1b[1;1H").expect("target region blanked");
+        let osc = s.find("\x1b]1337").expect("new raster transmitted");
+        assert!(target_blank < osc, "blank must precede the raster: {s:?}");
+    }
+
+    #[test]
+    fn emit_iterm2_encode_failure_leaves_no_placement() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(8, 6, Rgb([0, 128, 255]));
+        let key = test_key("m.png", 64, 48);
+        let mut sink = Vec::new();
+        emit_iterm2(&mut sink, key.clone(), &rgb, 12, 4).unwrap();
+
+        // encode_jpeg fails on a width past JPEG's 65535 limit (a 0x0
+        // raster encodes fine — verified empirically). The emit must
+        // propagate the Err, write no OSC (the blank pass may have run),
+        // and forget the predecessor so the NEXT emit retransmits rather
+        // than gating on a placement that no longer exists on screen.
+        let bomb = RgbImage::new(65536, 1);
+        let mut sink = Vec::new();
+        emit_iterm2(&mut sink, test_key("n.png", 64, 48), &bomb, 12, 4)
+            .expect_err("encode failure must propagate");
+        let s = String::from_utf8_lossy(&sink);
+        assert!(!s.contains("]1337"), "no OSC on encode failure: {s:?}");
+        assert!(live_snapshot_for_test().is_none(), "LIVE must be empty");
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_iterm2(&mut sink, key, &rgb, 12, 4).unwrap(),
+            Emitted::Transmitted,
+            "empty LIVE must retransmit, not gate"
         );
     }
 
