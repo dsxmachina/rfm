@@ -154,7 +154,16 @@ graphics_passthrough`
   content looks like a placeholder, poll `state` until `seq` stabilizes.
 - Log lines vanish from the *screen* after 10s but stay in the socket `log`
   history (200 lines). Background-command failures land there — check `log`
-  first when something "silently" fails.
+  first when something "silently" fails. Any on-screen widget assertion must
+  capture within the SAME shell invocation as the triggering action — the
+  round-trip between separate Bash tool calls exceeds the 10 s TTL.
+- The `entries` reply is a BARE JSON array (`[{name,marked,hidden,selected},…]`),
+  not `{entries: [...]}` — write the first `jq` accordingly.
+- Under the direct-launch harness rfm IS the tmux session's root command:
+  quitting rfm kills the session (`capture-pane`/`list-panes` error with
+  "can't find session" — that is the expected quit evidence, not a failure).
+  rfm also unlinks its socket file on clean exit, so post-quit socat says
+  "No such file or directory" rather than "Connection refused".
 - Inside tmux, with the default `auto` config, the graphics protocol resolves
   to **half-block** — but only when no kitty/Ghostty passthrough hint reaches
   the pane. A tmux server started from kitty/Ghostty fossilizes

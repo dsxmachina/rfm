@@ -56,3 +56,35 @@ cached panel is still shown instantly but a background refresh is always
 queued (the content manager re-lists and re-normalizes, refreshing badges a
 frame later). Measure the navigation-time cost on large directories before
 committing — that early return is the optimization being traded away.
+
+### Later sightings
+Run 3 (step 11.7) saw the same class transiently: the left column's `dest`
+child-count badge lagged one paste (`2` while holding 3) — same cached
+`DirElem.suffix` mechanism, self-corrected on the next mtime-visible change.
+
+## KI-2 — Content-only file modification never wakes the listing
+
+- **Found:** run 3, incidental observation during section 08 (previews).
+- **Severity:** papercut (a stale size badge in the listing; previews shown on
+  selection are fresh because selection re-reads the file).
+- **Class:** state (the watcher never fires, so no reload is requested).
+
+### Symptom
+With rfm idle on a directory, modifying a file's CONTENT in place from outside
+(truncate+rewrite of the selected file, or an append to another file in cwd)
+leaves `seq` unchanged (observed stable across 2.5 s) and the center listing's
+size column stale until some rename/create/delete event next fires in that
+directory.
+
+### Root cause (suspected — not yet source-verified)
+The directory watcher reacts to the event kinds it subscribes/filters for
+(create/remove/rename — cf. the `Modify(Name)` rename handling added in
+692be9f); pure `Modify(Data)` events are either not watched or filtered out,
+so no `panel-update` is requested. To be confirmed in `src` before any fix.
+
+### Why it is not being hot-fixed
+Reloading on every `Modify(Data)` would make busy directories (logs, builds,
+downloads) churn the listing and the preview pipeline continuously — the
+current behavior is plausibly a deliberate noise trade-off. Needs a maintainer
+decision (e.g. debounced size-only refresh) rather than a hot fix; recorded so
+future runs don't re-file the stale-size observation as a fresh bug.

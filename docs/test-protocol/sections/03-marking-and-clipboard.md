@@ -148,7 +148,7 @@ Facts this section relies on (verified in source, `src/panel/manager.rs`
 
 ### 03.9 — Cross-directory cut moves the file
 
-**Action:** `tmux send-keys -t $SESSION G` (bottom → `a.txt_`), then `tmux send-keys -t $SESSION d d`; await-idle; assert `clipboard == {"files":["$FIXTURE/dest/a.txt_"],"op":"cut"}` and `log 5` contains `cut 1 items`. Then `tmux send-keys -t $SESSION h` (back to `$FIXTURE`; selection restored to `dest`), `tmux send-keys -t $SESSION j` (→ `src2`), `tmux send-keys -t $SESSION l` (enter `src2`, empty), await-idle. Then `tmux send-keys -t $SESSION p p`; `wait_undo 3`; await-idle.
+**Action:** `tmux send-keys -t $SESSION G` (bottom → `a.txt_`), then `tmux send-keys -t $SESSION d d`; await-idle; assert `clipboard == {"files":["$FIXTURE/dest/a.txt_"],"op":"cut"}` and `log 5` contains `cut 1 items` (grep the full phrase — a bare `cut` substring also matches `CommandExecutor started` and zoxide's `Executing command` lines). Then `tmux send-keys -t $SESSION h` (back to `$FIXTURE`; selection restored to `dest`), `tmux send-keys -t $SESSION j` (→ `src2`), `tmux send-keys -t $SESSION l` (enter `src2`, empty), await-idle. Then `tmux send-keys -t $SESSION p p`; `wait_undo 3`; await-idle.
 
 **Expect (socket):** `undo_depth==3`; `clipboard==null`; `cwd=="$FIXTURE/src2"`. `entries center`: exactly one entry `a.txt_`.
 

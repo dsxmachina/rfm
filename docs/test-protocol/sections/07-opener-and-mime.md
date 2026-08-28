@@ -233,8 +233,11 @@ marker.
 **Expect (socket):** `log` contains `Opening '$FIXTURE/a file & test.txt'`;
 no ERROR lines from this open.
 **Expect (fs):** `MARKER_LINES(2)`: line 1 `TEXT-DEFAULT`, line 2 the EXACT
-string `$FIXTURE/a file & test.txt` — one line, spaces and `&` intact, no
-quoting artifacts, and no extra lines (which would indicate word-splitting).
+string `$FIXTURE/a file & test.txt` — verify with
+`grep -Fx "$FIXTURE/a file & test.txt" opened.log` (visual inspection lies on
+systems where `cat` is aliased to `bat`: spaces render as middle dots) — one
+line, spaces and `&` intact, no quoting artifacts, and no extra lines (which
+would indicate word-splitting).
 The opener is spawned via `Command::new` with the path as a single arg — no
 shell is involved; this step guards that invariant.
 **Expect (screen):** UI repainted, selection unchanged.
@@ -253,8 +256,9 @@ application section, not xdg-open).
 **Action:** SELECT(`pngmagic`) (mime `image/png` → `[open.image]` →
 `/nonexistent/rfm-test-opener`). Send `l`. `await-idle`. Then `log 30`,
 `state`, capture-pane, then send `j` and `k` and `await-idle` again.
-**Expect (socket):** `log` contains ERROR `Opening failed:` (spawn error for
-the missing binary, e.g. "No such file or directory") preceded by INFO
+**Expect (socket):** `log` contains WARN `Opening failed:` (spawn error for
+the missing binary, e.g. "No such file or directory" — recoverable user-op
+failures are warn since da35a98) preceded by INFO
 `Opening '$FIXTURE/pngmagic' with '/nonexistent/rfm-test-opener'`.
 `mode=="normal"`; after the `j`/`k` pair, `state` responds normally and
 `selection` is back on `pngmagic` — raw mode was restored by the guard, keys
@@ -262,7 +266,7 @@ still work.
 **Expect (screen):** Full UI repainted after `await-idle` (the open path
 clears the screen before resolving the app; the error path must not leave a
 blank/cooked terminal). The collapsed log widget row (two rows above the
-footer) may show the error line for its 10 s TTL.
+footer) may show the warn line for its 10 s TTL.
 **Expect (fs):** `opened.log` did NOT grow (no fake opener involved).
 
 ### 07.17 — FIFO selection: blank preview, no event-loop wedge
@@ -281,13 +285,9 @@ step exists for.
 `prw-...`) and the mime field shows `text/plain` (sniff refuses non-regular
 files → fallback). The **load-bearing** assertion is the no-wedge / responsive
 socket + the correct footer.
-**Known bug (BUG-2, run 1 — being fixed via TDD):** on the current binary the
-right (preview) pane stays stuck on a `Loading...` + path placeholder for a
-selected FIFO instead of the intended blank `PreviewPanel::Empty` (the
-directory-panel `loading` flag is never cleared for a non-regular file). Until
-the fix lands, treat a stuck `Loading...` here as the documented BUG-2 failure
-mode (screen only — no wedge, footer correct), not a fresh finding. Once fixed,
-the preview pane should be blank.
+**Preview pane:** blank (the intended `PreviewPanel::Empty` for a non-regular
+file; the run-1 BUG-2 `Loading...` placeholder is fixed — a stuck `Loading...`
+here would be a regression).
 **Note:** `await-idle` does not cover in-flight preview tasks; if anything
 looks mid-load, poll `state` until `seq` is stable across two queries, then
 assert.

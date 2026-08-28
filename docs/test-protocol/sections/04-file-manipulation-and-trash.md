@@ -125,7 +125,7 @@ mark chord when a longer explicit binding (`mkdir`) shares the prefix (commands.
 
 ### 04.8 — touch
 **Action:** `tmux send-keys -t $SESSION -l touch`; await-idle; assert `mode == "touch"` and
-footer prompt `Touch:` (grey). Then `-l "made file.txt"`, then `Enter`; await-idle.
+footer prompt `Touch:` (label in the same green reverse as `Make Directory:`; the INPUT AREA is grey, 38;5;7). Then `-l "made file.txt"`, then `Enter`; await-idle.
 **Expect (socket):** `mode == "normal"`; `undo_depth == 3`; `entries center` contains
 `made file.txt`.
 **Expect (screen):** `made file.txt` listed in the file section.
@@ -225,7 +225,8 @@ disabled).
 ### 04.17 — Relaunch with use_trash = false
 **Setup:**
 ```bash
-FIXTURE2=$(mktemp -d); DATA2=$(mktemp -d); CFG2=$(mktemp -d)
+PARENT2=$(mktemp -d); FIXTURE2=$PARENT2/fx2; mkdir -p "$FIXTURE2"; DATA2=$(mktemp -d); CFG2=$(mktemp -d)
+# (quiet-parent rule: a bare mktemp fixture would make the left panel watch /tmp itself)
 touch "$FIXTURE2/doomed.txt" "$FIXTURE2/keeper.txt"
 printf '[general]\nuse_trash = false\n' > "$CFG2/config.toml"
 ```
@@ -263,7 +264,7 @@ Disk: `[ ! -e "$FIXTURE2/doomed.txt" ]` — nothing came back.
 
 ---
 
-**Teardown:** `tmux kill-session -t $SESSION; rm -rf "$PARENT" "$DATA" "$CFG" "$FIXTURE2" "$DATA2" "$CFG2"; rm -f $SOCK` (`$PARENT` wraps the quiet-parent `$FIXTURE`).
+**Teardown:** `tmux kill-session -t $SESSION; rm -rf "$PARENT" "$DATA" "$CFG" "$PARENT2" "$DATA2" "$CFG2"; rm -f $SOCK` (`$PARENT` wraps the quiet-parent `$FIXTURE`).
 
 **Section coverage gaps (deliberate):**
 - Undo/redo of rename/mkdir/touch/trash-delete (the `u`/`ctrl-r` round-trips, redo re-trash,

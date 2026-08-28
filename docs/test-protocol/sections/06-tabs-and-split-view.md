@@ -117,7 +117,9 @@ tab strip `1 2` with `1` now highlighted (verify via `-e`).
 poll `state` until `preview_path=="$FIXTURE/dirB/b1.txt"` and `seq` stable.
 After second Tab: `focused==0` (wrapped 1→0 with 2 tabs),
 `preview_path=="$FIXTURE/dirA"`. `log 30` contains TRACE
-`command: focus next tab` (twice).
+`command: focus next tab` twice — the socket log reply is a single JSON line,
+so count with `grep -o 'focus next tab' | wc -l` (a `grep -c` undercounts
+repeats within the one line).
 **Expect (screen):** after first Tab the right column shows the `b1.txt`
 preview (`bravo one`); after the second it shows the `dirA` directory
 listing (`a1.txt`). Tab strip highlight follows.
@@ -250,6 +252,9 @@ covers all tabs); `tabs[1].total==0`, `tabs[1].selection==null`,
 `tabs[1].marked==[]`. `log 30` contains INFO `paste 1 items, overwrite =
 false` and NO `Failed to move` line. Disk: `$FIXTURE/b1.txt` exists,
 `$FIXTURE/dirB` is empty.
+**Expect (screen):** the right (preview) column legitimately shows `(empty)` —
+tab 0's selection is still `dirB` (left there by 06.14) and `dirB` is now
+empty; that is the correct preview, not a stale pane.
 **Expect (screen):** single view of tab 1: center lists `dirA`, `dirB`,
 `amp & file.txt`, `b1.txt`, `r1.txt`, `spaced name.txt`.
 **Note:** paste is an async spawn_blocking task — `await-idle` alone is NOT
@@ -307,13 +312,14 @@ keybinding dispatch path).
 
 ### 06.22 — Closing the LAST tab quits rfm
 **Action:** `tmux send-keys -t $SESSION q`, then wait ~1 s.
-**Expect (socket):** the socket no longer answers — `echo state | socat -
-UNIX-CONNECT:$SOCK` fails (connection refused) or returns nothing. Note the
-socket FILE may still exist; its liveness, not its presence, is the
-assertion.
-**Expect (screen):** `capture-pane` shows the shell prompt again (no rfm
-header/columns/footer); `tmux list-panes -t $SESSION -F '#{pane_current_command}'`
-no longer reports rfm.
+**Expect (socket):** the socket no longer answers — socat fails ("No such
+file or directory" after rfm unlinks it on clean exit, or "Connection
+refused" on a stale file) or returns nothing. Its liveness, not its
+presence, is the assertion.
+**Expect (screen):** with the binary launched directly as the tmux session
+command (README harness), the SESSION dies with rfm — `capture-pane` /
+`list-panes` erroring with "can't find session" IS the pass condition. Only
+a shell-wrapped launch leaves a pane to show a prompt.
 **Note:** this is `CloseCmd::QuitWithPath` — the same exit path as `Q`.
 `--choose-dir` output is out of scope here. Do not expect `./error.log`:
 warns alone (06.8, 06.12) do not produce it.

@@ -6,7 +6,9 @@ Covers the in-session undo/redo stack (`src/undo/mod.rs`, applied in
 `PanelManager::apply_undo`/`apply_redo`): single- and multi-change
 transactions, async paste recording via `undo_tx`, trash-delete
 undo/redo, the `_`-collision suffix, the permanent-delete Barrier, and
-the `no_redo` archive semantics. `state.undo_depth` / `state.redo_depth`
+the `no_redo` archive semantics (archive/paste effects are asynchronous:
+poll — usually instant on tiny fixtures, but the rule is load-bearing on slow
+disks). `state.undo_depth` / `state.redo_depth`
 are the spine of every assertion — **the undo stack counts transactions
 AND barriers; the redo stack counts redoable transactions only.**
 
@@ -251,7 +253,9 @@ isolation failure, not an rfm bug.
 `tar` (3-char sequence), await-idle.
 **Expect (socket):** `undo_depth`==1, `redo_depth`==0. `log 10` has
 `Creating tar.gz archive from 1 files`. `entries center` contains
-`output.tar.gz`. Disk: `$FIXTURE/output.tar.gz` exists and
+`output.tar.gz`. Disk: the archive comes from a background command — poll for
+the file (up to ~5 s, like the paste rule) before asserting;
+`$FIXTURE/output.tar.gz` exists and
 `tar -tzf "$FIXTURE/output.tar.gz"` lists exactly `d & e.txt` (name
 with space and `&` passed as argv, no shell mangling).
 **Expect (screen):** `output.tar.gz` row visible.
