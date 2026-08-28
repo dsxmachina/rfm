@@ -22,6 +22,7 @@ use parking_lot::Mutex;
 
 use crate::config::ImageProtocolChoice;
 
+mod placeholder;
 mod sixel;
 
 /// Wall-clock budget for the whole startup probe (D1).
