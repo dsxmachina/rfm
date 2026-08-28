@@ -61,13 +61,24 @@ impl GraphicsProtocol {
 /// The lookup is injected so the whole matrix is testable without touching
 /// the process environment. Multiplexers are checked *first*: tmux/screen
 /// swallow graphics escapes without passthrough, so tmux-on-kitty must stay
-/// on half-blocks even though the kitty vars leak through.
+/// on half-blocks even though the kitty vars leak through — EXCEPT that a
+/// kitty/Ghostty fossil hint inside tmux is inconclusive: passthrough-wrapped
+/// kitty-unicode could work there, so it falls through to the (wrapped) probe.
 pub fn detect_from_env(env: &dyn Fn(&str) -> Option<String>) -> Option<GraphicsProtocol> {
-    if env("TMUX").is_some() {
+    let term = env("TERM").unwrap_or_default();
+    if env("TMUX").is_some() || term.starts_with("tmux") {
+        // The tmux server keeps the env of wherever it started, so these
+        // vars are fossils (stale after a cross-terminal re-attach). Still
+        // worth one bounded probe: a wrong positive costs a 250 ms timeout,
+        // a wrong negative is cured by the explicit pin. Everyone else
+        // keeps today's instant half-block, zero startup cost.
+        if env("KITTY_WINDOW_ID").is_some() || env("GHOSTTY_RESOURCES_DIR").is_some() {
+            return None;
+        }
         return Some(GraphicsProtocol::HalfBlock);
     }
-    let term = env("TERM").unwrap_or_default();
-    if term.starts_with("tmux") || term.starts_with("screen") {
+    if term.starts_with("screen") {
+        // GNU screen has no passthrough — no hint can help.
         return Some(GraphicsProtocol::HalfBlock);
     }
     if env("KITTY_WINDOW_ID").is_some() || term == "xterm-kitty" {
@@ -927,13 +938,30 @@ fn read_chunk(fd: RawFd, buf: &mut Vec<u8>) -> bool {
 /// is: a kitty graphics query (`q=0` — this one *wants* the reply; a 1x1
 /// no-op transmission), optionally `CSI 14 t` when pixel geometry is still
 /// missing, and DA1 last as the universal terminator.
-fn send_probe_and_read(want_pixels: bool) -> Vec<u8> {
+///
+/// With `wrap` (probing through tmux) the kitty query AND the DA1 fence are
+/// passthrough-wrapped so the OUTER terminal answers them — a plain DA1
+/// would be answered by tmux itself, instantly, fencing the read loop
+/// before the outer terminal's APC reply arrives. `CSI 14 t` stays
+/// unwrapped: tmux answers it with pane-local pixels, exactly the values
+/// the cell geometry needs.
+fn send_probe_and_read(want_pixels: bool, wrap: bool) -> Vec<u8> {
     use std::io::Write;
-    let mut batch: Vec<u8> = b"\x1b_Gi=4242,s=1,v=1,a=q,t=d,f=24,q=0;AAAA\x1b\\".to_vec();
+    const KITTY_QUERY: &[u8] = b"\x1b_Gi=4242,s=1,v=1,a=q,t=d,f=24,q=0;AAAA\x1b\\";
+    const DA1: &[u8] = b"\x1b[c";
+    let mut batch: Vec<u8> = if wrap {
+        wrap_passthrough(KITTY_QUERY)
+    } else {
+        KITTY_QUERY.to_vec()
+    };
     if want_pixels {
         batch.extend_from_slice(b"\x1b[14t");
     }
-    batch.extend_from_slice(b"\x1b[c");
+    if wrap {
+        batch.extend_from_slice(&wrap_passthrough(DA1));
+    } else {
+        batch.extend_from_slice(DA1);
+    }
     let mut out = std::io::stdout();
     if out.write_all(&batch).and_then(|_| out.flush()).is_err() {
         return Vec::new();
@@ -942,20 +970,26 @@ fn send_probe_and_read(want_pixels: bool) -> Vec<u8> {
 }
 
 /// The full startup decision over injected seams (testable without a tty):
-/// returns the protocol, the cell geometry (if any) and a reason string for
-/// the log. `winsize` is the ioctl seam; `probe` writes the probe batch
-/// (argument: also request `CSI 14 t` pixel size) and returns the reply
-/// bytes. Explicit choices never probe unless they need missing geometry;
-/// sixel without geometry degrades to half-block (D2: a sixel raster must
-/// be pre-sized in pixels, while kitty, kitty-unicode and iterm2 scale
-/// into the cell rectangle).
+/// returns the protocol, the cell geometry (if any), a reason string for
+/// the log and whether APC output must be tmux-passthrough-wrapped
+/// (`in_tmux && kitty-unicode` — the only combination that needs the
+/// envelope). `winsize` is the ioctl seam; `probe` writes the probe batch
+/// (arguments: also request `CSI 14 t` pixel size; passthrough-wrap the
+/// capability queries) and returns the reply bytes. Explicit choices never
+/// probe unless they need missing geometry — and that geometry probe stays
+/// unwrapped even inside tmux (capability is pinned, not probed, and tmux
+/// answers `CSI 14 t`/DA1 itself). Sixel without geometry degrades to
+/// half-block (D2: a sixel raster must be pre-sized in pixels, while
+/// kitty, kitty-unicode and iterm2 scale into the cell rectangle).
 fn init_from(
     choice: ImageProtocolChoice,
     env: &dyn Fn(&str) -> Option<String>,
     winsize: &mut dyn FnMut() -> Option<(u16, u16, u16, u16)>,
-    probe: &mut dyn FnMut(bool) -> Vec<u8>,
-) -> (GraphicsProtocol, Option<CellGeometry>, &'static str) {
+    probe: &mut dyn FnMut(bool, bool) -> Vec<u8>,
+) -> (GraphicsProtocol, Option<CellGeometry>, &'static str, bool) {
     const NO_SIXEL_GEO: &str = "sixel needs pixel geometry, none available";
+    let in_tmux = env("TMUX").is_some()
+        || env("TERM").map_or(false, |t| t.starts_with("tmux"));
     let ws = winsize();
     let mut geometry = ws.and_then(|(c, r, x, y)| cell_geometry_from_winsize(c, r, x, y));
     // Combine a CSI-14t pixel reply with the ioctl cols/rows.
@@ -964,10 +998,8 @@ fn init_from(
         let (w, h) = outcome.pixel_size?;
         cell_geometry_from_winsize(cols, rows, w, h)
     };
-    match choice {
-        ImageProtocolChoice::HalfBlock => {
-            (GraphicsProtocol::HalfBlock, geometry, "explicit config")
-        }
+    let (proto, reason) = match choice {
+        ImageProtocolChoice::HalfBlock => (GraphicsProtocol::HalfBlock, "explicit config"),
         ImageProtocolChoice::Kitty
         | ImageProtocolChoice::KittyUnicode
         | ImageProtocolChoice::Iterm2
@@ -975,34 +1007,52 @@ fn init_from(
             if geometry.is_none() {
                 // The only stdin read for an explicit choice: fetch the
                 // pixel size when the ioctl reported zeros.
-                geometry = geo_from_probe(&parse_probe(&probe(true)));
+                geometry = geo_from_probe(&parse_probe(&probe(true, false)));
             }
             let proto = resolve(choice, None, None);
             if proto == GraphicsProtocol::Sixel && geometry.is_none() {
-                return (GraphicsProtocol::HalfBlock, None, NO_SIXEL_GEO);
+                (GraphicsProtocol::HalfBlock, NO_SIXEL_GEO)
+            } else {
+                (proto, "explicit config")
             }
-            (proto, geometry, "explicit config")
         }
         ImageProtocolChoice::Auto => {
             if let Some(hit) = detect_from_env(env) {
-                return (hit, geometry, "env");
-            }
-            let outcome = parse_probe(&probe(geometry.is_none()));
-            if geometry.is_none() {
-                geometry = geo_from_probe(&outcome);
-            }
-            let reason = if outcome.da1_seen {
-                "probe replies"
+                (hit, "env")
             } else {
-                "probe timeout"
-            };
-            let proto = resolve(ImageProtocolChoice::Auto, None, Some(&outcome));
-            if proto == GraphicsProtocol::Sixel && geometry.is_none() {
-                return (GraphicsProtocol::HalfBlock, None, NO_SIXEL_GEO);
+                let outcome = parse_probe(&probe(geometry.is_none(), in_tmux));
+                if geometry.is_none() {
+                    geometry = geo_from_probe(&outcome);
+                }
+                let reason = if outcome.da1_seen {
+                    "probe replies"
+                } else {
+                    "probe timeout"
+                };
+                let proto = if in_tmux {
+                    // Inside tmux (reached only on a fossil hint) the wrapped
+                    // probe queried the OUTER terminal. A kitty OK means the
+                    // envelope round-trips → kitty-unicode. Anything else —
+                    // including a sixel attr in the outer DA1 — is half-block:
+                    // outer sixel does not mean tmux passes sixel through.
+                    if outcome.kitty_ok {
+                        GraphicsProtocol::KittyUnicode
+                    } else {
+                        GraphicsProtocol::HalfBlock
+                    }
+                } else {
+                    resolve(ImageProtocolChoice::Auto, None, Some(&outcome))
+                };
+                if proto == GraphicsProtocol::Sixel && geometry.is_none() {
+                    (GraphicsProtocol::HalfBlock, NO_SIXEL_GEO)
+                } else {
+                    (proto, reason)
+                }
             }
-            (proto, geometry, reason)
         }
-    }
+    };
+    let wrap = in_tmux && proto == GraphicsProtocol::KittyUnicode;
+    (proto, geometry, reason, wrap)
 }
 
 /// Resolve the graphics protocol and cell geometry once at startup.
@@ -1012,18 +1062,19 @@ fn init_from(
 /// un-echoed, and nothing else is reading stdin yet, so the reply bytes are
 /// consumed here instead of surfacing as phantom key events.
 pub fn init(choice: ImageProtocolChoice) {
-    let (proto, geometry, reason) = init_from(
+    let (proto, geometry, reason, wrap) = init_from(
         choice,
         &|key| std::env::var(key).ok(),
         &mut winsize_via_ioctl,
         &mut send_probe_and_read,
     );
     let _ = PROTOCOL.set(proto);
+    PASSTHROUGH.store(wrap, Ordering::Relaxed);
     if let Some(geo) = geometry {
         GEOMETRY.store(pack_geometry(geo), Ordering::Relaxed);
     }
     log::debug!(
-        "graphics: probe -> {} ({reason}), cell geometry {:?}",
+        "graphics: probe -> {} ({reason}), cell geometry {:?}, passthrough {wrap}",
         proto.name(),
         geometry
     );
@@ -1047,12 +1098,11 @@ mod tests {
 
     #[test]
     fn env_tmux_var_resolves_half_block() {
-        // tmux without passthrough swallows graphics escapes — even when the
-        // outer terminal is kitty, auto must stay on half-blocks.
+        // tmux without passthrough swallows graphics escapes — with no hint
+        // of a capable outer terminal, auto stays on instant half-blocks.
         let env = env_of(&[
             ("TMUX", "/tmp/tmux-1000/default,42,0"),
             ("TERM", "xterm-256color"),
-            ("KITTY_WINDOW_ID", "1"),
         ]);
         assert_eq!(detect_from_env(&env), Some(GraphicsProtocol::HalfBlock));
     }
@@ -1060,14 +1110,50 @@ mod tests {
     #[test]
     fn env_screen_and_tmux_term_resolve_half_block() {
         for term in ["screen-256color", "tmux-256color"] {
-            // Checked before the kitty vars so tmux-on-kitty stays safe.
-            let env = env_of(&[("TERM", term), ("KITTY_WINDOW_ID", "1")]);
+            // Hint-free multiplexer TERMs win instantly, before any probe.
+            let env = env_of(&[("TERM", term)]);
             assert_eq!(
                 detect_from_env(&env),
                 Some(GraphicsProtocol::HalfBlock),
                 "for TERM={term}"
             );
         }
+    }
+
+    #[test]
+    fn env_tmux_with_kitty_hint_falls_through_to_probe() {
+        // A fossil hint of a kitty-protocol outer terminal (the tmux server
+        // keeps the env of wherever it started): inconclusive — worth one
+        // bounded passthrough probe instead of instant half-block.
+        for hint in ["KITTY_WINDOW_ID", "GHOSTTY_RESOURCES_DIR"] {
+            let env = env_of(&[
+                ("TMUX", "/tmp/tmux-1000/default,42,0"),
+                ("TERM", "tmux-256color"),
+                (hint, "1"),
+            ]);
+            assert_eq!(detect_from_env(&env), None, "for hint {hint}");
+        }
+        // TERM tmux* without the TMUX var (ssh into a tmux session) is
+        // still tmux — the hint falls through to the probe there too.
+        let env = env_of(&[("TERM", "tmux-256color"), ("KITTY_WINDOW_ID", "1")]);
+        assert_eq!(detect_from_env(&env), None);
+    }
+
+    #[test]
+    fn env_tmux_without_hint_stays_half_block() {
+        // No outer-terminal hint: today's instant resolution, zero probe cost.
+        let env = env_of(&[
+            ("TMUX", "/tmp/tmux-1000/default,42,0"),
+            ("TERM", "tmux-256color"),
+        ]);
+        assert_eq!(detect_from_env(&env), Some(GraphicsProtocol::HalfBlock));
+    }
+
+    #[test]
+    fn env_screen_term_stays_half_block_despite_hint() {
+        // GNU screen has no passthrough — no hint can help.
+        let env = env_of(&[("TERM", "screen-256color"), ("KITTY_WINDOW_ID", "1")]);
+        assert_eq!(detect_from_env(&env), Some(GraphicsProtocol::HalfBlock));
     }
 
     #[test]
@@ -1426,11 +1512,11 @@ mod tests {
     #[test]
     fn init_with_explicit_choice_never_reads() {
         // Explicit config with usable ioctl geometry: no stdin read at all.
-        let (proto, geo, _reason) = init_from(
+        let (proto, geo, _reason, _passthrough) = init_from(
             ImageProtocolChoice::Kitty,
             &|_| None,
             &mut || Some((100, 50, 800, 1000)),
-            &mut |_| panic!("probe must not run for an explicit choice with geometry"),
+            &mut |_, _| panic!("probe must not run for an explicit choice with geometry"),
         );
         assert_eq!(proto, GraphicsProtocol::Kitty);
         assert_eq!(
@@ -1445,11 +1531,11 @@ mod tests {
     #[test]
     fn init_iterm2_pin_with_geometry_never_probes() {
         // Explicit iterm2 pin with usable ioctl geometry: no stdin read.
-        let (proto, geo, _reason) = init_from(
+        let (proto, geo, _reason, _passthrough) = init_from(
             ImageProtocolChoice::Iterm2,
             &|_| None,
             &mut || Some((100, 50, 800, 1000)),
-            &mut |_| panic!("probe must not run for an explicit choice with geometry"),
+            &mut |_, _| panic!("probe must not run for an explicit choice with geometry"),
         );
         assert_eq!(proto, GraphicsProtocol::Iterm2);
         assert_eq!(
@@ -1463,26 +1549,29 @@ mod tests {
 
     #[test]
     fn init_auto_env_hit_skips_probe() {
+        // Hint-free tmux: the env wins instantly, no probe.
         let env = env_of(&[("TMUX", "/tmp/tmux-1000/default,42,0")]);
-        let (proto, _geo, _reason) = init_from(
+        let (proto, _geo, _reason, passthrough) = init_from(
             ImageProtocolChoice::Auto,
             &env,
             &mut || Some((100, 50, 800, 1000)),
-            &mut |_| panic!("probe must not run on an env hit"),
+            &mut |_, _| panic!("probe must not run on an env hit"),
         );
         assert_eq!(proto, GraphicsProtocol::HalfBlock);
+        assert!(!passthrough, "half-block never wraps");
     }
 
     #[test]
     fn init_auto_probe_resolves_sixel_with_csi14t_geometry() {
         // ioctl has cols/rows but zero pixels (ssh case): the probe must ask
         // for CSI 14 t and its reply supplies the pixel geometry.
-        let (proto, geo, _reason) = init_from(
+        let (proto, geo, _reason, _passthrough) = init_from(
             ImageProtocolChoice::Auto,
             &|_| None,
             &mut || Some((100, 50, 0, 0)),
-            &mut |want_pixels| {
+            &mut |want_pixels, wrap| {
                 assert!(want_pixels, "zero ioctl pixels must request CSI 14 t");
+                assert!(!wrap, "probe outside tmux must stay unwrapped");
                 b"\x1b[4;480;800t\x1b[?62;4c".to_vec()
             },
         );
@@ -1500,21 +1589,21 @@ mod tests {
     fn init_sixel_without_geometry_degrades_to_half_block() {
         // Sixel rasters must be pre-sized to the pane; without any pixel
         // geometry the protocol cannot work and degrades to half-blocks.
-        let (proto, geo, _reason) = init_from(
+        let (proto, geo, _reason, _passthrough) = init_from(
             ImageProtocolChoice::Sixel,
             &|_| None,
             &mut || None,
-            &mut |_| Vec::new(), // probe answers nothing
+            &mut |_, _| Vec::new(), // probe answers nothing
         );
         assert_eq!(proto, GraphicsProtocol::HalfBlock);
         assert_eq!(geo, None);
         // Kitty scales into the cell rectangle, so it survives missing
         // geometry (an 8x16 cell is assumed later by the emitter).
-        let (proto, geo, _reason) = init_from(
+        let (proto, geo, _reason, _passthrough) = init_from(
             ImageProtocolChoice::Kitty,
             &|_| None,
             &mut || None,
-            &mut |_| Vec::new(),
+            &mut |_, _| Vec::new(),
         );
         assert_eq!(proto, GraphicsProtocol::Kitty);
         assert_eq!(geo, None);
@@ -1524,11 +1613,11 @@ mod tests {
     fn init_iterm2_pin_without_geometry_keeps_iterm2() {
         // iTerm2 sizes in cells (width=/height=), so like kitty it survives
         // missing pixel geometry — the sixel degrade must stay sixel-only.
-        let (proto, geo, _reason) = init_from(
+        let (proto, geo, _reason, _passthrough) = init_from(
             ImageProtocolChoice::Iterm2,
             &|_| None,
             &mut || None,
-            &mut |_| Vec::new(), // probe answers nothing
+            &mut |_, _| Vec::new(), // probe answers nothing
         );
         assert_eq!(proto, GraphicsProtocol::Iterm2);
         assert_eq!(geo, None);
@@ -1536,14 +1625,139 @@ mod tests {
 
     #[test]
     fn init_auto_probe_timeout_is_half_block() {
-        let (proto, _geo, reason) = init_from(
+        let (proto, _geo, reason, _passthrough) = init_from(
             ImageProtocolChoice::Auto,
             &|_| None,
             &mut || Some((100, 50, 800, 1000)),
-            &mut |_| Vec::new(),
+            &mut |_, _| Vec::new(),
         );
         assert_eq!(proto, GraphicsProtocol::HalfBlock);
         assert!(reason.contains("timeout"), "reason was: {reason}");
+    }
+
+    /// The tmux env every hinted-probe test runs under.
+    fn tmux_kitty_hint_env() -> impl Fn(&str) -> Option<String> {
+        env_of(&[
+            ("TMUX", "/tmp/tmux-1000/default,42,0"),
+            ("TERM", "tmux-256color"),
+            ("KITTY_WINDOW_ID", "1"),
+        ])
+    }
+
+    #[test]
+    fn init_auto_tmux_hinted_probe_kitty_ok_resolves_kitty_unicode() {
+        // tmux + kitty fossil hint: the env is inconclusive, the probe runs
+        // passthrough-wrapped, and a kitty OK maps to kitty-unicode.
+        let (proto, _geo, reason, passthrough) = init_from(
+            ImageProtocolChoice::Auto,
+            &tmux_kitty_hint_env(),
+            &mut || Some((100, 50, 800, 1000)),
+            &mut |_, wrap| {
+                assert!(wrap, "probe inside tmux must wrap the APC query and DA1");
+                b"\x1b_Gi=4242;OK\x1b\\\x1b[?62c".to_vec()
+            },
+        );
+        assert_eq!(proto, GraphicsProtocol::KittyUnicode);
+        assert_eq!(reason, "probe replies");
+        assert!(passthrough, "kitty-unicode inside tmux must wrap its APCs");
+    }
+
+    #[test]
+    fn init_auto_tmux_hinted_probe_timeout_is_half_block() {
+        // Wrapped queries silently dropped (allow-passthrough off, or the
+        // outer terminal ignores the APC): degrade to half-block.
+        let (proto, _geo, reason, passthrough) = init_from(
+            ImageProtocolChoice::Auto,
+            &tmux_kitty_hint_env(),
+            &mut || Some((100, 50, 800, 1000)),
+            &mut |_, wrap| {
+                assert!(wrap, "probe inside tmux must wrap the APC query and DA1");
+                Vec::new()
+            },
+        );
+        assert_eq!(proto, GraphicsProtocol::HalfBlock);
+        assert!(reason.contains("timeout"), "reason was: {reason}");
+        assert!(!passthrough);
+    }
+
+    #[test]
+    fn init_auto_tmux_hinted_outer_sixel_stays_half_block() {
+        // A sixel attribute in the wrapped outer DA1 must NOT map to sixel:
+        // the outer terminal rendering sixel does not mean tmux passes it.
+        let (proto, _geo, _reason, passthrough) = init_from(
+            ImageProtocolChoice::Auto,
+            &tmux_kitty_hint_env(),
+            &mut || Some((100, 50, 800, 1000)),
+            &mut |_, _| b"\x1b[?62;4c".to_vec(),
+        );
+        assert_eq!(proto, GraphicsProtocol::HalfBlock);
+        assert!(!passthrough);
+    }
+
+    #[test]
+    fn init_auto_outside_tmux_kitty_ok_still_classic_kitty() {
+        // Regression: outside tmux a kitty OK keeps resolving classic kitty.
+        let (proto, _geo, _reason, passthrough) = init_from(
+            ImageProtocolChoice::Auto,
+            &|_| None,
+            &mut || Some((100, 50, 800, 1000)),
+            &mut |_, wrap| {
+                assert!(!wrap, "probe outside tmux must stay unwrapped");
+                b"\x1b_Gi=4242;OK\x1b\\\x1b[?62c".to_vec()
+            },
+        );
+        assert_eq!(proto, GraphicsProtocol::Kitty);
+        assert!(!passthrough);
+    }
+
+    #[test]
+    fn init_kitty_unicode_pin_sets_passthrough_inside_tmux_only() {
+        // Pin + tmux: the APCs need the envelope to reach the outer terminal.
+        let env = env_of(&[("TMUX", "/tmp/tmux-1000/default,42,0")]);
+        let (proto, _geo, _reason, passthrough) = init_from(
+            ImageProtocolChoice::KittyUnicode,
+            &env,
+            &mut || Some((100, 50, 800, 1000)),
+            &mut |_, _| panic!("probe must not run for an explicit choice with geometry"),
+        );
+        assert_eq!(proto, GraphicsProtocol::KittyUnicode);
+        assert!(passthrough);
+        // Same pin outside tmux: raw APCs, no envelope.
+        let (proto, _geo, _reason, passthrough) = init_from(
+            ImageProtocolChoice::KittyUnicode,
+            &|_| None,
+            &mut || Some((100, 50, 800, 1000)),
+            &mut |_, _| panic!("probe must not run for an explicit choice with geometry"),
+        );
+        assert_eq!(proto, GraphicsProtocol::KittyUnicode);
+        assert!(!passthrough);
+    }
+
+    #[test]
+    fn init_kitty_unicode_pin_geometry_probe_stays_unwrapped() {
+        // Capability is pinned, not probed — only the pixel size is missing.
+        // DA1-from-tmux is a fine fence for the pane-local CSI 14 t reply,
+        // so the geometry probe stays unwrapped even inside tmux.
+        let env = env_of(&[("TMUX", "/tmp/tmux-1000/default,42,0")]);
+        let (proto, geo, _reason, passthrough) = init_from(
+            ImageProtocolChoice::KittyUnicode,
+            &env,
+            &mut || Some((100, 50, 0, 0)),
+            &mut |want_pixels, wrap| {
+                assert!(want_pixels, "zero ioctl pixels must request CSI 14 t");
+                assert!(!wrap, "pin geometry probe must stay unwrapped");
+                b"\x1b[4;480;800t\x1b[?62c".to_vec()
+            },
+        );
+        assert_eq!(proto, GraphicsProtocol::KittyUnicode);
+        assert_eq!(
+            geo,
+            Some(CellGeometry {
+                cell_w: 8,
+                cell_h: 9
+            })
+        );
+        assert!(passthrough);
     }
 
     #[test]
