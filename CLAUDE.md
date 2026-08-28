@@ -186,11 +186,12 @@ encoder in `graphics/sixel.rs`): the protocol (kitty | kitty-unicode |
 iterm2 | sixel | half-block) is resolved once at startup —
 `graphics::init` in main.rs, right after `enable_raw_mode` and before
 the EventStream exists — in this order: explicit `image_protocol`
-config pins it (no probe); else env heuristics (TERM=screen* →
-half-block; $TMUX / TERM=tmux* → half-block, UNLESS a
+config pins it (no probe); else env heuristics ($TMUX / TERM=tmux* is
+checked FIRST → half-block, UNLESS a
 KITTY_WINDOW_ID/GHOSTTY_RESOURCES_DIR fossil hints at a capable outer
 terminal — then fall through to a passthrough-wrapped probe where
-kitty_ok → kitty-unicode, anything else → half-block; kitty/WezTerm/
+kitty_ok → kitty-unicode, anything else → half-block; then TERM=screen*
+→ half-block unconditionally, no hint escape; kitty/WezTerm/
 Ghostty vars → kitty, iTerm2 vars → iterm2, env-only since OSC 1337 is
 unprobeable — a contradicting TERM_PROGRAM disables the leaked
 LC_TERMINAL/ITERM_SESSION_ID vars); else a 250 ms poll-bounded probe

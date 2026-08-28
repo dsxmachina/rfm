@@ -66,9 +66,9 @@ fn default_true() -> bool {
 /// the universal cell-based renderer. Explicit values pin the protocol and
 /// skip probing — the escape hatch for terminals that misreport. (They are
 /// honored inside tmux too, but rfm emits raw sequences without tmux's
-/// passthrough wrapping — except `KittyUnicode`, whose escape sequences ARE
-/// wrapped — so any other pinned protocol only renders there if tmux itself
-/// supports it.)
+/// passthrough wrapping — except `KittyUnicode`, whose image-data APCs ARE
+/// wrapped (its placeholder cells are plain text) — so any other pinned
+/// protocol only renders there if tmux itself supports it.)
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum ImageProtocolChoice {

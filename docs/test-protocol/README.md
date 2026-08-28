@@ -53,7 +53,8 @@ tmux kill-session -t $SESSION 2>/dev/null; rm -f $SOCK
 # intercept the typed command and rfm never launches). Isolation env is passed
 # via `env` so it applies to the child regardless of the pane's shell.
 tmux new-session -d -s $SESSION -x 120 -y 30 \
-  "env XDG_CACHE_HOME=$CACHE XDG_STATE_HOME=$STATE _ZO_DATA_DIR=$ZO \
+  "env -u KITTY_WINDOW_ID -u GHOSTTY_RESOURCES_DIR \
+   XDG_CACHE_HOME=$CACHE XDG_STATE_HOME=$STATE _ZO_DATA_DIR=$ZO \
    ./target/debug/rfm --debug-socket $SOCK --config $CFG $FIXTURE"
 until [ -S $SOCK ]; do sleep 0.1; done
 ```
@@ -155,8 +156,12 @@ graphics_passthrough`
   history (200 lines). Background-command failures land there — check `log`
   first when something "silently" fails.
 - Inside tmux, with the default `auto` config, the graphics protocol resolves
-  to **half-block** (the harness env carries no kitty/Ghostty passthrough
-  hint): image previews are colored half-block cells. Assert "non-empty
+  to **half-block** — but only when no kitty/Ghostty passthrough hint reaches
+  the pane. A tmux server started from kitty/Ghostty fossilizes
+  `KITTY_WINDOW_ID`/`GHOSTTY_RESOURCES_DIR` into every pane, which triggers
+  the wrapped probe (and can resolve kitty-unicode), so the launch prefix
+  above unsets both (`env -u`) — keep those flags for every half-block
+  assertion. Image previews are then colored half-block cells. Assert "non-empty
   raster area", never glyphs. Exception: a pinned
   `image_protocol = "kitty-unicode"` draws U+10EEEE placeholder cells, which
   survive `capture-pane -p` byte-for-byte and ARE directly assertable

@@ -90,8 +90,10 @@ step instead of trusting counted `j` presses.
 - `state.selection == "a-blue.png"`, `state.selected_idx == 0`,
   `state.preview_path == "$FIXTURE/a-blue.png"`, `state.mode == "normal"`.
 - `state.image_protocol == "half-block"` — rfm runs inside tmux with the
-  default `auto` config and no kitty/Ghostty passthrough hint in the harness
-  env, so `auto` resolves to half-block instantly (no graphics probe runs).
+  default `auto` config and `KITTY_WINDOW_ID`/`GHOSTTY_RESOURCES_DIR`
+  explicitly unset in the pane env (the launch prefix's `env -u` flags; a
+  tmux server started from kitty/Ghostty fossilizes both into every pane),
+  so `auto` resolves to half-block instantly (no graphics probe runs).
 - `echo "log 50" | socat - UNIX-CONNECT:$SOCK` contains NO
   `raster cache hit` line yet (first visit is a miss+store, which logs nothing
   on success).
@@ -315,7 +317,8 @@ printf '[general]\npreview_cache = false\n' > "$CFG2/config.toml"
 # Direct-launch form (README): binary as the session command, not send-keys
 # into an interactive shell (Atuin/zsh history-search would intercept it).
 tmux new-session -d -s $SESSION -x 120 -y 30 \
-  "env XDG_CACHE_HOME=$CACHE2 XDG_STATE_HOME=$STATE _ZO_DATA_DIR=$ZO \
+  "env -u KITTY_WINDOW_ID -u GHOSTTY_RESOURCES_DIR \
+   XDG_CACHE_HOME=$CACHE2 XDG_STATE_HOME=$STATE _ZO_DATA_DIR=$ZO \
    ./target/debug/rfm --debug-socket $SOCK --config $CFG2 $FIXTURE"
 until [ -S $SOCK ]; do sleep 0.1; done
 ```

@@ -160,13 +160,23 @@ inline-images protocol (OSC 1337), also rendered by WezTerm, mintty, and
 VSCode — VSCode only when `terminal.integrated.enableImages` is on, which
 ships off, so it is never auto-detected. `"kitty-unicode"` is kitty graphics
 transmitted as a virtual placement and drawn as U+10EEEE placeholder cells —
-ordinary text that survives tmux. It is the one protocol whose escape
-sequences rfm wraps in tmux's passthrough envelope: inside tmux the image
+ordinary text that survives tmux. It is the one protocol whose image-data
+APCs rfm wraps in tmux's passthrough envelope (the placeholder cells are
+plain text and pass through untouched): inside tmux the image
 data reaches the screen only with `allow-passthrough on` set (tmux ≥ 3.3;
 earlier versions pass through unconditionally — configuring it is your job,
 rfm never runs the tmux CLI) and an outer terminal that composes virtual
 placements (kitty ≥ 0.28 or Ghostty; not WezTerm/Konsole). It also works
-outside tmux in those terminals. The other pins are honored inside tmux but
+outside tmux in those terminals. Two more tmux caveats: the placeholder
+cells carry the image id in their 24-bit foreground color, so tmux must
+have RGB/truecolor enabled toward the outer terminal (e.g.
+`terminal-features`/`Tc` — with kitty/Ghostty defaults this is normally
+already true), otherwise the quantized color corrupts the id and previews
+stay silently blank even after a successful probe. And `allow-passthrough
+on` forwards image data only from a *visible* pane — a transmit from a
+backgrounded window is dropped and rfm's unchanged-key gate does not retry
+it — so prefer `allow-passthrough all` (tmux ≥ 3.4) if you keep rfm
+running in background windows. The other pins are honored inside tmux but
 stay unwrapped: pinned `"kitty"` leaves the preview region blank regardless
 of `allow-passthrough` (tmux consumes raw APC sequences either way), pinned
 `"iterm2"` is just as blank (tmux discards OSC 1337 too), and pinned

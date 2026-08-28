@@ -113,7 +113,16 @@ pdf_render = false
 # protocol rfm wraps in tmux's passthrough envelope: its placeholder cells
 # are plain text and always survive tmux, while the image data reaches the
 # outer terminal only with 'allow-passthrough on' set (your job — rfm never
-# runs the tmux CLI). The other pins stay unwrapped: pinning "kitty" inside
+# runs the tmux CLI). Two more tmux requirements: the placeholder cells
+# carry the image id in their 24-bit foreground color, so tmux must have
+# RGB/truecolor enabled toward the outer terminal (e.g. terminal-features/
+# Tc — with kitty/Ghostty defaults this is normally already true),
+# otherwise the quantized color corrupts the id and previews stay blank
+# even after a successful probe. And 'allow-passthrough on' forwards image
+# data only from a visible pane — a transmit from a backgrounded window is
+# dropped and not retried — so prefer 'allow-passthrough all' (tmux >= 3.4)
+# if you keep rfm running in background windows.
+# The other pins stay unwrapped: pinning "kitty" inside
 # tmux leaves the preview region blank regardless of 'allow-passthrough',
 # pinning "iterm2" leaves it just as blank (tmux discards OSC 1337 too),
 # and "sixel" renders only if tmux itself was built with sixel support
