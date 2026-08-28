@@ -136,6 +136,22 @@ mod tests {
     }
 
     #[test]
+    fn diacritics_table_checksum() {
+        // Whole-table integrity beyond the ascent scan: an
+        // ordering-preserving single-entry typo (e.g. U+0597 mistyped as
+        // U+0596 stays inside its neighbors' gap and hits no spot check)
+        // passes the other tests but shifts this sum. The constant is the
+        // u32 sum of all 297 codepoints in kitty's canonical
+        // `gen/rowcolumn-diacritics.txt`, computed from the fetched list
+        // the embedded table was diffed byte-identical against.
+        assert_eq!(
+            DIACRITICS.iter().map(|&c| c as u32).sum::<u32>(),
+            4_545_336,
+            "table checksum drifted from the canonical list"
+        );
+    }
+
+    #[test]
     fn placeholder_grid_emits_rows() {
         // 3x2 grid at origin (10,2), id 0x4d46: per row an absolute CUP
         // (1-based CSI), the fg-SGR carrying the id's low 24 bits
@@ -149,6 +165,25 @@ mod tests {
             "\u{10EEEE}\u{0305}\u{0305}\u{0305}\u{10EEEE}\u{10EEEE}\x1b[39m",
             "\x1b[4;11H\x1b[38;2;0;77;70m",
             "\u{10EEEE}\u{030D}\u{0305}\u{0305}\u{10EEEE}\u{10EEEE}\x1b[39m",
+        );
+        assert_eq!(String::from_utf8(sink).unwrap(), want);
+    }
+
+    #[test]
+    fn placeholder_grid_disambiguates_column_and_msb_slots() {
+        // With the usual small ids (MSB 0) the column-0 diacritic and the
+        // id-MSB diacritic are both U+0305, so a transposed push order
+        // passes byte-exact tests. Id 0x02004D46 makes all three slots on
+        // row 1 distinct — row U+030D, column-0 U+0305, MSB 2 -> U+030E —
+        // so any slot transposition or a wrong MSB shift fails. The fg-SGR
+        // carries only the low 24 bits (0x004D46 -> 0;77;70).
+        let mut sink = Vec::new();
+        placeholder_grid(&mut sink, (10, 2), 2, 2, 0x0200_4D46).unwrap();
+        let want = concat!(
+            "\x1b[3;11H\x1b[38;2;0;77;70m",
+            "\u{10EEEE}\u{0305}\u{0305}\u{030E}\u{10EEEE}\x1b[39m",
+            "\x1b[4;11H\x1b[38;2;0;77;70m",
+            "\u{10EEEE}\u{030D}\u{0305}\u{030E}\u{10EEEE}\x1b[39m",
         );
         assert_eq!(String::from_utf8(sink).unwrap(), want);
     }

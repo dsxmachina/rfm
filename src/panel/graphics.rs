@@ -943,19 +943,19 @@ fn read_chunk(fd: RawFd, buf: &mut Vec<u8>) -> bool {
     true
 }
 
-/// Write the probe batch to stdout and read the replies (bounded). The batch
-/// is: a kitty graphics query (`q=0` — this one *wants* the reply; a 1x1
-/// no-op transmission), optionally `CSI 14 t` when pixel geometry is still
-/// missing, and DA1 last as the universal terminator.
+/// Build the probe byte batch: a kitty graphics query (`q=0` — this one
+/// *wants* the reply; a 1x1 no-op transmission), optionally `CSI 14 t` when
+/// pixel geometry is still missing, and DA1 last as the universal
+/// terminator.
 ///
 /// With `wrap` (probing through tmux) the kitty query AND the DA1 fence are
 /// passthrough-wrapped so the OUTER terminal answers them — a plain DA1
 /// would be answered by tmux itself, instantly, fencing the read loop
 /// before the outer terminal's APC reply arrives. `CSI 14 t` stays
 /// unwrapped: tmux answers it with pane-local pixels, exactly the values
-/// the cell geometry needs.
-fn send_probe_and_read(want_pixels: bool, wrap: bool) -> Vec<u8> {
-    use std::io::Write;
+/// the cell geometry needs. Pure Vec-building, split from
+/// [`send_probe_and_read`] so the batch bytes are unit-testable.
+fn probe_batch(want_pixels: bool, wrap: bool) -> Vec<u8> {
     const KITTY_QUERY: &[u8] = b"\x1b_Gi=4242,s=1,v=1,a=q,t=d,f=24,q=0;AAAA\x1b\\";
     const DA1: &[u8] = b"\x1b[c";
     let mut batch: Vec<u8> = if wrap {
@@ -971,6 +971,14 @@ fn send_probe_and_read(want_pixels: bool, wrap: bool) -> Vec<u8> {
     } else {
         batch.extend_from_slice(DA1);
     }
+    batch
+}
+
+/// Write the probe batch ([`probe_batch`]) to stdout and read the replies
+/// (bounded).
+fn send_probe_and_read(want_pixels: bool, wrap: bool) -> Vec<u8> {
+    use std::io::Write;
+    let batch = probe_batch(want_pixels, wrap);
     let mut out = std::io::stdout();
     if out.write_all(&batch).and_then(|_| out.flush()).is_err() {
         return Vec::new();
@@ -1519,6 +1527,43 @@ mod tests {
     }
 
     #[test]
+    fn probe_batch_unwrapped_is_query_pixels_da1() {
+        // The pre-passthrough batch, byte-identical: kitty query, CSI 14 t
+        // (only when pixel geometry is wanted), DA1 fence last.
+        assert_eq!(
+            probe_batch(true, false),
+            b"\x1b_Gi=4242,s=1,v=1,a=q,t=d,f=24,q=0;AAAA\x1b\\\x1b[14t\x1b[c"
+        );
+        assert_eq!(
+            probe_batch(false, false),
+            b"\x1b_Gi=4242,s=1,v=1,a=q,t=d,f=24,q=0;AAAA\x1b\\\x1b[c"
+        );
+    }
+
+    #[test]
+    fn probe_batch_wrapped_envelopes_query_and_da1_but_not_csi14t() {
+        // Probing through tmux: the kitty query and the DA1 fence must each
+        // be individually passthrough-enveloped with their inner ESCs
+        // doubled (including the query's own ST terminator) so the OUTER
+        // terminal answers them — an unwrapped DA1 would be answered by
+        // tmux instantly, fencing the read loop before the outer APC reply
+        // arrives. `CSI 14 t` must stay bare: tmux answers it with
+        // pane-local pixels, exactly what the cell geometry needs — a
+        // wrapped one would return the outer terminal's (wrong) pixels.
+        const WRAPPED_QUERY: &[u8] =
+            b"\x1bPtmux;\x1b\x1b_Gi=4242,s=1,v=1,a=q,t=d,f=24,q=0;AAAA\x1b\x1b\\\x1b\\";
+        const WRAPPED_DA1: &[u8] = b"\x1bPtmux;\x1b\x1b[c\x1b\\";
+        assert_eq!(
+            probe_batch(true, true),
+            [WRAPPED_QUERY, b"\x1b[14t", WRAPPED_DA1].concat()
+        );
+        assert_eq!(
+            probe_batch(false, true),
+            [WRAPPED_QUERY, WRAPPED_DA1].concat()
+        );
+    }
+
+    #[test]
     fn init_with_explicit_choice_never_reads() {
         // Explicit config with usable ioctl geometry: no stdin read at all.
         let (proto, geo, _reason, _passthrough) = init_from(
@@ -1907,6 +1952,14 @@ mod tests {
             );
         }
         assert!(key_val(first, "i").is_some(), "first chunk carries the id");
+        // A classic-kitty transmit must NOT create a virtual placement: a
+        // stuck `U=1` renders nothing (virtual placements are composited
+        // only onto U+10EEEE placeholder cells, which this path never
+        // writes) — images would silently vanish outside tmux.
+        assert!(
+            !first.split(',').any(|kv| kv == "U=1"),
+            "classic kitty must not carry U=1: {first}"
+        );
         for (i, (keys, payload)) in apcs.iter().enumerate() {
             assert!(payload.len() <= 4096, "chunk {i} payload over 4096");
             if i > 0 {
@@ -2396,6 +2449,31 @@ mod tests {
             "fg-SGR must encode id {id}: {grid:?}"
         );
         assert_eq!(grid.matches("\x1b[39m").count(), 4, "one reset per row");
+        // Emitter-to-grid seam: the rows must sit at the EmitKey origin
+        // ((10,2) -> 1-based CUP rows 3..=6, column 11) and carry cols
+        // placeholder cells each — a hardcoded origin or a dropped
+        // cols/rows forward at the call site would pass the pure
+        // placeholder.rs tests but not these.
+        for row in 3..=6 {
+            assert!(
+                grid.contains(&format!("\x1b[{row};11H")),
+                "grid CUP missing for screen row {row}: {grid:?}"
+            );
+        }
+        assert_eq!(
+            grid.matches('\u{10EEEE}').count(),
+            12 * 4,
+            "placeholder cell count must be cols x rows"
+        );
+        // Strongest pin on the seam: the grid slice is byte-for-byte the
+        // pure placeholder_grid over the emitter's own arguments.
+        let mut expected = Vec::new();
+        placeholder::placeholder_grid(&mut expected, key.origin_cell, 12, 4, id).unwrap();
+        assert_eq!(
+            grid.as_bytes(),
+            &expected[..],
+            "grid must be placeholder_grid(origin, cols, rows, id) verbatim"
+        );
         let (live_key, live_id) = live_snapshot_for_test().expect("live after emit");
         assert_eq!(live_key, key);
         assert_eq!(live_id, Some(id), "placement is id-addressed");
@@ -2418,8 +2496,9 @@ mod tests {
         // bare — passing through tmux untouched is its entire point.
         reset_emit_state_for_test();
         set_passthrough_for_test(true);
+        let key = test_key("w.png", 512, 512);
         let mut sink = Vec::new();
-        emit_kitty_unicode(&mut sink, test_key("w.png", 512, 512), &rgb, 12, 4).unwrap();
+        emit_kitty_unicode(&mut sink, key.clone(), &rgb, 12, 4).unwrap();
         let s = String::from_utf8_lossy(&sink);
         assert_eq!(
             s.matches("\x1bPtmux;").count(),
@@ -2434,6 +2513,29 @@ mod tests {
         assert!(
             !s[grid_start..].contains("\x1bPtmux;"),
             "placeholder grid must not be wrapped: {s:?}"
+        );
+        // Precision pin: the stream must END with the verbatim (un-doubled)
+        // grid bytes, starting exactly after the final envelope terminator.
+        // A grid folded into the last chunk's envelope would keep the
+        // envelope count and put no envelope prefix after the first
+        // placeholder char — but tmux would then forward the grid to the
+        // OUTER terminal (drawn at the outer cursor, not the pane).
+        let id: u32 = key_val(&apc_sequences(&sink)[0].0, "i")
+            .expect("wrapped chunk 0 carries the id")
+            .parse()
+            .unwrap();
+        let mut bare_grid = Vec::new();
+        placeholder::placeholder_grid(&mut bare_grid, key.origin_cell, 12, 4, id).unwrap();
+        let bare_grid = String::from_utf8(bare_grid).unwrap();
+        assert!(
+            s.ends_with(&bare_grid),
+            "stream must end with the bare grid bytes: {s:?}"
+        );
+        let grid_at = s.len() - bare_grid.len();
+        assert_eq!(
+            s.rfind("\x1b\\").map(|p| p + 2),
+            Some(grid_at),
+            "grid must start right after the final envelope terminator: {s:?}"
         );
     }
 
@@ -2477,6 +2579,127 @@ mod tests {
             s.matches('\u{10EEEE}').count(),
             297,
             "grid emits exactly the clamped columns"
+        );
+    }
+
+    #[test]
+    fn emit_kitty_unicode_new_key_deletes_old_id_first() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(2, 2, Rgb([5, 5, 5]));
+        let mut sink = Vec::new();
+        emit_kitty_unicode(&mut sink, test_key("old.png", 16, 32), &rgb, 2, 1).unwrap();
+        let (_, old_id) = live_snapshot_for_test().unwrap();
+        let old_id = old_id.unwrap();
+
+        // Navigate/resize path (the EmitKey changed): the old placement is
+        // deleted by id FIRST (freeing the terminal-side pixels), then a
+        // fresh transmit and a fresh grid carrying the NEW id.
+        let mut key = test_key("new.png", 16, 32);
+        key.origin_cell = (0, 0);
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_kitty_unicode(&mut sink, key.clone(), &rgb, 2, 1).unwrap(),
+            Emitted::Transmitted
+        );
+        let apcs = apc_sequences(&sink);
+        assert_eq!(
+            apcs[0].0,
+            format!("a=d,d=I,i={old_id},q=2"),
+            "output must start with the delete of the previous id"
+        );
+        let new_id: u32 = key_val(&apcs[1].0, "i").unwrap().parse().unwrap();
+        assert!(new_id > old_id, "fresh id per transmission");
+        let s = String::from_utf8_lossy(&sink);
+        let (r, g, b) = ((new_id >> 16) as u8, (new_id >> 8) as u8, new_id as u8);
+        assert!(
+            s.contains(&format!("\x1b[38;2;{r};{g};{b}m\u{10EEEE}")),
+            "fresh grid must encode the new id: {s:?}"
+        );
+        let (live_key, live_id) = live_snapshot_for_test().expect("live after emit");
+        assert_eq!(live_key, key, "LIVE must hold the new key");
+        assert_eq!(live_id, Some(new_id), "LIVE must hold the new id");
+    }
+
+    #[test]
+    fn emit_kitty_unicode_new_key_wraps_delete_when_passthrough() {
+        let _g = emit_guard();
+        set_passthrough_for_test(true);
+        let rgb = RgbImage::from_pixel(2, 2, Rgb([5, 5, 5]));
+        let mut sink = Vec::new();
+        emit_kitty_unicode(&mut sink, test_key("old.png", 16, 32), &rgb, 2, 1).unwrap();
+        let (_, old_id) = live_snapshot_for_test().unwrap();
+        let old_id = old_id.unwrap();
+
+        // The MID-EMIT delete (distinct from end_frame's) must also reach
+        // the outer terminal: enveloped, inner ESCs doubled, and before the
+        // new transmit's chunk 0.
+        let mut sink = Vec::new();
+        emit_kitty_unicode(&mut sink, test_key("new.png", 16, 32), &rgb, 2, 1).unwrap();
+        let s = String::from_utf8_lossy(&sink);
+        let delete = format!("\x1bPtmux;\x1b\x1b_Ga=d,d=I,i={old_id},q=2\x1b\x1b\\\x1b\\");
+        let delete_at = s.find(&delete).expect("wrapped delete for the old id");
+        let transmit_at = s.find("a=T").expect("new transmit present");
+        assert!(
+            delete_at < transmit_at,
+            "delete must precede the new transmit: {s:?}"
+        );
+    }
+
+    /// A sink that fails with `BrokenPipe` once a write would push it past
+    /// `budget` bytes — the mid-transmit `io::Error` injector.
+    struct FailAfter {
+        budget: usize,
+        written: Vec<u8>,
+    }
+
+    impl Write for FailAfter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if self.written.len() + buf.len() > self.budget {
+                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "sink full"));
+            }
+            self.written.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn emit_kitty_unicode_write_failure_leaves_no_placement() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(64, 64, Rgb([1, 2, 3]));
+        let key = test_key("p.png", 512, 512);
+        let mut sink = Vec::new();
+        emit_kitty_unicode(&mut sink, key.clone(), &rgb, 12, 4).unwrap();
+
+        // An io::Error partway through the transmit (16384 base64 chars =
+        // 4 chunks; the budget admits the delete, the blank pass and chunk
+        // 0, then fails) must propagate, and LIVE must end empty — the old
+        // placement was already forgotten and the new one never completed —
+        // so the NEXT emit retransmits instead of gating on a placement the
+        // terminal never fully received.
+        let mut failing = FailAfter {
+            budget: 5000,
+            written: Vec::new(),
+        };
+        emit_kitty_unicode(&mut failing, test_key("q.png", 512, 512), &rgb, 12, 4)
+            .expect_err("write failure must propagate");
+        let partial = String::from_utf8_lossy(&failing.written);
+        assert!(
+            partial.contains("a=T"),
+            "chunk 0 must have gone out before the failure: {partial:?}"
+        );
+        assert!(
+            !partial.contains("m=0;"),
+            "the chunk chain must be left unterminated (mid-transmit): {partial:?}"
+        );
+        assert!(live_snapshot_for_test().is_none(), "LIVE must be empty");
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_kitty_unicode(&mut sink, key, &rgb, 12, 4).unwrap(),
+            Emitted::Transmitted,
+            "empty LIVE must retransmit, not gate"
         );
     }
 
