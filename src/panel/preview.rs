@@ -92,12 +92,12 @@ const ASSUMED_CELL: graphics::CellGeometry = graphics::CellGeometry {
 };
 
 /// The cell geometry a protocol can draw with, or `None` when it cannot
-/// draw at all: kitty and iterm2 size in cells and tolerate missing
-/// geometry (assumed cell, D2), a sixel raster is placed verbatim and
-/// demands the real cell size, and half-block is not a graphics emitter.
+/// draw at all: kitty (both variants) and iterm2 size in cells and tolerate
+/// missing geometry (assumed cell, D2), a sixel raster is placed verbatim
+/// and demands the real cell size, and half-block is not a graphics emitter.
 fn geometry_for(proto: GraphicsProtocol) -> Option<graphics::CellGeometry> {
     match proto {
-        GraphicsProtocol::Kitty | GraphicsProtocol::Iterm2 => {
+        GraphicsProtocol::Kitty | GraphicsProtocol::KittyUnicode | GraphicsProtocol::Iterm2 => {
             Some(graphics::cell_geometry().unwrap_or(ASSUMED_CELL))
         }
         GraphicsProtocol::Sixel => graphics::cell_geometry(),
@@ -105,7 +105,8 @@ fn geometry_for(proto: GraphicsProtocol) -> Option<graphics::CellGeometry> {
     }
 }
 
-/// Draw the image via a graphics protocol (kitty, iterm2 or sixel).
+/// Draw the image via a graphics protocol (kitty, kitty-unicode, iterm2
+/// or sixel).
 /// Returns the cell rows used, so the caller's info-line/blanking tail
 /// runs unchanged below the image. Any error falls back to the half-block
 /// loop for this frame. Generic over the writer so the byte stream is
@@ -155,6 +156,9 @@ fn draw_graphics(
     };
     match proto {
         GraphicsProtocol::Kitty => graphics::emit_kitty(stdout, key, rgb, cols, rows)?,
+        GraphicsProtocol::KittyUnicode => {
+            graphics::emit_kitty_unicode(stdout, key, rgb, cols, rows)?
+        }
         GraphicsProtocol::Iterm2 => graphics::emit_iterm2(stdout, key, rgb, cols, rows)?,
         GraphicsProtocol::Sixel => graphics::emit_sixel(stdout, key, rgb, cols, rows)?,
         // Unreachable via the dispatch guard; kept as a graceful fallback
@@ -225,8 +229,8 @@ impl Draw for FilePreview {
                 if img.is_some() {
                     let src = img.as_ref().unwrap();
                     // Graphics-protocol tier: real pixels via
-                    // kitty/iterm2/sixel when the frame allows a
-                    // placement (single view, no overlay). Any emit
+                    // kitty/kitty-unicode/iterm2/sixel when the frame
+                    // allows a placement (single view, no overlay). Any emit
                     // failure falls back to half-blocks for this frame —
                     // a preview always renders *something*.
                     let mut graphics_cy = None;
@@ -5657,6 +5661,11 @@ mod render_cache_tests {
             geometry_for(GraphicsProtocol::Kitty),
             Some(ASSUMED_CELL),
             "kitty falls back to the assumed cell size"
+        );
+        assert_eq!(
+            geometry_for(GraphicsProtocol::KittyUnicode),
+            Some(ASSUMED_CELL),
+            "kitty-unicode sizes in cells and tolerates missing geometry like kitty"
         );
         assert_eq!(
             geometry_for(GraphicsProtocol::Iterm2),

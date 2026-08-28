@@ -1,9 +1,9 @@
 //! Terminal graphics protocol support for image previews.
 //!
-//! This module owns which protocol (kitty graphics / iTerm2 inline
-//! images / sixel / half-block fallback) the preview column may use, the
-//! cell→pixel geometry needed to place real pixels into a cell layout,
-//! and the emitters themselves.
+//! This module owns which protocol (kitty graphics / kitty-unicode
+//! placeholders / iTerm2 inline images / sixel / half-block fallback)
+//! the preview column may use, the cell→pixel geometry needed to place
+//! real pixels into a cell layout, and the emitters themselves.
 //! The detection core is pure — env lookups and probe replies are
 //! injected — so the whole decision matrix is unit-testable without a
 //! terminal; the emitters write to any `impl Write`, so their byte
@@ -22,10 +22,15 @@ use parking_lot::Mutex;
 
 use crate::config::ImageProtocolChoice;
 
+mod placeholder;
 mod sixel;
 
 /// Wall-clock budget for the whole startup probe (D1).
 const PROBE_BUDGET: Duration = Duration::from_millis(250);
+/// Silence required to end the post-fence drain in [`read_probe_replies`]:
+/// long enough to bridge the observed ~90 ms gaps between multiplexer
+/// chatter fragments, short enough to keep probing startups snappy.
+const PROBE_QUIET: Duration = Duration::from_millis(100);
 
 /// The graphics protocol the preview column draws images with.
 ///
@@ -34,6 +39,7 @@ const PROBE_BUDGET: Duration = Duration::from_millis(250);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphicsProtocol {
     Kitty,
+    KittyUnicode,
     Iterm2,
     Sixel,
     HalfBlock,
@@ -45,6 +51,7 @@ impl GraphicsProtocol {
     pub fn name(&self) -> &'static str {
         match self {
             GraphicsProtocol::Kitty => "kitty",
+            GraphicsProtocol::KittyUnicode => "kitty-unicode",
             GraphicsProtocol::Iterm2 => "iterm2",
             GraphicsProtocol::Sixel => "sixel",
             GraphicsProtocol::HalfBlock => "half-block",
@@ -58,13 +65,24 @@ impl GraphicsProtocol {
 /// The lookup is injected so the whole matrix is testable without touching
 /// the process environment. Multiplexers are checked *first*: tmux/screen
 /// swallow graphics escapes without passthrough, so tmux-on-kitty must stay
-/// on half-blocks even though the kitty vars leak through.
+/// on half-blocks even though the kitty vars leak through — EXCEPT that a
+/// kitty/Ghostty fossil hint inside tmux is inconclusive: passthrough-wrapped
+/// kitty-unicode could work there, so it falls through to the (wrapped) probe.
 pub fn detect_from_env(env: &dyn Fn(&str) -> Option<String>) -> Option<GraphicsProtocol> {
-    if env("TMUX").is_some() {
+    let term = env("TERM").unwrap_or_default();
+    if env("TMUX").is_some() || term.starts_with("tmux") {
+        // The tmux server keeps the env of wherever it started, so these
+        // vars are fossils (stale after a cross-terminal re-attach). Still
+        // worth one bounded probe: a wrong positive costs a 250 ms timeout,
+        // a wrong negative is cured by the explicit pin. Everyone else
+        // keeps today's instant half-block, zero startup cost.
+        if env("KITTY_WINDOW_ID").is_some() || env("GHOSTTY_RESOURCES_DIR").is_some() {
+            return None;
+        }
         return Some(GraphicsProtocol::HalfBlock);
     }
-    let term = env("TERM").unwrap_or_default();
-    if term.starts_with("tmux") || term.starts_with("screen") {
+    if term.starts_with("screen") {
+        // GNU screen has no passthrough — no hint can help.
         return Some(GraphicsProtocol::HalfBlock);
     }
     if env("KITTY_WINDOW_ID").is_some() || term == "xterm-kitty" {
@@ -196,6 +214,7 @@ pub fn resolve(
 ) -> GraphicsProtocol {
     match choice {
         ImageProtocolChoice::Kitty => GraphicsProtocol::Kitty,
+        ImageProtocolChoice::KittyUnicode => GraphicsProtocol::KittyUnicode,
         ImageProtocolChoice::Iterm2 => GraphicsProtocol::Iterm2,
         ImageProtocolChoice::Sixel => GraphicsProtocol::Sixel,
         ImageProtocolChoice::HalfBlock => GraphicsProtocol::HalfBlock,
@@ -389,7 +408,7 @@ pub fn emit_kitty(
     move_to(w, key.origin_cell)?;
 
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    transmit_kitty(w, id, rgb, cols, rows)?;
+    transmit_kitty(w, id, rgb, cols, rows, false)?;
     log::trace!(
         "graphics: transmit kitty id={id} {}x{}",
         rgb.width(),
@@ -512,6 +531,67 @@ pub fn emit_iterm2(
     Ok(Emitted::Transmitted)
 }
 
+/// Transmit `rgb` as a kitty virtual placement (`U=1`) rendered through
+/// U+10EEEE placeholder cells — the tmux-passthrough-capable kitty variant
+/// — gated on `key` exactly like [`emit_kitty`]:
+/// - live key equals `key` → write nothing, claim the frame, `Gated`;
+/// - otherwise delete the previous placement (by id), blank the target
+///   region (half-block remnants), transmit the virtual placement and
+///   write the placeholder grid over the region.
+///
+/// A hybrid of the kitty and sixel disciplines: the placeholder cells are
+/// ordinary CELL CONTENT (the frame repaint overwrites them, like sixel),
+/// but the transmitted image data is id-addressed, so the placement
+/// carries its id and the reconcile still deletes by id to free the
+/// terminal-side pixels. Every APC goes through [`write_apc`] — inside
+/// tmux ([`passthrough`]) the chunks are envelope-wrapped while the grid
+/// text passes through untouched, which is the entire point.
+pub fn emit_kitty_unicode(
+    w: &mut impl Write,
+    key: EmitKey,
+    rgb: &image::RgbImage,
+    cols: u16,
+    rows: u16,
+) -> io::Result<Emitted> {
+    if LIVE.lock().as_ref().map_or(false, |l| l.key == key) {
+        *CLAIMED.lock() = Some(key);
+        log::trace!("graphics: gated (unchanged)");
+        return Ok(Emitted::Gated);
+    }
+    if let Some(old) = LIVE.lock().take() {
+        delete_placement(w, &old)?;
+    }
+    // Clamp the cell box to what the placeholder grid can address
+    // (diacritics table size) ONCE, before the blank/transmit/grid calls:
+    // the transmitted `c=`/`r=` fit box and the grid agree by
+    // construction, instead of the terminal fitting the image into
+    // columns no diacritic can name.
+    let cols = cols.min(placeholder::GRID_MAX);
+    let rows = rows.min(placeholder::GRID_MAX);
+    let region = (
+        key.origin_cell.0..key.origin_cell.0.saturating_add(cols),
+        key.origin_cell.1..key.origin_cell.1.saturating_add(rows),
+    );
+    blank_region(w, &region)?;
+
+    // No origin move_to: a virtual placement ignores the cursor, and the
+    // grid positions every row absolutely itself.
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    transmit_kitty(w, id, rgb, cols, rows, true)?;
+    placeholder::placeholder_grid(w, key.origin_cell, cols, rows, id)?;
+    log::debug!(
+        "graphics: kitty-unicode emit id={id} {}x{}px into {cols}x{rows} cells",
+        rgb.width(),
+        rgb.height()
+    );
+    *LIVE.lock() = Some(LiveImage {
+        key: key.clone(),
+        id: Some(id),
+    });
+    *CLAIMED.lock() = Some(key);
+    Ok(Emitted::Transmitted)
+}
+
 /// JPEG for the OSC 1337 payload (the protocol carries encoded image
 /// FILES, not raw pixels — PNG/JPEG are the universally accepted formats,
 /// JPEG is ~10x smaller for photographic previews). Quality 85 keeps a
@@ -528,13 +608,20 @@ fn encode_jpeg(rgb: &image::RgbImage) -> io::Result<Vec<u8>> {
 const KITTY_CHUNK: usize = 4096;
 
 /// Direct transmission `a=T,f=24`: the raw RGB bytes, base64, chunked at
-/// 4096 chars with `m=1` continuations and a final `m=0`.
+/// 4096 chars with `m=1` continuations and a final `m=0` — `q=2` on every
+/// chunk, so even a chunk that loses its association with the in-progress
+/// load is never answered into the event stream. With
+/// `virtual_placement` the first chunk adds `U=1` (transmit + virtual
+/// placement in one APC, spec-blessed); `c=`/`r=` stay — they pin the
+/// cell box the placeholder cells address. Each chunk is one complete
+/// APC through [`write_apc`], so passthrough wraps chunk-by-chunk.
 fn transmit_kitty(
     w: &mut impl Write,
     id: u32,
     rgb: &image::RgbImage,
     cols: u16,
     rows: u16,
+    virtual_placement: bool,
 ) -> io::Result<()> {
     let payload = b64(rgb.as_raw());
     let bytes = payload.as_bytes();
@@ -543,12 +630,14 @@ fn transmit_kitty(
         chunks.push(&[]); // degenerate raster: still send one command
     }
     let last = chunks.len() - 1;
+    let u = if virtual_placement { ",U=1" } else { "" };
     for (i, chunk) in chunks.iter().enumerate() {
         let m = u8::from(i < last);
+        let mut seq = Vec::with_capacity(chunk.len() + 64);
         if i == 0 {
             write!(
-                w,
-                "\x1b_Ga=T,f=24,s={},v={},i={},c={},r={},q=2,m={};",
+                seq,
+                "\x1b_Ga=T{u},f=24,s={},v={},i={},c={},r={},q=2,m={};",
                 rgb.width(),
                 rgb.height(),
                 id,
@@ -557,10 +646,11 @@ fn transmit_kitty(
                 m
             )?;
         } else {
-            write!(w, "\x1b_Gm={m};")?;
+            write!(seq, "\x1b_Gq=2,m={m};")?;
         }
-        w.write_all(chunk)?;
-        w.write_all(b"\x1b\\")?;
+        seq.extend_from_slice(chunk);
+        seq.extend_from_slice(b"\x1b\\");
+        write_apc(w, &seq)?;
     }
     Ok(())
 }
@@ -573,10 +663,22 @@ fn transmit_kitty(
 /// drawn this frame (or, after a resize, land on unrelated cells).
 fn delete_placement(w: &mut impl Write, live: &LiveImage) -> io::Result<()> {
     if let Some(id) = live.id {
-        write!(w, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
+        write_apc(w, format!("\x1b_Ga=d,d=I,i={id},q=2\x1b\\").as_bytes())?;
         log::trace!("graphics: erase id={id}");
     }
     Ok(())
+}
+
+/// Write one complete APC sequence, tmux-passthrough-wrapped when
+/// [`passthrough`] says so. Classic-kitty placements outside tmux are
+/// unaffected: the flag is only ever true when the resolved protocol is
+/// kitty-unicode inside tmux.
+fn write_apc(w: &mut impl Write, seq: &[u8]) -> io::Result<()> {
+    if passthrough() {
+        w.write_all(&wrap_passthrough(seq))
+    } else {
+        w.write_all(seq)
+    }
 }
 
 /// Overwrite a cell region with default-colored spaces. Public entry for
@@ -634,6 +736,25 @@ fn b64(data: &[u8]) -> String {
     out
 }
 
+/// Wrap one escape sequence in tmux's passthrough envelope
+/// (`ESC Ptmux; <payload> ESC \`): tmux unwraps it and forwards the payload
+/// to the outer terminal instead of swallowing it. Every 0x1b in the
+/// payload must be doubled — including the inner terminator's — or tmux
+/// would end the DCS at the first inner ESC. One envelope per sequence
+/// (chunked APCs are wrapped chunk-by-chunk, far below tmux's DCS cap).
+fn wrap_passthrough(seq: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(seq.len() + 10);
+    out.extend_from_slice(b"\x1bPtmux;");
+    for &b in seq {
+        if b == 0x1b {
+            out.push(0x1b);
+        }
+        out.push(b);
+    }
+    out.extend_from_slice(b"\x1b\\");
+    out
+}
+
 /// Test-only view of the live placement: `(key, id)`.
 #[cfg(test)]
 fn live_snapshot_for_test() -> Option<(EmitKey, Option<u32>)> {
@@ -646,6 +767,14 @@ fn reset_emit_state_for_test() {
     *LIVE.lock() = None;
     *CLAIMED.lock() = None;
     FRAME_ALLOWED.store(false, Ordering::Relaxed);
+    PASSTHROUGH.store(false, Ordering::Relaxed);
+}
+
+/// Force the passthrough flag for a test. Callers hold [`emit_test_guard`],
+/// which resets it to off.
+#[cfg(test)]
+fn set_passthrough_for_test(on: bool) {
+    PASSTHROUGH.store(on, Ordering::Relaxed);
 }
 
 /// The emitter state (LIVE/CLAIMED/FRAME_ALLOWED) is module-global by
@@ -690,9 +819,19 @@ fn unpack_geometry(packed: u32) -> Option<CellGeometry> {
     })
 }
 
+/// Whether graphics APC output is tmux-passthrough-wrapped
+/// ([`wrap_passthrough`]). False until `init` decides otherwise, so unit
+/// tests and pre-init callers emit raw sequences.
+static PASSTHROUGH: AtomicBool = AtomicBool::new(false);
+
 /// The graphics protocol to draw image previews with.
 pub fn protocol() -> GraphicsProtocol {
     *PROTOCOL.get().unwrap_or(&GraphicsProtocol::HalfBlock)
+}
+
+/// Whether graphics APC output is tmux-passthrough-wrapped.
+pub fn passthrough() -> bool {
+    PASSTHROUGH.load(Ordering::Relaxed)
 }
 
 /// The current cell size in pixels, if the terminal ever reported one.
@@ -762,10 +901,27 @@ fn read_probe_replies(fd: RawFd, deadline: Instant) -> Vec<u8> {
             PollResult::Error => break,
         }
     }
-    // Final zero-timeout drain of late/partial reply bytes.
-    while matches!(poll_in(fd, 0), PollResult::Ready) {
-        if !read_chunk(fd, &mut buf) {
-            break;
+    // Quiet-window drain of late/partial reply bytes. The DA1 fence means
+    // OUR replies are in, not that the line is silent: a multiplexer's own
+    // startup queries to the outer terminal produce replies that dribble in
+    // for a few hundred ms after attach, and tmux leaks fragments of them
+    // into the pane as literal keys (observed live with tmux 3.6a inside
+    // kitty: XTVERSION/OSC-color reply fragments arriving ~90 ms apart).
+    // Keep reading until the line has been PROBE_QUIET long silent, still
+    // bounded by the overall deadline (degenerates to the old zero-timeout
+    // drain once the budget is spent).
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let quiet_ms = PROBE_QUIET.min(remaining).as_millis() as i32;
+        match poll_in(fd, quiet_ms) {
+            PollResult::Ready => {
+                if !read_chunk(fd, &mut buf) {
+                    break;
+                }
+            }
+            PollResult::Timeout => break,
+            PollResult::Interrupted => continue,
+            PollResult::Error => break,
         }
     }
     buf
@@ -808,17 +964,42 @@ fn read_chunk(fd: RawFd, buf: &mut Vec<u8>) -> bool {
     true
 }
 
-/// Write the probe batch to stdout and read the replies (bounded). The batch
-/// is: a kitty graphics query (`q=0` — this one *wants* the reply; a 1x1
-/// no-op transmission), optionally `CSI 14 t` when pixel geometry is still
-/// missing, and DA1 last as the universal terminator.
-fn send_probe_and_read(want_pixels: bool) -> Vec<u8> {
-    use std::io::Write;
-    let mut batch: Vec<u8> = b"\x1b_Gi=4242,s=1,v=1,a=q,t=d,f=24,q=0;AAAA\x1b\\".to_vec();
+/// Build the probe byte batch: a kitty graphics query (`q=0` — this one
+/// *wants* the reply; a 1x1 no-op transmission), optionally `CSI 14 t` when
+/// pixel geometry is still missing, and DA1 last as the universal
+/// terminator.
+///
+/// With `wrap` (probing through tmux) the kitty query AND the DA1 fence are
+/// passthrough-wrapped so the OUTER terminal answers them — a plain DA1
+/// would be answered by tmux itself, instantly, fencing the read loop
+/// before the outer terminal's APC reply arrives. `CSI 14 t` stays
+/// unwrapped: tmux answers it with pane-local pixels, exactly the values
+/// the cell geometry needs. Pure Vec-building, split from
+/// [`send_probe_and_read`] so the batch bytes are unit-testable.
+fn probe_batch(want_pixels: bool, wrap: bool) -> Vec<u8> {
+    const KITTY_QUERY: &[u8] = b"\x1b_Gi=4242,s=1,v=1,a=q,t=d,f=24,q=0;AAAA\x1b\\";
+    const DA1: &[u8] = b"\x1b[c";
+    let mut batch: Vec<u8> = if wrap {
+        wrap_passthrough(KITTY_QUERY)
+    } else {
+        KITTY_QUERY.to_vec()
+    };
     if want_pixels {
         batch.extend_from_slice(b"\x1b[14t");
     }
-    batch.extend_from_slice(b"\x1b[c");
+    if wrap {
+        batch.extend_from_slice(&wrap_passthrough(DA1));
+    } else {
+        batch.extend_from_slice(DA1);
+    }
+    batch
+}
+
+/// Write the probe batch ([`probe_batch`]) to stdout and read the replies
+/// (bounded).
+fn send_probe_and_read(want_pixels: bool, wrap: bool) -> Vec<u8> {
+    use std::io::Write;
+    let batch = probe_batch(want_pixels, wrap);
     let mut out = std::io::stdout();
     if out.write_all(&batch).and_then(|_| out.flush()).is_err() {
         return Vec::new();
@@ -827,20 +1008,26 @@ fn send_probe_and_read(want_pixels: bool) -> Vec<u8> {
 }
 
 /// The full startup decision over injected seams (testable without a tty):
-/// returns the protocol, the cell geometry (if any) and a reason string for
-/// the log. `winsize` is the ioctl seam; `probe` writes the probe batch
-/// (argument: also request `CSI 14 t` pixel size) and returns the reply
-/// bytes. Explicit choices never probe unless they need missing geometry;
-/// sixel without geometry degrades to half-block (D2: a sixel raster must
-/// be pre-sized in pixels, while kitty and iterm2 scale into the cell
-/// rectangle).
+/// returns the protocol, the cell geometry (if any), a reason string for
+/// the log and whether APC output must be tmux-passthrough-wrapped
+/// (`in_tmux && kitty-unicode` — the only combination that needs the
+/// envelope). `winsize` is the ioctl seam; `probe` writes the probe batch
+/// (arguments: also request `CSI 14 t` pixel size; passthrough-wrap the
+/// capability queries) and returns the reply bytes. Explicit choices never
+/// probe unless they need missing geometry — and that geometry probe stays
+/// unwrapped even inside tmux (capability is pinned, not probed, and tmux
+/// answers `CSI 14 t`/DA1 itself). Sixel without geometry degrades to
+/// half-block (D2: a sixel raster must be pre-sized in pixels, while
+/// kitty, kitty-unicode and iterm2 scale into the cell rectangle).
 fn init_from(
     choice: ImageProtocolChoice,
     env: &dyn Fn(&str) -> Option<String>,
     winsize: &mut dyn FnMut() -> Option<(u16, u16, u16, u16)>,
-    probe: &mut dyn FnMut(bool) -> Vec<u8>,
-) -> (GraphicsProtocol, Option<CellGeometry>, &'static str) {
+    probe: &mut dyn FnMut(bool, bool) -> Vec<u8>,
+) -> (GraphicsProtocol, Option<CellGeometry>, &'static str, bool) {
     const NO_SIXEL_GEO: &str = "sixel needs pixel geometry, none available";
+    let in_tmux = env("TMUX").is_some()
+        || env("TERM").map_or(false, |t| t.starts_with("tmux"));
     let ws = winsize();
     let mut geometry = ws.and_then(|(c, r, x, y)| cell_geometry_from_winsize(c, r, x, y));
     // Combine a CSI-14t pixel reply with the ioctl cols/rows.
@@ -849,42 +1036,61 @@ fn init_from(
         let (w, h) = outcome.pixel_size?;
         cell_geometry_from_winsize(cols, rows, w, h)
     };
-    match choice {
-        ImageProtocolChoice::HalfBlock => {
-            (GraphicsProtocol::HalfBlock, geometry, "explicit config")
-        }
-        ImageProtocolChoice::Kitty | ImageProtocolChoice::Iterm2 | ImageProtocolChoice::Sixel => {
+    let (proto, reason) = match choice {
+        ImageProtocolChoice::HalfBlock => (GraphicsProtocol::HalfBlock, "explicit config"),
+        ImageProtocolChoice::Kitty
+        | ImageProtocolChoice::KittyUnicode
+        | ImageProtocolChoice::Iterm2
+        | ImageProtocolChoice::Sixel => {
             if geometry.is_none() {
                 // The only stdin read for an explicit choice: fetch the
                 // pixel size when the ioctl reported zeros.
-                geometry = geo_from_probe(&parse_probe(&probe(true)));
+                geometry = geo_from_probe(&parse_probe(&probe(true, false)));
             }
             let proto = resolve(choice, None, None);
             if proto == GraphicsProtocol::Sixel && geometry.is_none() {
-                return (GraphicsProtocol::HalfBlock, None, NO_SIXEL_GEO);
+                (GraphicsProtocol::HalfBlock, NO_SIXEL_GEO)
+            } else {
+                (proto, "explicit config")
             }
-            (proto, geometry, "explicit config")
         }
         ImageProtocolChoice::Auto => {
             if let Some(hit) = detect_from_env(env) {
-                return (hit, geometry, "env");
-            }
-            let outcome = parse_probe(&probe(geometry.is_none()));
-            if geometry.is_none() {
-                geometry = geo_from_probe(&outcome);
-            }
-            let reason = if outcome.da1_seen {
-                "probe replies"
+                (hit, "env")
             } else {
-                "probe timeout"
-            };
-            let proto = resolve(ImageProtocolChoice::Auto, None, Some(&outcome));
-            if proto == GraphicsProtocol::Sixel && geometry.is_none() {
-                return (GraphicsProtocol::HalfBlock, None, NO_SIXEL_GEO);
+                let outcome = parse_probe(&probe(geometry.is_none(), in_tmux));
+                if geometry.is_none() {
+                    geometry = geo_from_probe(&outcome);
+                }
+                let reason = if outcome.da1_seen {
+                    "probe replies"
+                } else {
+                    "probe timeout"
+                };
+                let proto = if in_tmux {
+                    // Inside tmux (reached only on a fossil hint) the wrapped
+                    // probe queried the OUTER terminal. A kitty OK means the
+                    // envelope round-trips → kitty-unicode. Anything else —
+                    // including a sixel attr in the outer DA1 — is half-block:
+                    // outer sixel does not mean tmux passes sixel through.
+                    if outcome.kitty_ok {
+                        GraphicsProtocol::KittyUnicode
+                    } else {
+                        GraphicsProtocol::HalfBlock
+                    }
+                } else {
+                    resolve(ImageProtocolChoice::Auto, None, Some(&outcome))
+                };
+                if proto == GraphicsProtocol::Sixel && geometry.is_none() {
+                    (GraphicsProtocol::HalfBlock, NO_SIXEL_GEO)
+                } else {
+                    (proto, reason)
+                }
             }
-            (proto, geometry, reason)
         }
-    }
+    };
+    let wrap = in_tmux && proto == GraphicsProtocol::KittyUnicode;
+    (proto, geometry, reason, wrap)
 }
 
 /// Resolve the graphics protocol and cell geometry once at startup.
@@ -894,18 +1100,19 @@ fn init_from(
 /// un-echoed, and nothing else is reading stdin yet, so the reply bytes are
 /// consumed here instead of surfacing as phantom key events.
 pub fn init(choice: ImageProtocolChoice) {
-    let (proto, geometry, reason) = init_from(
+    let (proto, geometry, reason, wrap) = init_from(
         choice,
         &|key| std::env::var(key).ok(),
         &mut winsize_via_ioctl,
         &mut send_probe_and_read,
     );
     let _ = PROTOCOL.set(proto);
+    PASSTHROUGH.store(wrap, Ordering::Relaxed);
     if let Some(geo) = geometry {
         GEOMETRY.store(pack_geometry(geo), Ordering::Relaxed);
     }
     log::debug!(
-        "graphics: probe -> {} ({reason}), cell geometry {:?}",
+        "graphics: probe -> {} ({reason}), cell geometry {:?}, passthrough {wrap}",
         proto.name(),
         geometry
     );
@@ -929,12 +1136,11 @@ mod tests {
 
     #[test]
     fn env_tmux_var_resolves_half_block() {
-        // tmux without passthrough swallows graphics escapes — even when the
-        // outer terminal is kitty, auto must stay on half-blocks.
+        // tmux without passthrough swallows graphics escapes — with no hint
+        // of a capable outer terminal, auto stays on instant half-blocks.
         let env = env_of(&[
             ("TMUX", "/tmp/tmux-1000/default,42,0"),
             ("TERM", "xterm-256color"),
-            ("KITTY_WINDOW_ID", "1"),
         ]);
         assert_eq!(detect_from_env(&env), Some(GraphicsProtocol::HalfBlock));
     }
@@ -942,14 +1148,50 @@ mod tests {
     #[test]
     fn env_screen_and_tmux_term_resolve_half_block() {
         for term in ["screen-256color", "tmux-256color"] {
-            // Checked before the kitty vars so tmux-on-kitty stays safe.
-            let env = env_of(&[("TERM", term), ("KITTY_WINDOW_ID", "1")]);
+            // Hint-free multiplexer TERMs win instantly, before any probe.
+            let env = env_of(&[("TERM", term)]);
             assert_eq!(
                 detect_from_env(&env),
                 Some(GraphicsProtocol::HalfBlock),
                 "for TERM={term}"
             );
         }
+    }
+
+    #[test]
+    fn env_tmux_with_kitty_hint_falls_through_to_probe() {
+        // A fossil hint of a kitty-protocol outer terminal (the tmux server
+        // keeps the env of wherever it started): inconclusive — worth one
+        // bounded passthrough probe instead of instant half-block.
+        for hint in ["KITTY_WINDOW_ID", "GHOSTTY_RESOURCES_DIR"] {
+            let env = env_of(&[
+                ("TMUX", "/tmp/tmux-1000/default,42,0"),
+                ("TERM", "tmux-256color"),
+                (hint, "1"),
+            ]);
+            assert_eq!(detect_from_env(&env), None, "for hint {hint}");
+        }
+        // TERM tmux* without the TMUX var (ssh into a tmux session) is
+        // still tmux — the hint falls through to the probe there too.
+        let env = env_of(&[("TERM", "tmux-256color"), ("KITTY_WINDOW_ID", "1")]);
+        assert_eq!(detect_from_env(&env), None);
+    }
+
+    #[test]
+    fn env_tmux_without_hint_stays_half_block() {
+        // No outer-terminal hint: today's instant resolution, zero probe cost.
+        let env = env_of(&[
+            ("TMUX", "/tmp/tmux-1000/default,42,0"),
+            ("TERM", "tmux-256color"),
+        ]);
+        assert_eq!(detect_from_env(&env), Some(GraphicsProtocol::HalfBlock));
+    }
+
+    #[test]
+    fn env_screen_term_stays_half_block_despite_hint() {
+        // GNU screen has no passthrough — no hint can help.
+        let env = env_of(&[("TERM", "screen-256color"), ("KITTY_WINDOW_ID", "1")]);
+        assert_eq!(detect_from_env(&env), Some(GraphicsProtocol::HalfBlock));
     }
 
     #[test]
@@ -1139,6 +1381,7 @@ mod tests {
         };
         for (choice, want) in [
             (ImageProtocolChoice::Kitty, GraphicsProtocol::Kitty),
+            (ImageProtocolChoice::KittyUnicode, GraphicsProtocol::KittyUnicode),
             (ImageProtocolChoice::Iterm2, GraphicsProtocol::Iterm2),
             (ImageProtocolChoice::Sixel, GraphicsProtocol::Sixel),
             (ImageProtocolChoice::HalfBlock, GraphicsProtocol::HalfBlock),
@@ -1305,13 +1548,92 @@ mod tests {
     }
 
     #[test]
+    fn probe_drain_absorbs_post_fence_chatter() {
+        use std::io::Write;
+        use std::os::fd::AsRawFd;
+        use std::os::unix::net::UnixStream;
+        use std::time::{Duration, Instant};
+
+        // Multiplexer chatter races the probe: tmux's own attach-time
+        // queries to the outer terminal produce replies that dribble in for
+        // a few hundred ms AFTER our DA1 fence, and tmux leaks fragments of
+        // them into the pane as literal keys (observed live: tmux 3.6a +
+        // kitty 0.47 — a leaked 'l' opened the selected file in vim). The
+        // drain must keep listening until the line is quiet, not stop at
+        // the fence, so stragglers cannot become phantom keys.
+        let (mut writer, reader) = UnixStream::pair().unwrap();
+        writer.write_all(b"\x1b_Gi=4242;OK\x1b\\\x1b[?62;52;c").unwrap();
+        let t = std::thread::spawn(move || {
+            // Two chatter fragments with a ~60 ms inter-arrival gap, well
+            // after the fence bytes above.
+            std::thread::sleep(Duration::from_millis(40));
+            writer.write_all(b"r").unwrap();
+            std::thread::sleep(Duration::from_millis(60));
+            writer.write_all(b"i").unwrap();
+            writer // keep the peer open past the drain
+        });
+        let buf = read_probe_replies(
+            reader.as_raw_fd(),
+            Instant::now() + Duration::from_millis(250),
+        );
+        let _writer = t.join().unwrap();
+        assert!(parse_probe(&buf).da1_seen);
+        assert!(
+            buf.ends_with(b"ri"),
+            "post-fence chatter must be consumed by the drain, got {buf:?}"
+        );
+        // Nothing may be left on the fd for the EventStream to pick up.
+        assert!(
+            matches!(poll_in(reader.as_raw_fd(), 0), PollResult::Timeout),
+            "bytes left unread on the fd would leak as phantom keys"
+        );
+    }
+
+    #[test]
+    fn probe_batch_unwrapped_is_query_pixels_da1() {
+        // The pre-passthrough batch, byte-identical: kitty query, CSI 14 t
+        // (only when pixel geometry is wanted), DA1 fence last.
+        assert_eq!(
+            probe_batch(true, false),
+            b"\x1b_Gi=4242,s=1,v=1,a=q,t=d,f=24,q=0;AAAA\x1b\\\x1b[14t\x1b[c"
+        );
+        assert_eq!(
+            probe_batch(false, false),
+            b"\x1b_Gi=4242,s=1,v=1,a=q,t=d,f=24,q=0;AAAA\x1b\\\x1b[c"
+        );
+    }
+
+    #[test]
+    fn probe_batch_wrapped_envelopes_query_and_da1_but_not_csi14t() {
+        // Probing through tmux: the kitty query and the DA1 fence must each
+        // be individually passthrough-enveloped with their inner ESCs
+        // doubled (including the query's own ST terminator) so the OUTER
+        // terminal answers them — an unwrapped DA1 would be answered by
+        // tmux instantly, fencing the read loop before the outer APC reply
+        // arrives. `CSI 14 t` must stay bare: tmux answers it with
+        // pane-local pixels, exactly what the cell geometry needs — a
+        // wrapped one would return the outer terminal's (wrong) pixels.
+        const WRAPPED_QUERY: &[u8] =
+            b"\x1bPtmux;\x1b\x1b_Gi=4242,s=1,v=1,a=q,t=d,f=24,q=0;AAAA\x1b\x1b\\\x1b\\";
+        const WRAPPED_DA1: &[u8] = b"\x1bPtmux;\x1b\x1b[c\x1b\\";
+        assert_eq!(
+            probe_batch(true, true),
+            [WRAPPED_QUERY, b"\x1b[14t", WRAPPED_DA1].concat()
+        );
+        assert_eq!(
+            probe_batch(false, true),
+            [WRAPPED_QUERY, WRAPPED_DA1].concat()
+        );
+    }
+
+    #[test]
     fn init_with_explicit_choice_never_reads() {
         // Explicit config with usable ioctl geometry: no stdin read at all.
-        let (proto, geo, _reason) = init_from(
+        let (proto, geo, _reason, _passthrough) = init_from(
             ImageProtocolChoice::Kitty,
             &|_| None,
             &mut || Some((100, 50, 800, 1000)),
-            &mut |_| panic!("probe must not run for an explicit choice with geometry"),
+            &mut |_, _| panic!("probe must not run for an explicit choice with geometry"),
         );
         assert_eq!(proto, GraphicsProtocol::Kitty);
         assert_eq!(
@@ -1326,11 +1648,11 @@ mod tests {
     #[test]
     fn init_iterm2_pin_with_geometry_never_probes() {
         // Explicit iterm2 pin with usable ioctl geometry: no stdin read.
-        let (proto, geo, _reason) = init_from(
+        let (proto, geo, _reason, _passthrough) = init_from(
             ImageProtocolChoice::Iterm2,
             &|_| None,
             &mut || Some((100, 50, 800, 1000)),
-            &mut |_| panic!("probe must not run for an explicit choice with geometry"),
+            &mut |_, _| panic!("probe must not run for an explicit choice with geometry"),
         );
         assert_eq!(proto, GraphicsProtocol::Iterm2);
         assert_eq!(
@@ -1344,26 +1666,29 @@ mod tests {
 
     #[test]
     fn init_auto_env_hit_skips_probe() {
+        // Hint-free tmux: the env wins instantly, no probe.
         let env = env_of(&[("TMUX", "/tmp/tmux-1000/default,42,0")]);
-        let (proto, _geo, _reason) = init_from(
+        let (proto, _geo, _reason, passthrough) = init_from(
             ImageProtocolChoice::Auto,
             &env,
             &mut || Some((100, 50, 800, 1000)),
-            &mut |_| panic!("probe must not run on an env hit"),
+            &mut |_, _| panic!("probe must not run on an env hit"),
         );
         assert_eq!(proto, GraphicsProtocol::HalfBlock);
+        assert!(!passthrough, "half-block never wraps");
     }
 
     #[test]
     fn init_auto_probe_resolves_sixel_with_csi14t_geometry() {
         // ioctl has cols/rows but zero pixels (ssh case): the probe must ask
         // for CSI 14 t and its reply supplies the pixel geometry.
-        let (proto, geo, _reason) = init_from(
+        let (proto, geo, _reason, _passthrough) = init_from(
             ImageProtocolChoice::Auto,
             &|_| None,
             &mut || Some((100, 50, 0, 0)),
-            &mut |want_pixels| {
+            &mut |want_pixels, wrap| {
                 assert!(want_pixels, "zero ioctl pixels must request CSI 14 t");
+                assert!(!wrap, "probe outside tmux must stay unwrapped");
                 b"\x1b[4;480;800t\x1b[?62;4c".to_vec()
             },
         );
@@ -1381,21 +1706,21 @@ mod tests {
     fn init_sixel_without_geometry_degrades_to_half_block() {
         // Sixel rasters must be pre-sized to the pane; without any pixel
         // geometry the protocol cannot work and degrades to half-blocks.
-        let (proto, geo, _reason) = init_from(
+        let (proto, geo, _reason, _passthrough) = init_from(
             ImageProtocolChoice::Sixel,
             &|_| None,
             &mut || None,
-            &mut |_| Vec::new(), // probe answers nothing
+            &mut |_, _| Vec::new(), // probe answers nothing
         );
         assert_eq!(proto, GraphicsProtocol::HalfBlock);
         assert_eq!(geo, None);
         // Kitty scales into the cell rectangle, so it survives missing
         // geometry (an 8x16 cell is assumed later by the emitter).
-        let (proto, geo, _reason) = init_from(
+        let (proto, geo, _reason, _passthrough) = init_from(
             ImageProtocolChoice::Kitty,
             &|_| None,
             &mut || None,
-            &mut |_| Vec::new(),
+            &mut |_, _| Vec::new(),
         );
         assert_eq!(proto, GraphicsProtocol::Kitty);
         assert_eq!(geo, None);
@@ -1405,11 +1730,11 @@ mod tests {
     fn init_iterm2_pin_without_geometry_keeps_iterm2() {
         // iTerm2 sizes in cells (width=/height=), so like kitty it survives
         // missing pixel geometry — the sixel degrade must stay sixel-only.
-        let (proto, geo, _reason) = init_from(
+        let (proto, geo, _reason, _passthrough) = init_from(
             ImageProtocolChoice::Iterm2,
             &|_| None,
             &mut || None,
-            &mut |_| Vec::new(), // probe answers nothing
+            &mut |_, _| Vec::new(), // probe answers nothing
         );
         assert_eq!(proto, GraphicsProtocol::Iterm2);
         assert_eq!(geo, None);
@@ -1417,14 +1742,139 @@ mod tests {
 
     #[test]
     fn init_auto_probe_timeout_is_half_block() {
-        let (proto, _geo, reason) = init_from(
+        let (proto, _geo, reason, _passthrough) = init_from(
             ImageProtocolChoice::Auto,
             &|_| None,
             &mut || Some((100, 50, 800, 1000)),
-            &mut |_| Vec::new(),
+            &mut |_, _| Vec::new(),
         );
         assert_eq!(proto, GraphicsProtocol::HalfBlock);
         assert!(reason.contains("timeout"), "reason was: {reason}");
+    }
+
+    /// The tmux env every hinted-probe test runs under.
+    fn tmux_kitty_hint_env() -> impl Fn(&str) -> Option<String> {
+        env_of(&[
+            ("TMUX", "/tmp/tmux-1000/default,42,0"),
+            ("TERM", "tmux-256color"),
+            ("KITTY_WINDOW_ID", "1"),
+        ])
+    }
+
+    #[test]
+    fn init_auto_tmux_hinted_probe_kitty_ok_resolves_kitty_unicode() {
+        // tmux + kitty fossil hint: the env is inconclusive, the probe runs
+        // passthrough-wrapped, and a kitty OK maps to kitty-unicode.
+        let (proto, _geo, reason, passthrough) = init_from(
+            ImageProtocolChoice::Auto,
+            &tmux_kitty_hint_env(),
+            &mut || Some((100, 50, 800, 1000)),
+            &mut |_, wrap| {
+                assert!(wrap, "probe inside tmux must wrap the APC query and DA1");
+                b"\x1b_Gi=4242;OK\x1b\\\x1b[?62c".to_vec()
+            },
+        );
+        assert_eq!(proto, GraphicsProtocol::KittyUnicode);
+        assert_eq!(reason, "probe replies");
+        assert!(passthrough, "kitty-unicode inside tmux must wrap its APCs");
+    }
+
+    #[test]
+    fn init_auto_tmux_hinted_probe_timeout_is_half_block() {
+        // Wrapped queries silently dropped (allow-passthrough off, or the
+        // outer terminal ignores the APC): degrade to half-block.
+        let (proto, _geo, reason, passthrough) = init_from(
+            ImageProtocolChoice::Auto,
+            &tmux_kitty_hint_env(),
+            &mut || Some((100, 50, 800, 1000)),
+            &mut |_, wrap| {
+                assert!(wrap, "probe inside tmux must wrap the APC query and DA1");
+                Vec::new()
+            },
+        );
+        assert_eq!(proto, GraphicsProtocol::HalfBlock);
+        assert!(reason.contains("timeout"), "reason was: {reason}");
+        assert!(!passthrough);
+    }
+
+    #[test]
+    fn init_auto_tmux_hinted_outer_sixel_stays_half_block() {
+        // A sixel attribute in the wrapped outer DA1 must NOT map to sixel:
+        // the outer terminal rendering sixel does not mean tmux passes it.
+        let (proto, _geo, _reason, passthrough) = init_from(
+            ImageProtocolChoice::Auto,
+            &tmux_kitty_hint_env(),
+            &mut || Some((100, 50, 800, 1000)),
+            &mut |_, _| b"\x1b[?62;4c".to_vec(),
+        );
+        assert_eq!(proto, GraphicsProtocol::HalfBlock);
+        assert!(!passthrough);
+    }
+
+    #[test]
+    fn init_auto_outside_tmux_kitty_ok_still_classic_kitty() {
+        // Regression: outside tmux a kitty OK keeps resolving classic kitty.
+        let (proto, _geo, _reason, passthrough) = init_from(
+            ImageProtocolChoice::Auto,
+            &|_| None,
+            &mut || Some((100, 50, 800, 1000)),
+            &mut |_, wrap| {
+                assert!(!wrap, "probe outside tmux must stay unwrapped");
+                b"\x1b_Gi=4242;OK\x1b\\\x1b[?62c".to_vec()
+            },
+        );
+        assert_eq!(proto, GraphicsProtocol::Kitty);
+        assert!(!passthrough);
+    }
+
+    #[test]
+    fn init_kitty_unicode_pin_sets_passthrough_inside_tmux_only() {
+        // Pin + tmux: the APCs need the envelope to reach the outer terminal.
+        let env = env_of(&[("TMUX", "/tmp/tmux-1000/default,42,0")]);
+        let (proto, _geo, _reason, passthrough) = init_from(
+            ImageProtocolChoice::KittyUnicode,
+            &env,
+            &mut || Some((100, 50, 800, 1000)),
+            &mut |_, _| panic!("probe must not run for an explicit choice with geometry"),
+        );
+        assert_eq!(proto, GraphicsProtocol::KittyUnicode);
+        assert!(passthrough);
+        // Same pin outside tmux: raw APCs, no envelope.
+        let (proto, _geo, _reason, passthrough) = init_from(
+            ImageProtocolChoice::KittyUnicode,
+            &|_| None,
+            &mut || Some((100, 50, 800, 1000)),
+            &mut |_, _| panic!("probe must not run for an explicit choice with geometry"),
+        );
+        assert_eq!(proto, GraphicsProtocol::KittyUnicode);
+        assert!(!passthrough);
+    }
+
+    #[test]
+    fn init_kitty_unicode_pin_geometry_probe_stays_unwrapped() {
+        // Capability is pinned, not probed — only the pixel size is missing.
+        // DA1-from-tmux is a fine fence for the pane-local CSI 14 t reply,
+        // so the geometry probe stays unwrapped even inside tmux.
+        let env = env_of(&[("TMUX", "/tmp/tmux-1000/default,42,0")]);
+        let (proto, geo, _reason, passthrough) = init_from(
+            ImageProtocolChoice::KittyUnicode,
+            &env,
+            &mut || Some((100, 50, 0, 0)),
+            &mut |want_pixels, wrap| {
+                assert!(want_pixels, "zero ioctl pixels must request CSI 14 t");
+                assert!(!wrap, "pin geometry probe must stay unwrapped");
+                b"\x1b[4;480;800t\x1b[?62c".to_vec()
+            },
+        );
+        assert_eq!(proto, GraphicsProtocol::KittyUnicode);
+        assert_eq!(
+            geo,
+            Some(CellGeometry {
+                cell_w: 8,
+                cell_h: 9
+            })
+        );
+        assert!(passthrough);
     }
 
     #[test]
@@ -1449,6 +1899,7 @@ mod tests {
     #[test]
     fn protocol_names_match_config_values() {
         assert_eq!(GraphicsProtocol::Kitty.name(), "kitty");
+        assert_eq!(GraphicsProtocol::KittyUnicode.name(), "kitty-unicode");
         assert_eq!(GraphicsProtocol::Iterm2.name(), "iterm2");
         assert_eq!(GraphicsProtocol::Sixel.name(), "sixel");
         assert_eq!(GraphicsProtocol::HalfBlock.name(), "half-block");
@@ -1522,6 +1973,30 @@ mod tests {
     }
 
     #[test]
+    fn passthrough_wraps_and_doubles_escapes() {
+        // Envelope prefix + every 0x1b doubled — INCLUDING the inner
+        // terminator's ESC — + the envelope's own ST.
+        assert_eq!(
+            wrap_passthrough(b"\x1b_Ga=T;AAAA\x1b\\"),
+            b"\x1bPtmux;\x1b\x1b_Ga=T;AAAA\x1b\x1b\\\x1b\\"
+        );
+        // No ESC in the payload: wrapped verbatim.
+        assert_eq!(wrap_passthrough(b"abc"), b"\x1bPtmux;abc\x1b\\");
+        // Degenerate: empty payload still yields a complete envelope.
+        assert_eq!(wrap_passthrough(b""), b"\x1bPtmux;\x1b\\");
+    }
+
+    #[test]
+    fn passthrough_state_defaults_off() {
+        let _g = emit_guard();
+        // Tests never run init: unset reads as off, mirroring protocol().
+        assert!(!passthrough());
+        // The test seam flips it; the guard's reset returns it to off.
+        set_passthrough_for_test(true);
+        assert!(passthrough());
+    }
+
+    #[test]
     fn kitty_transmit_is_chunked_and_terminated() {
         let _g = emit_guard();
         // 64x64 RGB = 12288 raw bytes -> 16384 base64 chars -> 4 chunks.
@@ -1540,11 +2015,19 @@ mod tests {
             );
         }
         assert!(key_val(first, "i").is_some(), "first chunk carries the id");
+        // A classic-kitty transmit must NOT create a virtual placement: a
+        // stuck `U=1` renders nothing (virtual placements are composited
+        // only onto U+10EEEE placeholder cells, which this path never
+        // writes) — images would silently vanish outside tmux.
+        assert!(
+            !first.split(',').any(|kv| kv == "U=1"),
+            "classic kitty must not carry U=1: {first}"
+        );
         for (i, (keys, payload)) in apcs.iter().enumerate() {
             assert!(payload.len() <= 4096, "chunk {i} payload over 4096");
             if i > 0 {
                 let m = if i == apcs.len() - 1 { "m=0" } else { "m=1" };
-                assert_eq!(keys, m, "continuation chunk {i}");
+                assert_eq!(keys, &format!("q=2,{m}"), "continuation chunk {i}");
             }
         }
         // Reassembled payload is exactly the base64 of the raw RGB bytes.
@@ -1980,6 +2463,372 @@ mod tests {
             Emitted::Transmitted,
             "empty LIVE must retransmit, not gate"
         );
+    }
+
+    // --- kitty-unicode emitter
+
+    #[test]
+    fn emit_kitty_unicode_transmits_virtual_placement_with_grid() {
+        let _g = emit_guard();
+        // 64x64 RGB = 12288 raw bytes -> 16384 base64 chars -> 4 chunks.
+        let rgb = RgbImage::from_pixel(64, 64, Rgb([1, 2, 3]));
+        let key = test_key("u.png", 512, 512);
+        let mut sink = Vec::new();
+        let emitted = emit_kitty_unicode(&mut sink, key.clone(), &rgb, 12, 4).unwrap();
+        assert_eq!(emitted, Emitted::Transmitted);
+
+        let apcs = apc_sequences(&sink);
+        assert!(apcs.len() > 1, "base64 > 4096 chars must be chunked");
+        let first = &apcs[0].0;
+        for want in [
+            "a=T", "U=1", "q=2", "f=24", "s=64", "v=64", "c=12", "r=4", "m=1",
+        ] {
+            assert!(
+                first.split(',').any(|kv| kv == want),
+                "first chunk missing {want}: {first}"
+            );
+        }
+        let id: u32 = key_val(first, "i")
+            .expect("first chunk carries the id")
+            .parse()
+            .unwrap();
+        for (i, (keys, payload)) in apcs.iter().enumerate() {
+            assert!(payload.len() <= 4096, "chunk {i} payload over 4096");
+            if i > 0 {
+                let m = if i == apcs.len() - 1 { "m=0" } else { "m=1" };
+                assert_eq!(keys, &format!("q=2,{m}"), "continuation chunk {i}");
+            }
+        }
+        // The placeholder grid follows the LAST chunk: one row per `r=`,
+        // U+10EEEE cells, and the fg-SGR carrying the very same id the
+        // transmission used.
+        let s = String::from_utf8_lossy(&sink);
+        let last_apc_end = s.rfind("\x1b\\").expect("terminated APC") + 2;
+        let grid = &s[last_apc_end..];
+        assert!(grid.contains('\u{10EEEE}'), "grid after chunks: {grid:?}");
+        let (r, g, b) = ((id >> 16) as u8, (id >> 8) as u8, id as u8);
+        assert!(
+            grid.contains(&format!("\x1b[38;2;{r};{g};{b}m")),
+            "fg-SGR must encode id {id}: {grid:?}"
+        );
+        assert_eq!(grid.matches("\x1b[39m").count(), 4, "one reset per row");
+        // Emitter-to-grid seam: the rows must sit at the EmitKey origin
+        // ((10,2) -> 1-based CUP rows 3..=6, column 11) and carry cols
+        // placeholder cells each — a hardcoded origin or a dropped
+        // cols/rows forward at the call site would pass the pure
+        // placeholder.rs tests but not these.
+        for row in 3..=6 {
+            assert!(
+                grid.contains(&format!("\x1b[{row};11H")),
+                "grid CUP missing for screen row {row}: {grid:?}"
+            );
+        }
+        assert_eq!(
+            grid.matches('\u{10EEEE}').count(),
+            12 * 4,
+            "placeholder cell count must be cols x rows"
+        );
+        // Strongest pin on the seam: the grid slice is byte-for-byte the
+        // pure placeholder_grid over the emitter's own arguments.
+        let mut expected = Vec::new();
+        placeholder::placeholder_grid(&mut expected, key.origin_cell, 12, 4, id).unwrap();
+        assert_eq!(
+            grid.as_bytes(),
+            &expected[..],
+            "grid must be placeholder_grid(origin, cols, rows, id) verbatim"
+        );
+        let (live_key, live_id) = live_snapshot_for_test().expect("live after emit");
+        assert_eq!(live_key, key);
+        assert_eq!(live_id, Some(id), "placement is id-addressed");
+    }
+
+    #[test]
+    fn emit_kitty_unicode_wraps_chunks_when_passthrough() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(64, 64, Rgb([1, 2, 3]));
+
+        // Passthrough off: zero envelopes.
+        let mut sink = Vec::new();
+        emit_kitty_unicode(&mut sink, test_key("v.png", 512, 512), &rgb, 12, 4).unwrap();
+        let s = String::from_utf8_lossy(&sink);
+        assert!(!s.contains("\x1bPtmux;"), "no envelope while off: {s:?}");
+        let chunk_count = apc_sequences(&sink).len();
+
+        // Passthrough on: every APC chunk is individually enveloped, the
+        // inner terminators are ESC-doubled, and the placeholder text stays
+        // bare — passing through tmux untouched is its entire point.
+        reset_emit_state_for_test();
+        set_passthrough_for_test(true);
+        let key = test_key("w.png", 512, 512);
+        let mut sink = Vec::new();
+        emit_kitty_unicode(&mut sink, key.clone(), &rgb, 12, 4).unwrap();
+        let s = String::from_utf8_lossy(&sink);
+        assert_eq!(
+            s.matches("\x1bPtmux;").count(),
+            chunk_count,
+            "one envelope per APC chunk: {s:?}"
+        );
+        assert!(
+            s.contains("\x1b\x1b\\\x1b\\"),
+            "inner APC terminator must be ESC-doubled: {s:?}"
+        );
+        let grid_start = s.find('\u{10EEEE}').expect("grid present");
+        assert!(
+            !s[grid_start..].contains("\x1bPtmux;"),
+            "placeholder grid must not be wrapped: {s:?}"
+        );
+        // Precision pin: the stream must END with the verbatim (un-doubled)
+        // grid bytes, starting exactly after the final envelope terminator.
+        // A grid folded into the last chunk's envelope would keep the
+        // envelope count and put no envelope prefix after the first
+        // placeholder char — but tmux would then forward the grid to the
+        // OUTER terminal (drawn at the outer cursor, not the pane).
+        let id: u32 = key_val(&apc_sequences(&sink)[0].0, "i")
+            .expect("wrapped chunk 0 carries the id")
+            .parse()
+            .unwrap();
+        let mut bare_grid = Vec::new();
+        placeholder::placeholder_grid(&mut bare_grid, key.origin_cell, 12, 4, id).unwrap();
+        let bare_grid = String::from_utf8(bare_grid).unwrap();
+        assert!(
+            s.ends_with(&bare_grid),
+            "stream must end with the bare grid bytes: {s:?}"
+        );
+        let grid_at = s.len() - bare_grid.len();
+        assert_eq!(
+            s.rfind("\x1b\\").map(|p| p + 2),
+            Some(grid_at),
+            "grid must start right after the final envelope terminator: {s:?}"
+        );
+    }
+
+    #[test]
+    fn emit_kitty_unicode_gates_on_unchanged_key() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(2, 2, Rgb([5, 5, 5]));
+        let key = test_key("x.png", 16, 32);
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_kitty_unicode(&mut sink, key.clone(), &rgb, 2, 1).unwrap(),
+            Emitted::Transmitted
+        );
+        // Unrelated repaint: same key -> zero bytes — the grid persists as
+        // cell content and the image data persists terminal-side.
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_kitty_unicode(&mut sink, key, &rgb, 2, 1).unwrap(),
+            Emitted::Gated
+        );
+        assert!(sink.is_empty(), "gated emit wrote bytes: {sink:?}");
+    }
+
+    #[test]
+    fn emit_kitty_unicode_clamps_cell_box_to_diacritics_table() {
+        let _g = emit_guard();
+        // A pane wider than the 297-entry diacritics table: the transmitted
+        // c= and the placeholder grid must agree by construction — both
+        // clamped to 297 — or the terminal would fit the image into columns
+        // the grid can never address.
+        let rgb = RgbImage::from_pixel(2, 2, Rgb([5, 5, 5]));
+        let mut sink = Vec::new();
+        emit_kitty_unicode(&mut sink, test_key("wide.png", 16, 32), &rgb, 300, 1).unwrap();
+        let first = &apc_sequences(&sink)[0].0;
+        assert!(
+            first.split(',').any(|kv| kv == "c=297"),
+            "c= must be clamped to the table size: {first}"
+        );
+        let s = String::from_utf8_lossy(&sink);
+        assert_eq!(
+            s.matches('\u{10EEEE}').count(),
+            297,
+            "grid emits exactly the clamped columns"
+        );
+    }
+
+    #[test]
+    fn emit_kitty_unicode_new_key_deletes_old_id_first() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(2, 2, Rgb([5, 5, 5]));
+        let mut sink = Vec::new();
+        emit_kitty_unicode(&mut sink, test_key("old.png", 16, 32), &rgb, 2, 1).unwrap();
+        let (_, old_id) = live_snapshot_for_test().unwrap();
+        let old_id = old_id.unwrap();
+
+        // Navigate/resize path (the EmitKey changed): the old placement is
+        // deleted by id FIRST (freeing the terminal-side pixels), then a
+        // fresh transmit and a fresh grid carrying the NEW id.
+        let mut key = test_key("new.png", 16, 32);
+        key.origin_cell = (0, 0);
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_kitty_unicode(&mut sink, key.clone(), &rgb, 2, 1).unwrap(),
+            Emitted::Transmitted
+        );
+        let apcs = apc_sequences(&sink);
+        assert_eq!(
+            apcs[0].0,
+            format!("a=d,d=I,i={old_id},q=2"),
+            "output must start with the delete of the previous id"
+        );
+        let new_id: u32 = key_val(&apcs[1].0, "i").unwrap().parse().unwrap();
+        assert!(new_id > old_id, "fresh id per transmission");
+        let s = String::from_utf8_lossy(&sink);
+        let (r, g, b) = ((new_id >> 16) as u8, (new_id >> 8) as u8, new_id as u8);
+        assert!(
+            s.contains(&format!("\x1b[38;2;{r};{g};{b}m\u{10EEEE}")),
+            "fresh grid must encode the new id: {s:?}"
+        );
+        let (live_key, live_id) = live_snapshot_for_test().expect("live after emit");
+        assert_eq!(live_key, key, "LIVE must hold the new key");
+        assert_eq!(live_id, Some(new_id), "LIVE must hold the new id");
+    }
+
+    #[test]
+    fn emit_kitty_unicode_new_key_wraps_delete_when_passthrough() {
+        let _g = emit_guard();
+        set_passthrough_for_test(true);
+        let rgb = RgbImage::from_pixel(2, 2, Rgb([5, 5, 5]));
+        let mut sink = Vec::new();
+        emit_kitty_unicode(&mut sink, test_key("old.png", 16, 32), &rgb, 2, 1).unwrap();
+        let (_, old_id) = live_snapshot_for_test().unwrap();
+        let old_id = old_id.unwrap();
+
+        // The MID-EMIT delete (distinct from end_frame's) must also reach
+        // the outer terminal: enveloped, inner ESCs doubled, and before the
+        // new transmit's chunk 0.
+        let mut sink = Vec::new();
+        emit_kitty_unicode(&mut sink, test_key("new.png", 16, 32), &rgb, 2, 1).unwrap();
+        let s = String::from_utf8_lossy(&sink);
+        let delete = format!("\x1bPtmux;\x1b\x1b_Ga=d,d=I,i={old_id},q=2\x1b\x1b\\\x1b\\");
+        let delete_at = s.find(&delete).expect("wrapped delete for the old id");
+        let transmit_at = s.find("a=T").expect("new transmit present");
+        assert!(
+            delete_at < transmit_at,
+            "delete must precede the new transmit: {s:?}"
+        );
+    }
+
+    /// A sink that fails with `BrokenPipe` once a write would push it past
+    /// `budget` bytes — the mid-transmit `io::Error` injector.
+    struct FailAfter {
+        budget: usize,
+        written: Vec<u8>,
+    }
+
+    impl Write for FailAfter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if self.written.len() + buf.len() > self.budget {
+                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "sink full"));
+            }
+            self.written.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn emit_kitty_unicode_write_failure_leaves_no_placement() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(64, 64, Rgb([1, 2, 3]));
+        let key = test_key("p.png", 512, 512);
+        let mut sink = Vec::new();
+        emit_kitty_unicode(&mut sink, key.clone(), &rgb, 12, 4).unwrap();
+
+        // An io::Error partway through the transmit (16384 base64 chars =
+        // 4 chunks; the budget admits the delete, the blank pass and chunk
+        // 0, then fails) must propagate, and LIVE must end empty — the old
+        // placement was already forgotten and the new one never completed —
+        // so the NEXT emit retransmits instead of gating on a placement the
+        // terminal never fully received.
+        let mut failing = FailAfter {
+            budget: 5000,
+            written: Vec::new(),
+        };
+        emit_kitty_unicode(&mut failing, test_key("q.png", 512, 512), &rgb, 12, 4)
+            .expect_err("write failure must propagate");
+        let partial = String::from_utf8_lossy(&failing.written);
+        assert!(
+            partial.contains("a=T"),
+            "chunk 0 must have gone out before the failure: {partial:?}"
+        );
+        assert!(
+            !partial.contains("m=0;"),
+            "the chunk chain must be left unterminated (mid-transmit): {partial:?}"
+        );
+        assert!(live_snapshot_for_test().is_none(), "LIVE must be empty");
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_kitty_unicode(&mut sink, key, &rgb, 12, 4).unwrap(),
+            Emitted::Transmitted,
+            "empty LIVE must retransmit, not gate"
+        );
+    }
+
+    #[test]
+    fn emit_kitty_unicode_end_frame_deletes_by_id() {
+        let _g = emit_guard();
+        let rgb = RgbImage::from_pixel(2, 2, Rgb([5, 5, 5]));
+        let key = test_key("y.png", 16, 32);
+        let mut sink = Vec::new();
+        emit_kitty_unicode(&mut sink, key.clone(), &rgb, 2, 1).unwrap();
+        let (_, id) = live_snapshot_for_test().unwrap();
+        let id = id.unwrap();
+
+        // A gated emit claims the frame: end_frame keeps the placement.
+        begin_frame(true);
+        let mut sink = Vec::new();
+        assert_eq!(
+            emit_kitty_unicode(&mut sink, key, &rgb, 2, 1).unwrap(),
+            Emitted::Gated
+        );
+        let mut sink = Vec::new();
+        end_frame(&mut sink).unwrap();
+        assert!(sink.is_empty(), "claimed placement must survive end_frame");
+        assert!(live_snapshot_for_test().is_some());
+
+        // Unclaimed frame: the image data is id-addressed like classic
+        // kitty, so the reconcile deletes by id — and writes NO cell
+        // content: the placeholder cells are ordinary text this frame's
+        // repaint has already overwritten.
+        begin_frame(true);
+        let mut sink = Vec::new();
+        end_frame(&mut sink).unwrap();
+        let s = String::from_utf8_lossy(&sink);
+        assert!(
+            s.contains(&format!("\x1b_Ga=d,d=I,i={id},q=2\x1b\\")),
+            "unclaimed placement not deleted: {s:?}"
+        );
+        assert!(
+            !s.contains("\x1b["),
+            "end_frame must not write cell content: {s:?}"
+        );
+        assert!(live_snapshot_for_test().is_none());
+    }
+
+    #[test]
+    fn emit_kitty_unicode_end_frame_wraps_delete_when_passthrough() {
+        let _g = emit_guard();
+        set_passthrough_for_test(true);
+        let rgb = RgbImage::from_pixel(2, 2, Rgb([5, 5, 5]));
+        let mut sink = Vec::new();
+        emit_kitty_unicode(&mut sink, test_key("z.png", 16, 32), &rgb, 2, 1).unwrap();
+        let (_, id) = live_snapshot_for_test().unwrap();
+        let id = id.unwrap();
+
+        // The delete APC must reach the outer terminal too: exactly the
+        // enveloped, ESC-doubled form and nothing else.
+        begin_frame(true);
+        let mut sink = Vec::new();
+        end_frame(&mut sink).unwrap();
+        let s = String::from_utf8_lossy(&sink);
+        assert_eq!(
+            s,
+            format!("\x1bPtmux;\x1b\x1b_Ga=d,d=I,i={id},q=2\x1b\x1b\\\x1b\\"),
+            "wrapped delete only"
+        );
+        assert!(live_snapshot_for_test().is_none());
     }
 
     #[test]

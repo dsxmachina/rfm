@@ -225,10 +225,12 @@ Then from the harness shell: `rm -rf "$FIXTURE/doomed"`. Wait 1 s, then
 
 **Expect (socket):** every socket query replies promptly (< 1 s) — no wedge,
 no 10 s timeout. After the `rm`, `state` still answers with a coherent
-snapshot (cwd may still read the deleted path, or the listing may have gone
-empty — record the actual behavior as protocol feedback; no explicit
-deleted-cwd recovery path exists in manager.rs, so the contract here is
-robustness only, not a specific recovery). After `h`: `cwd=="$FIXTURE"`,
+snapshot. Observed reference behavior (run 3): a coherent-but-stale snapshot —
+`cwd` still the deleted path, `total==1`, the old entry still listed — while
+the left column refreshes; all queries <10 ms. No explicit deleted-cwd
+recovery path exists in manager.rs, so the contract here is robustness only,
+not a specific recovery; deviations from the reference snapshot are worth a
+feedback note, not a bug. After `h`: `cwd=="$FIXTURE"`,
 `total==21` (doomed is gone), `mode=="normal"`. `selection` is a valid
 *remaining* entry (doomed no longer exists), e.g. `subdir` — do NOT assert it
 is `doomed`. **`preview_path` must match the new selection** (e.g.
@@ -264,7 +266,8 @@ capture — 12.10 needs it.
 `Queueing command 'fail': echo boom-stderr >&2; exit 3` (INFO),
 `Executing command 'fail': ...` (INFO),
 `[fail] boom-stderr` (WARN),
-`Command 'fail' failed with exit code 3` (ERROR).
+`Command 'fail' failed with exit code 3` (WARN — recoverable user-op
+failures are warn since da35a98).
 `state.queue_active==null` and `queue_len==0` after completion (don't assert
 the transient non-null — the command finishes in milliseconds).
 
@@ -272,8 +275,8 @@ the transient non-null — the command finishes in milliseconds).
 line `Command 'fail' failed with exit code 3` (widget shows info+ within its
 10 s TTL). The main panels are unaffected.
 
-**Note:** this deliberately seeds the ERROR that makes 12.12's `error.log`
-exist — do not "clean it up".
+**Note:** this seeds the WARN line that 12.10 (TTL) and 12.12 (error.log
+NOT written for warn-only history) build on — do not "clean it up".
 
 ### 12.10 — Log-widget TTL: gone from screen, kept in history
 
@@ -284,7 +287,7 @@ churn a short `log 30` window can push the retained ERROR line out even though
 capacity-retention still holds it). Run `lat`.
 
 **Expect (socket):** `log` STILL contains
-`Command 'fail' failed with exit code 3` with `level=="ERROR"` and
+`Command 'fail' failed with exit code 3` with `level=="WARN"` and
 `age_secs >= 10` — retention history is capacity-evicted only, the TTL does
 not apply to it.
 
@@ -305,36 +308,30 @@ returns `{"idle":true,...}` in < 1 s.
 **Expect (screen):** capture is a normal, fully-drawn fixture listing;
 no overlay, no error text.
 
-### 12.12 — error.log post-mortem on quit
+### 12.12 — error.log is NOT written for a warn-only history
 
-**Action:** `tmux send-keys -t $SESSION Q` (quit outright; capital Q). Wait
-for exit: poll until the pane no longer shows the rfm layout (up to 5 s), then
-`tmux capture-pane -t $SESSION -p`. Then from the harness shell:
-`cat "$FIXTURE/error.log"`.
+**Context:** since da35a98 the 12.9 failure is WARN, and `error.log` (plus the
+stderr banner) is gated on `Level::Error` in the retained history
+(`print_all_errors` main.rs / `get_errors` logger.rs) — so a clean run of this
+section must NOT produce an error.log. That gate is what this step now pins.
 
-**Expect (screen, best-effort):** the pane shows rfm has exited. The stderr
-banner (`Encountered an unexpected error. This is a bug!`,
-`https://github.com/dsxmachina/rfm/issues`, and the `Error:` list including
-`Command 'fail' failed with exit code 3`) is the *intended* output, but under
-the README direct-launch form rfm is the tmux session's root command, so
-`Q` terminates the session and `capture-pane` returns empty — the banner is
-**not observable** this way. Treat the screen banner as best-effort and rely on
-the **file** assertion below as the load-bearing check. (To observe the banner,
-launch rfm under a wrapper shell — `tmux new-session … "…/rfm …; exec $SHELL"` —
-or set `tmux set -t $SESSION remain-on-exit on` before quitting.)
+**Action:** `tmux send-keys -t $SESSION Q` (quit outright; capital Q). Poll
+until the process is gone (up to 5 s). Then from the harness shell:
+`ls "$FIXTURE/error.log"` and `ls ./error.log` (repo root).
 
-**Expect (file):** `$FIXTURE/error.log` exists (process cwd = launch cwd = the
-fixture, per the launch deviation) and contains a line matching
-`ERROR (<N>s ago): Command 'fail' failed with exit code 3` (format
-`{level} ({age}s ago): {msg}`), plus the surrounding retained history (the
-INFO `Queueing`/`Executing` lines, the WARN `[fail] boom-stderr` line — with
-`--debug-socket` verbosity even TRACE lines).
+**Expect (file):** NEITHER path exists — the retained history holds WARNs at
+most (12.9's failure pair), and the Level::Error gate must not fire for them.
+An error.log here means either a genuine ERROR happened during the section
+(read it, file the underlying finding) or the gate regressed.
 
-**Note:** the socket file may still exist after exit; teardown removes it. If
-`error.log` is missing, first check it didn't land elsewhere
-(`ls ./error.log` in the repo root — that would mean the pane `cd` was
-skipped: harness error, not an rfm bug; rerun). If it truly wasn't written
-despite the ERROR line having been in `log` — that's the bug to file.
+**TODO (protocol):** the POSITIVE path (error.log written and stderr banner
+shown when a genuine `Level::Error` is in the history) currently has no benign,
+deterministic seed under the da35a98 log-level policy (error! is reserved for
+fatal/inoperable states). Design one (e.g. a debug-socket-only fault injection
+verb) before re-adding the positive assertion; do not re-seed it by reverting
+a user-op failure to error.
+
+**Note:** the socket file may still exist after exit; teardown removes it.
 
 ### 12.13 — Final full-teardown checklist
 

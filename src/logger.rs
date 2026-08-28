@@ -49,6 +49,20 @@ impl LogBuffer {
             .collect()
     }
 
+    /// The single line the collapsed widget shows: the newest still-displayed
+    /// line at info or above. Info is included deliberately — user-facing
+    /// feedback (undo/redo confirmations, "nichts rückgängig zu machen") logs
+    /// at info and must be visible without expanding the log; sub-info
+    /// verbosity never reaches the display buffer in the first place.
+    pub fn collapsed_line(&self) -> Option<(Level, String)> {
+        self.buffer
+            .lock()
+            .iter()
+            .rev()
+            .find(|(level, _, _)| *level <= Level::Info)
+            .map(|(level, _, msg)| (*level, msg.clone()))
+    }
+
     pub fn get_errors(&self) -> Vec<String> {
         self.history
             .lock()
@@ -199,6 +213,27 @@ mod tests {
             vec!["lopdf fallback".to_string(), "rfm warning".to_string()],
             "the dependency warning must still be in history"
         );
+    }
+
+    #[test]
+    fn collapsed_widget_line_is_newest_info_or_higher() {
+        // The collapsed widget must show info-level feedback (undo/redo
+        // confirmations, "nichts rückgängig zu machen") — not just Warn+ —
+        // per CLAUDE.md's "the on-screen widget still shows only info+".
+        // Found by test-protocol run 3 (11.1/11.9): undo feedback was
+        // invisible because draw_log's collapsed branch filtered to Warn+.
+        let buffer = LogBuffer::default();
+        log_line(&buffer, Level::Warn, "older warning");
+        log_line(&buffer, Level::Info, "rückgängig: 1 Änderung");
+        assert_eq!(
+            buffer.collapsed_line(),
+            Some((Level::Info, "rückgängig: 1 Änderung".to_string())),
+            "newest info+ line wins, even over an older warning"
+        );
+
+        // An empty display buffer shows nothing.
+        let quiet = LogBuffer::default();
+        assert_eq!(quiet.collapsed_line(), None);
     }
 
     #[test]

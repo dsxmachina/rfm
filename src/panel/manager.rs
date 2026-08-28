@@ -7,7 +7,7 @@ use crossterm::{
     ExecutableCommand,
 };
 use futures::{FutureExt, StreamExt};
-use log::{debug, info, trace, warn, Level};
+use log::{debug, info, trace, warn};
 use tokio::sync::watch;
 
 use crate::{
@@ -820,13 +820,7 @@ impl PanelManager {
                 )?;
                 y = y.saturating_sub(1);
             }
-        } else if let Some((level, line)) = self
-            .logger
-            .get()
-            .into_iter()
-            .rev()
-            .find(|(level, _)| *level <= Level::Warn)
-        {
+        } else if let Some((level, line)) = self.logger.collapsed_line() {
             queue!(
                 self.stdout,
                 cursor::MoveTo(0, y),
@@ -1715,6 +1709,7 @@ impl PanelManager {
                 .map(|(c, m)| (c.to_string(), m.dir.clone()))
                 .collect(),
             image_protocol: super::graphics::protocol().name().to_string(),
+            graphics_passthrough: super::graphics::passthrough(),
         }
     }
 

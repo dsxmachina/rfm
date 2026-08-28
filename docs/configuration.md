@@ -115,8 +115,8 @@ preview_cache = true   # persist image/video preview thumbnails in
                        # $XDG_CACHE_HOME/rfm/thumbnails so they survive restarts
 pdf_render = false     # render page 1 of a PDF as an image (needs pdftoppm or
                        # mutool); off by default — PDFs use the pure-Rust text tier
-image_protocol = "auto" # graphics protocol for image previews:
-                       # "auto" | "kitty" | "iterm2" | "sixel" | "half-block"
+image_protocol = "auto" # graphics protocol for image previews: "auto" |
+                       # "kitty" | "kitty-unicode" | "iterm2" | "sixel" | "half-block"
 fancy_icons = false    # use Nerd Font icons (needs a Nerd Font in your terminal)
 rate_limit_interval_ms = 500   # preview decode rate limit while scrolling
 ```
@@ -148,22 +148,44 @@ heuristics first (kitty/WezTerm/Ghostty → kitty, iTerm2 → iterm2), then a
 short (< 250 ms) terminal probe for the kitty graphics protocol and sixel
 support. Anything uncertain falls back to `"half-block"`, the universal
 cell-based renderer that works in every truecolor terminal. Inside
-tmux/screen, `"auto"` always resolves to `"half-block"` — multiplexers
-swallow graphics escapes. The explicit values `"kitty"`, `"iterm2"` and
-`"sixel"` pin a protocol and skip probing; they are the escape hatch for
+tmux/screen, `"auto"` resolves to `"half-block"` — multiplexers swallow
+graphics escapes — with one exception: inside tmux, a leftover
+`KITTY_WINDOW_ID` or `GHOSTTY_RESOURCES_DIR` variable hints at a capable
+outer terminal, and rfm then probes through tmux's passthrough; if the
+outer terminal answers the kitty query, `"auto"` resolves `"kitty-unicode"`.
+The explicit values `"kitty"`, `"kitty-unicode"`, `"iterm2"` and `"sixel"`
+pin a protocol and skip capability probing; they are the escape hatch for
 terminals that misreport their capabilities. `"iterm2"` is the iTerm2
 inline-images protocol (OSC 1337), also rendered by WezTerm, mintty, and
 VSCode — VSCode only when `terminal.integrated.enableImages` is on, which
-ships off, so it is never auto-detected. Pins are honored even inside tmux,
-but rfm does not wrap its output in tmux's passthrough sequences: pinned
-`"kitty"` inside tmux leaves the preview region blank regardless of
-`allow-passthrough` (tmux consumes raw APC sequences either way), pinned
+ships off, so it is never auto-detected. `"kitty-unicode"` is kitty graphics
+transmitted as a virtual placement and drawn as U+10EEEE placeholder cells —
+ordinary text that survives tmux. It is the one protocol whose image-data
+APCs rfm wraps in tmux's passthrough envelope (the placeholder cells are
+plain text and pass through untouched): inside tmux the image
+data reaches the screen only with `allow-passthrough on` set (tmux ≥ 3.3;
+earlier versions pass through unconditionally — configuring it is your job,
+rfm never runs the tmux CLI) and an outer terminal that composes virtual
+placements (kitty ≥ 0.28 or Ghostty; not WezTerm/Konsole). It also works
+outside tmux in those terminals. Two more tmux caveats: the placeholder
+cells carry the image id in their 24-bit foreground color, so tmux must
+have RGB/truecolor enabled toward the outer terminal (e.g.
+`terminal-features`/`Tc` — with kitty/Ghostty defaults this is normally
+already true), otherwise the quantized color corrupts the id and previews
+stay silently blank even after a successful probe. And `allow-passthrough
+on` forwards image data only from a *visible* pane — a transmit from a
+backgrounded window is dropped and rfm's unchanged-key gate does not retry
+it — so prefer `allow-passthrough all` (tmux ≥ 3.4) if you keep rfm
+running in background windows. The other pins are honored inside tmux but
+stay unwrapped: pinned `"kitty"` leaves the preview region blank regardless
+of `allow-passthrough` (tmux consumes raw APC sequences either way), pinned
 `"iterm2"` is just as blank (tmux discards OSC 1337 too), and pinned
 `"sixel"` renders only when tmux itself was built with sixel support
 (`--enable-sixel`). `"half-block"` disables graphics protocols entirely.
-When the startup probe runs (auto in an unrecognized terminal, or an explicit
-kitty/iterm2/sixel pin without pixel geometry), keystrokes typed during its
-short (< 250 ms) window are consumed together with the probe replies.
+When the startup probe runs (auto in an unrecognized terminal, auto inside
+tmux with a kitty/Ghostty hint, or an explicit kitty/kitty-unicode/iterm2/
+sixel pin without pixel geometry), keystrokes typed during its short
+(< 250 ms) window are consumed together with the probe replies.
 
 When `fancy_icons = true`, rfm renders file-type icons from the
 [Nerd Fonts](https://www.nerdfonts.com/) project (like yazi). Your terminal must

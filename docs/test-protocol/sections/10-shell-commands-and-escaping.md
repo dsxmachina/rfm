@@ -183,9 +183,11 @@ protocol feedback, not a bug). After the poll: `queue_active == null`,
 `Command 'marker' completed successfully` (INFO). `mode` stayed `"normal"`
 throughout; a `j`/`k` sent during the sleep would be processed immediately
 (background = non-blocking).
-**Expect (screen):** log widget (bottom area) shows the
-`Queueing command 'marker'...` / `Command 'marker' completed successfully`
-lines while they are <10 s old. No overlay, panels unchanged.
+**Expect (screen):** the collapsed log widget (bottom row of the log area)
+shows the newest of the INFO lines (`Queueing command 'marker'...` →
+`Command 'marker' completed successfully`) while <10 s old. Capture within
+the SAME shell invocation as the triggering action — separate Bash tool
+calls exceed the 10 s TTL. No overlay, panels unchanged.
 **Expect (disk):** `[ -f "$FIXTURE/marker-ran.txt" ]` — the executor's
 working dir is the center panel's path.
 
@@ -230,7 +232,8 @@ Then `tmux send-keys -t $SESSION g g` (return cursor to top), `await-idle`.
 `Queueing command 'failer': echo boom-stdout; echo boom-stderr >&2; exit 7`
 (INFO), `Executing command 'failer': ...` (INFO), `[failer] boom-stdout`
 (DEBUG), `[failer] boom-stderr` (WARN),
-`Command 'failer' failed with exit code 7` (ERROR). After the `j`:
+`Command 'failer' failed with exit code 7` (WARN — recoverable user-op
+failures are warn since da35a98). After the `j`:
 `selection` advanced to the next visible entry (event loop alive, nothing
 wedged); after `gg`: `selected_idx == 0`. `queue_active == null` at the end.
 **Expect (screen):** while <10 s old, the log widget shows the
@@ -466,9 +469,10 @@ Any `INJECTED*` file existing = command substitution executed inside
 (expected: the 3 dirs + `$(touch INJECTED).txt`, `cmd-args.txt`,
 `interactive-ran.txt`, `marker-ran.txt`, `plain.txt` — 8 entries; no
 `INJECTED*`, no `watched-new.txt`, no stray `sh` artifacts). `log 50`
-contains no ERROR lines other than the intentional
-`Command 'failer' failed with exit code 7` from 10.5 (a `zoxide add` failure
-line, for instance, would be a finding).
+contains no ERROR lines at all (the intentional 10.5 failure pair —
+`Command 'failer' failed with exit code 7` and the `boom-stderr` line — are
+WARNs since da35a98; any ERROR, or an unexpected WARN like a `zoxide add`
+failure, is a finding).
 **Expect (screen):** center column matches the entries reply; highlight on
 `zz $(touch INJECTED-zox) dir`; no leftover overlay, no garbled cells from
 the hostile names.

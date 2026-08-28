@@ -89,31 +89,40 @@ step instead of trusting counted `j` presses.
 **Expect (socket):**
 - `state.selection == "a-blue.png"`, `state.selected_idx == 0`,
   `state.preview_path == "$FIXTURE/a-blue.png"`, `state.mode == "normal"`.
-- `state.image_protocol == "half-block"` — rfm runs inside tmux, so `auto`
-  always resolves to half-block (no graphics-protocol env hit or probe
-  result can apply).
-- `echo "log 50" | socat - UNIX-CONNECT:$SOCK` contains NO
-  `raster cache hit` line yet (first visit is a miss+store, which logs nothing
-  on success).
+- `state.image_protocol == "half-block"` — rfm runs inside tmux with the
+  default `auto` config and `KITTY_WINDOW_ID`/`GHOSTTY_RESOURCES_DIR`
+  explicitly unset in the pane env (the launch prefix's `env -u` flags; a
+  tmux server started from kitty/Ghostty fossilizes both into every pane),
+  so `auto` resolves to half-block instantly (no graphics probe runs).
+- `echo "log 50" | socat - UNIX-CONNECT:$SOCK`: do NOT assert the absence of
+  a `raster cache hit` line — when the directory preloader wins the store
+  race (the same race the colour-drift note below accepts), the on-demand
+  first visit legitimately IS a logged hit. The load-bearing disk assertion
+  is the entry count below.
 
 **Expect (screen):** `tmux capture-pane -t $SESSION -p` shows in the right
 (preview) pane:
-- a half-block raster: at least one captured line contains `▄▄▄▄▄▄▄▄` (the 8×8
-  image renders as 4 rows of 8 `▄` cells; small images are NOT upscaled).
-- the three image info lines below the raster: `png · 79 B` and a timestamp
-  line matching `YYYY-MM-DD HH:MM:SS`, plus a colour-mode line that is EITHER
-  `8 × 8  Rgba8` (fresh in-memory decode) OR `8 × 8  Rgb8`. The `Rgb8` variant
-  is **expected** on the first visit when the directory preloader wins the
-  decode race and serves the already-stored JPEG thumbnail (accepted display
-  drift — same as the documented 09.3 cache-hit drift, just one step early).
-  Do not FAIL on `Rgb8` here.
+- a half-block raster: at least one captured line contains `▄▄▄▄▄▄▄▄`. The
+  8×8 source renders PANE-FILLING (the draw path resizes via
+  `image::thumbnail` into the cell box, which upscales small sources) — do
+  not assert a 4-row/8-column footprint.
+- the structured info block below the raster (footer format since 7412fd7):
+  `Format` / `Dimensions` / `Aspect ratio` / `Color` / `Bit depth` /
+  `File size` rows. Assert `Format       : PNG`, `Dimensions   : 8 × 8`, and
+  a `File size` row; the `Color` row is EITHER `Rgba8` (fresh decode) OR
+  `Rgb8` (the directory preloader won the decode race and served the stored
+  JPEG thumbnail — accepted display drift). Do not FAIL on either. No
+  standalone timestamp assertion (mtime rendering is part of the block and
+  timezone-dependent — assert shape, not date).
 
 **Expect (disk):**
 - `$THUMBS` exists with mode `700` (`stat -c %a "$THUMBS"` → `700`).
-- exactly one entry for the PNG:
-  `ls "$THUMBS" | grep -c -- "-$M_BLUE-img960u.jpg$"` → `1`, and that filename
+- exactly one entry for the PNG (always count via `find -printf '%f\n'` —
+  an `ls` alias with color embeds ANSI codes in filenames and silently zeroes
+  every `grep -c`):
+  `find "$THUMBS" -maxdepth 1 -type f -printf '%f\n' | grep -c -- "-$M_BLUE-img960u.jpg$"` → `1`, and that filename
   matches `^[0-9a-f]{16}-$M_BLUE-img960u\.jpg$` (16-hex seahash prefix).
-- no `*.part` files: `ls "$THUMBS" | grep -c '\.part$'` → `0`.
+- no `*.part` files: `find "$THUMBS" -maxdepth 1 -type f -printf '%f\n' | grep -c '\.part$'` → `0`.
 
 **Note:** The timestamp info line renders the mtime in UTC — with the
 `202001010000` local-time fixture it may read `2020-01-01 …` or
@@ -128,10 +137,11 @@ step instead of trusting counted `j` presses.
 `state.preview_path == "$FIXTURE/b-red.jpg"`. `seq` increased since 09.1
 (never assert an exact delta).
 
-**Expect (screen):** right pane shows a `▄▄▄▄▄▄▄▄` raster block and info lines
-`8 × 8  Rgb8`, `jpeg · 633 B`, timestamp line.
+**Expect (screen):** right pane shows a `▄▄▄▄▄▄▄▄` raster block and the
+structured info block with `Format       : JPEG` and `Dimensions   : 8 × 8`
+(Color row `Rgb8`).
 
-**Expect (disk):** `ls "$THUMBS" | grep -c -- "-$M_RED-img960u.jpg$"` → `1`.
+**Expect (disk):** `find "$THUMBS" -maxdepth 1 -type f -printf '%f\n' | grep -c -- "-$M_RED-img960u.jpg$"` → `1`.
 The 09.1 blue entry is still present (different hash+mtime, not swept).
 
 ### 09.3 — Revisit PNG: "raster cache hit" + cache-hit info drift
@@ -141,24 +151,21 @@ The 09.1 blue entry is still present (different hash+mtime, not swept).
 
 **Expect (socket):**
 - `state.selection == "a-blue.png"`.
-- `echo "log 50" | socat - UNIX-CONNECT:$SOCK` contains a DEBUG line
-  `raster cache hit for $FIXTURE/a-blue.png` (retained history; requires
-  `--debug-socket`'s TRACE verbosity, which the harness always has).
+- Do NOT expect a NEW `raster cache hit` line for this revisit: within one
+  session, revisits are served from the in-memory preview-panel cache and
+  never consult the raster cache (no `panel-update: preview` in the trace).
+  The raster-cache hit line is observable only when the entry is loaded
+  fresh — at launch (preloader) or in a new session (see 09.11).
 
-**Expect (screen):** raster block again, but the first info line is now
-`8 × 8  Rgb8` — NOT `Rgba8`. The cache-hit path reads color from the cached
-JPEG thumbnail (always Rgb8 after the JPEG round-trip; documented accepted
-display drift). `png · 79 B` and the timestamp line are unchanged.
+**Expect (screen):** raster block again with the structured info block;
+the `Color` row may read `Rgb8` (JPEG-thumbnail round-trip drift) or match
+the first visit — in-memory revisits repeat whatever was first shown.
 
 **Expect (disk):** entry count for `$M_BLUE` still `1` (hit ≠ re-store).
 
-**Note:** If the screen still shows `Rgba8`, the preview came from a fresh
-decode, i.e. the cache lookup silently failed — check `log 50` for
-`raster cache store failed` from 09.1 before filing.
-
 ### 09.4 — Text file: no cache write
 
-**Action:** record `BEFORE=$(ls "$THUMBS" | wc -l)`. Then
+**Action:** record `BEFORE=$(find "$THUMBS" -maxdepth 1 -type f | wc -l)`. Then
 `tmux send-keys -t $SESSION j j` (one at a time, `await-idle` between) →
 `settle "$FIXTURE/c-note.txt"`.
 
@@ -169,7 +176,7 @@ decode, i.e. the cache lookup silently failed — check `log 50` for
 (possibly syntax-styled by bat if installed — content is what matters). No `▄`
 raster in the preview pane.
 
-**Expect (disk):** `ls "$THUMBS" | wc -l` equals `$BEFORE` — text previews
+**Expect (disk):** `find "$THUMBS" -maxdepth 1 -type f | wc -l` equals `$BEFORE` — text previews
 never touch the raster cache.
 
 **Note:** Pressing `j j` quickly may rate-limit-skip the intermediate
@@ -188,10 +195,11 @@ between to keep it deterministic.
 `state.preview_path` ends in `/d img & spaces.png`. `log 20` contains no new
 ERROR/WARN lines from this step.
 
-**Expect (screen):** raster block + info lines (`8 × 8  Rgba8` — first visit,
-fresh decode — `png · 79 B`, timestamp).
+**Expect (screen):** raster block + structured info block
+(`Format       : PNG`, `Dimensions   : 8 × 8`; Color row `Rgba8` fresh decode
+or `Rgb8` preloader drift).
 
-**Expect (disk):** `ls "$THUMBS" | grep -c -- "-$M_SPC-img960u.jpg$"` → `1`.
+**Expect (disk):** `find "$THUMBS" -maxdepth 1 -type f -printf '%f\n' | grep -c -- "-$M_SPC-img960u.jpg$"` → `1`.
 The cache filename is a hash — the space/`&` never reaches a shell; this step
 guards the hashing/store path against odd names.
 
@@ -215,15 +223,16 @@ settle "$FIXTURE/a-blue.png"
 this visit (mtime changed → lookup miss; compare `log` line count/ages against
 09.3).
 
-**Expect (screen):** raster + info lines; first line `8 × 8  Rgba8` (fresh
-decode after the miss); timestamp line now shows the new (current) mtime.
+**Expect (screen):** raster + structured info block (Color row `Rgba8` after
+the fresh decode, `Rgb8` if the preloader re-stored first); the Modified row
+shows the new (current) mtime.
 
 **Expect (disk):** assert only the specific fixture-mtime entries, never a total
 count — the directory preloader precomputes sibling-image thumbnails (and, if
 the parent isn't quiet, unrelated ones), so a `grep -c -- "-img960u.jpg$"` total
 is polluted and unsafe.
-- new entry: `ls "$THUMBS" | grep -c -- "-$M_BLUE_NEW-img960u.jpg$"` → `1`
-- old sibling swept by the store: `ls "$THUMBS" | grep -c -- "-$M_BLUE-img960u.jpg$"` → `0`
+- new entry: `find "$THUMBS" -maxdepth 1 -type f -printf '%f\n' | grep -c -- "-$M_BLUE_NEW-img960u.jpg$"` → `1`
+- old sibling swept by the store: `find "$THUMBS" -maxdepth 1 -type f -printf '%f\n' | grep -c -- "-$M_BLUE-img960u.jpg$"` → `0`
 - each surviving fixture entry present exactly once:
   `-$M_RED-img960u.jpg$` → `1` and `-$M_SPC-img960u.jpg$` → `1`
   (do NOT assert the aggregate `-img960u.jpg$` count == 3).
@@ -237,7 +246,8 @@ completed — always `settle` before asserting the disk state.
 
 **Expect (disk):**
 - every file in `$THUMBS` matches `^[0-9a-f]{16}-[0-9]+-(img960u|vid120)\.jpg$`
-  (`vid120` only if 09.8 already ran — at this point expect `img960u` only)
+  (`vid120` entries are legitimate ALREADY — the startup preloader thumbnails
+  the sibling video immediately, before 09.8 runs)
 - `find "$THUMBS" -name '*.part' | wc -l` → `0`
 - `stat -c %a "$THUMBS"` → `700`
 
@@ -261,7 +271,7 @@ frame from the lavfi clip). Below it: mediainfo text if `mediainfo` is
 installed, otherwise no info lines at all (the video arm tolerates missing
 mediainfo when the thumbnail succeeded).
 
-**Expect (disk):** `ls "$THUMBS" | grep -c -- "-vid120.jpg$"` → `1`, with the
+**Expect (disk):** `find "$THUMBS" -maxdepth 1 -type f -printf '%f\n' | grep -c -- "-vid120.jpg$"` → `1`, with the
 mtime component `$(stat -c %Y "$FIXTURE/e-clip.mp4")`. No `*.part` files.
 
 **Note:** ffmpeg runs under a 10 s deadline (`EXTERNAL_RENDER_DEADLINE`); the
@@ -275,11 +285,14 @@ for exactly this.
 if its `settle` times out, proceed, 09.10 covers it) → then
 `tmux send-keys -t $SESSION k` → `await-idle` → `settle "$FIXTURE/e-clip.mp4"`.
 
-**Expect (socket):** `log 50` contains
-`raster cache hit for $FIXTURE/e-clip.mp4`.
+**Expect (socket):** do NOT expect a NEW `raster cache hit for
+$FIXTURE/e-clip.mp4` line — in-session revisits are served from the in-memory
+preview-panel cache and never consult the raster cache (the hit line is only
+observable on a fresh load: launch preloader or a new session, see 09.11). A
+hit line already in the history (preloader) is fine.
 
 **Expect (screen):** same raster as 09.8, and it must appear without a new
-ffmpeg run — `ls "$THUMBS" | grep -c -- "-vid120.jpg$"` still `1`.
+ffmpeg run — `find "$THUMBS" -maxdepth 1 -type f -printf '%f\n' | grep -c -- "-vid120.jpg$"` still `1`.
 
 ### 09.10 — Corrupt "video": graceful fallback, no cache garbage
 
@@ -290,7 +303,9 @@ paths the preview may resolve slowly; the seq-stable poll is authoritative).
 
 **Expect (socket):** one of, depending on installed tools:
 - ffmpeg present: DEBUG log line starting
-  `no ffmpeg thumbnail, falling back to mediainfo:` (the wrapped error contains
+  `no ffmpeg thumbnail, falling back to mediainfo:` present in the retained
+  history — possibly emitted by the startup preloader's earlier attempt on
+  `f-bad.mp4`, not by this visit (the wrapped error contains
   `ffmpeg did not produce a thumbnail`).
 - ffmpeg absent: no such line (the arm short-circuits to mediainfo).
 In both cases `state` must answer promptly — a 10 s `state` timeout here is a
@@ -302,7 +317,7 @@ fallback text starting `Error: Could not run mediainfo` with the line
 `You must have mediainfo installed to get a preview for this file-type.`.
 
 **Expect (disk):** no cache entry for f-bad's mtime:
-`ls "$THUMBS" | grep -c -- "-$(stat -c %Y "$FIXTURE/f-bad.mp4")-"` → `0`; no
+`find "$THUMBS" -maxdepth 1 -type f -printf '%f\n' | grep -c -- "-$(stat -c %Y "$FIXTURE/f-bad.mp4")-"` → `0`; no
 `*.part` anywhere in `$THUMBS` (the failed producer must clean its temp file).
 
 ### 09.11 — Relaunch with `preview_cache = false`: privacy promise (images)
@@ -315,7 +330,8 @@ printf '[general]\npreview_cache = false\n' > "$CFG2/config.toml"
 # Direct-launch form (README): binary as the session command, not send-keys
 # into an interactive shell (Atuin/zsh history-search would intercept it).
 tmux new-session -d -s $SESSION -x 120 -y 30 \
-  "env XDG_CACHE_HOME=$CACHE2 XDG_STATE_HOME=$STATE _ZO_DATA_DIR=$ZO \
+  "env -u KITTY_WINDOW_ID -u GHOSTTY_RESOURCES_DIR \
+   XDG_CACHE_HOME=$CACHE2 XDG_STATE_HOME=$STATE _ZO_DATA_DIR=$ZO \
    ./target/debug/rfm --debug-socket $SOCK --config $CFG2 $FIXTURE"
 until [ -S $SOCK ]; do sleep 0.1; done
 ```
@@ -367,8 +383,11 @@ raster in the right pane.
 rm -rf "$FIXTURE" "$CFG" "$CFG2" "$CACHE" "$CACHE2" "$STATE" "$ZO"; rm -f $SOCK`
 
 **Section coverage gaps** (deliberate — for the meta-review):
-- kitty/iterm2/sixel graphics protocols (tmux forces half-block; explicit
-  `image_protocol` pins untested here — needs a non-tmux/sixel-capable harness)
+- kitty/iterm2/sixel graphics protocols (auto in the hint-free harness
+  resolves to half-block; those explicit `image_protocol` pins render nothing
+  under tmux — needs a non-tmux/sixel-capable harness). A `"kitty-unicode"`
+  pin is now partially testable in-harness: its U+10EEEE placeholder cells
+  are capture-assertable, the composited pixels are not
 - SVG (`svg960`), font (`font-s1-24`) and PDF-render (`pdf-p1-960`) cache
   kinds; `pdf_render = true` end-to-end (PDF text tier is section-scope of the
   preview-types section)

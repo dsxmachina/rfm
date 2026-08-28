@@ -88,7 +88,7 @@ Steps are ordered and reuse state; each step lists the cwd it starts from.
 **Expect (socket):** after `j j`: `selection`=="emptydir", `selected_idx`==2, `preview_path`==$FIXTURE/emptydir. After `l`: `cwd`==$FIXTURE/emptydir, `selection`==null, `total`==0. After `h`: `cwd`==$FIXTURE, `selection`=="emptydir".
 **Expect (screen):** after `j j`: right (preview) column shows `(empty)`. After `l`: center column shows `(empty)` and nothing else in that column; top row contains `/emptydir`. After `h`: back to the fixture listing with `emptydir` still the selected row.
 **Note:** await-idle must return promptly at every point — a `state` timeout here is a wedged-event-loop finding.
-**Sentinel note:** for the empty `emptydir`, `state.preview_path` is the sentinel string `"path-of-empty-panel"`, not a real path; the same sentinel appears as `left_path` at filesystem root (`/`) in 02.10. Do not mis-assert a real path against either — this step does not assert `preview_path`.
+**Sentinel note:** the sentinel and the real path split by phase: with the CURSOR on `emptydir` (after `j j`), `preview_path` is the real `$FIXTURE/emptydir` — assert it. Only after DESCENDING inside (`l`) does the empty panel report the sentinel string `"path-of-empty-panel"`; the same sentinel appears as `left_path` at filesystem root (`/`) in 02.10. Never assert a real path against the sentinel positions.
 
 ### 02.9 — Directory name with spaces and `&` (shell-interpolation path)
 **Action:** (from $FIXTURE, `emptydir` selected) `tmux send-keys -t $SESSION k` (selection: `Bilder & Videos`) → `tmux send-keys -t $SESSION l` → await-idle → `state`, `log 30`, capture-pane. Then `tmux send-keys -t $SESSION h` → await-idle.
@@ -152,7 +152,7 @@ Steps are ordered and reuse state; each step lists the cwd it starts from.
 ### 02.20 — cd console: Esc reverts to the starting directory
 **Action:** (from $FIXTURE) `tmux send-keys -t $SESSION c d` → await-idle. `tmux send-keys -t $SESSION alpha` → await-idle → `state` (confirm `cwd`==$FIXTURE/alpha, `mode`=="console"). Then `tmux send-keys -t $SESSION Escape` → await-idle → `state`, capture-pane.
 **Expect (socket):** `mode`=="normal", `cwd`==$FIXTURE — the live navigation was rolled back to where the console was opened.
-**Expect (screen):** overlay gone, fixture listing, top row shows $FIXTURE (no `/alpha`).
+**Expect (screen):** overlay gone, fixture listing. The top row shows the SELECTED entry's path under $FIXTURE (per the README header rule the header tracks the selection, so `.../fx/alpha` is legitimate when `alpha` is the selected row) — assert the path prefix is $FIXTURE, not the absence of a child suffix.
 
 ### 02.21 — cd console: Tab cycles directory recommendations
 **Action:** (from $FIXTURE) `tmux send-keys -t $SESSION c d` → await-idle. `tmux send-keys -t $SESSION Tab` → await-idle → `state`. `tmux send-keys -t $SESSION Escape` → await-idle → `state`.
@@ -162,7 +162,7 @@ Steps are ordered and reuse state; each step lists the cwd it starts from.
 
 ### 02.22 — zoxide console: query navigates live, Esc reverts (conditional: zoxide on PATH)
 **Setup:** skip if `command -v zoxide` fails (see 02.24 instead). Requires the `$ZOXTARGET` seeding from the section fixture.
-**Action:** (from $FIXTURE) `tmux send-keys -t $SESSION CD` → await-idle → `state` (confirm `mode`=="console"). `tmux send-keys -t $SESSION zoxtarget` → await-idle → `state`, `log 30`. Then `tmux send-keys -t $SESSION Escape` → await-idle → `state`.
+**Action:** (from $FIXTURE) `tmux send-keys -t $SESSION -l CD` → await-idle → `state` (confirm `mode`=="console"). `tmux send-keys -t $SESSION -l zoxtarget` → await-idle → `state`, `log 30`. (`-l` per the README literal-token rule; bare words happen to work but `-l` removes ambiguity.) Then `tmux send-keys -t $SESSION Escape` → await-idle → `state`.
 **Expect (socket):** after typing: `mode`=="console", `cwd`==$ZOXTARGET (the query's best hit, navigated live); `log` contains a TRACE line starting `zoxide query '` (per-keystroke queries; the last one for the full input `zoxtarget`). After Escape: `cwd`==$FIXTURE, `mode`=="normal".
 **Expect (screen):** while open, the overlay band shows the $ZOXTARGET path; after Escape, fixture listing.
 **Note:** rfm's own descents in earlier steps added fixture dirs to the same `_ZO_DATA_DIR`; the query string `zoxtarget` matches only the seeded target, keeping the result deterministic.

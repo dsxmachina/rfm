@@ -107,15 +107,18 @@ right of the second `│` separator on each row. Assert preview content as
 fixture strings do not collide with center-column file names.
 
 **Graphics note:** this section is text-only, but should a raster preview
-ever appear (it must not, in these steps), remember tmux forces
-`image_protocol == "half-block"`: rasters are colored half-block cells
+ever appear (it must not, in these steps), remember tmux resolves
+`image_protocol == "half-block"` (auto config, with `KITTY_WINDOW_ID` and
+`GHOSTTY_RESOURCES_DIR` explicitly unset via the README launch prefix's
+`env -u` flags — do not rely on the harness env being hint-free): rasters
+are colored half-block cells
 (`▄`), assert non-empty colored area, never exact glyphs.
 
 ---
 
 ### 08.1 — Launch baseline: half-block protocol, empty-file initial preview
 **Action:** launch per section fixture; `await-idle`; then `echo state | socat - UNIX-CONNECT:$SOCK` and `echo "entries center" | socat - UNIX-CONNECT:$SOCK`; `tmux capture-pane -t $SESSION -p`.
-**Expect (socket):** `mode=="normal"`, `view=="single"`, `total==17`, `selection=="a.txt"`, `selected_idx==0`, `image_protocol=="half-block"` (rfm runs inside tmux), `preview_path` ends in `/work/a.txt`. `entries center` lists all 17 names above, exactly `a.txt` has `selected:true`.
+**Expect (socket):** `mode=="normal"`, `view=="single"`, `total==17`, `selection=="a.txt"`, `selected_idx==0`, `image_protocol=="half-block"` (auto inside tmux, kitty/Ghostty hint vars unset via the launch `env -u` prefix), `preview_path` ends in `/work/a.txt`. `entries center` lists all 17 names above, exactly `a.txt` has `selected:true`.
 **Expect (screen):** header row contains `<FIXTURE>/work/a.txt`; center column lists the 17 entries with `a.txt` on the highlighted row; the preview column is blank (a.txt is a 0-byte file — zero preview lines is correct, not an error; there must be NO `Failed to open` / `Error:` text in the right column).
 **Note:** there are no directories in the fixture, so the dirs-sort-first rule leaves `a.txt` (alphabetically first file) selected — do not expect a directory.
 
@@ -134,7 +137,7 @@ ever appear (it must not, in these steps), remember tmux forces
 **Setup:** this step temporarily resizes the tmux window so all 128 lines are on screen: `tmux resize-window -t $SESSION -x 120 -y 145` (rfm receives the Resize event and repaints).
 **Action:** resize as above; `await-idle`; SELECT(`big.txt`); PREVIEW-SETTLE; capture-pane; afterwards resize back: `tmux resize-window -t $SESSION -x 120 -y 30`; `await-idle`.
 **Expect (socket):** `selection=="big.txt"`; `preview_path` ends in `/work/big.txt`.
-**Expect (screen):** preview column shows the numbers `1` through `128`, one per row (line `1` at screen row 2, line `128` at screen row 129); count of numbered preview rows is exactly 128; the string `129` appears NOWHERE in the preview column; all preview rows below row 129 are blank. Verified regex on the captured pane: `grep -cE '│ 1?[0-9]{1,3}\s*$'` == 128, and `grep -E '│ 129\s*$'` matches nothing.
+**Expect (screen):** preview column shows the numbers `1` through `128`, one per row (line `1` at screen row 2, line `128` at screen row 129); count of numbered preview rows is exactly 128; the string `129` appears NOWHERE in the preview column; all preview rows below row 129 are blank. Verified regex on the captured pane: `grep -cE '│ (12[0-8]|1[01][0-9]|[1-9][0-9]?)\s*$'` == 128 (exact 1-128 alternation; the old `1?[0-9]{1,3}` also matched 4-digit numbers), and `grep -E '│ 129\s*$'` matches nothing.
 **Note:** the cap (`take(128)` / bat `--line-range=0:128`) truncates silently — no ellipsis or "more lines" marker is expected. If `resize-window` is unavailable (tmux < 2.9), kill and relaunch the session with `-y 145` instead.
 
 ### 08.5 — Empty file: blank preview, no error
@@ -204,12 +207,12 @@ then `SAN:        DNSName(test.example)`.
 
 ### 08.16 — Forged native failure → shell-out fallback log line
 **Action:** SELECT(`bad.zip`), PREVIEW-SETTLE, `state` + capture-pane + `echo "log 100" | socat - UNIX-CONNECT:$SOCK`.
-**Expect (socket):** `selection=="bad.zip"`; the log history contains a DEBUG line starting `native zip list failed, trying unzip:` (observed full text: `native zip list failed, trying unzip: invalid Zip archive: Could not find EOCD`). This is THE observable for "preview unexpectedly came from a shell-out".
+**Expect (socket):** `selection=="bad.zip"`; the log history contains a DEBUG line starting `native zip list failed, trying unzip:` (observed full text: `native zip list failed, trying unzip: invalid Zip archive: Could not find EOCD`). This is THE observable for "preview unexpectedly came from a shell-out". TIMING: the line is emitted when the preview LOADS — usually during the launch-time directory preload, not on this step's selection — so query `log 200` and accept an old `age_secs`; with many earlier keystrokes it may already be ring-evicted (see 08.17's snapshot rule).
 **Expect (screen):** with `unzip` installed: the preview column shows unzip's own output — a row containing `Archive:  <FIXTURE>/work/bad.zip` (unzip prints the header even for a bad archive; further unzip output/emptiness is tool-version-dependent, do not over-assert). Without `unzip`: the preview shows `Error: Could not run unzip` and `You must have unzip installed to get a preview for this file-type.`. Either way the pane is NOT blank-with-no-log.
 **Note:** DEBUG lines are retained only because `--debug-socket` raises verbosity to TRACE; without the socket flag this assertion is impossible.
 
 ### 08.17 — Backend-choice audit: everything else was native
-**Action:** `echo "log 200" | socat - UNIX-CONNECT:$SOCK`; filter messages containing `failed, trying` or `falling back`.
+**Action:** take the audit snapshot from a FRESH LAUNCH with zero keystrokes (relaunch the session, wait for the socket, then immediately `echo "log 200" | socat - UNIX-CONNECT:$SOCK`) — the startup preloader triggers every visible preview backend at launch, so a fallback that fired then is ring-evicted by the time a long interactive run queries the log, and the audit (plus the per-step "log contains NO ... failed" negatives in 08.6-08.11, which share this blind spot) would pass falsely. Filter messages containing `failed, trying` or `falling back`.
 **Expect (socket):** the ONLY line matching the exact `failed, trying`/`falling back` fallback pattern is 08.16's `native zip list failed, trying unzip: ...` for `bad.zip`. Specifically absent: `native tar list failed`, `native gzip preview failed`, `native cert parse failed`, `pdf text tier failed`, `stat block failed`, `native audio metadata failed`. Any other hit means a preview asserted above silently came from a fallback — investigate that step's fixture/tooling before declaring the section passed.
 **Two benign non-fallback lines that a loose grep for `failed`/`warning` can trip on — IGNORE both:** (1) lopdf's `WARN Could not parse the encoding ... Using standard encoding as a fallback!` from previewing `doc.pdf`, and (2) a `[bat warning]: Binary content ...` line (from the bat text preview of `garbage`-like content). Neither is a backend fallback; filter on the exact `failed, trying`/`falling back` substrings, not a bare `failed`/`warning`.
 **Expect (screen):** n/a (log-only audit step); optionally capture-pane to confirm no error widget lines are visible.
@@ -217,7 +220,7 @@ then `SAN:        DNSName(test.example)`.
 
 ---
 
-**Teardown:** `tmux kill-session -t $SESSION; rm -rf "$FIXTURE" "$CFG"; rm -f $SOCK` (plus the isolation tempdirs exported in the pane, if tracked).
+**Teardown:** `tmux kill-session -t $SESSION; rm -rf "$PARENT" "$CFG"; rm -f $SOCK` (plus the isolation tempdirs exported in the pane, if tracked). Align the fixture recipe with the README quiet-parent rule (`PARENT=$(mktemp -d); FIXTURE=$PARENT/fx`) — the `work/` subdir already keeps the LEFT panel quiet, but a bare `mktemp -d` fixture still parks the launch panel on a churning `/tmp`.
 
 **Section coverage gaps** (deliberate, for meta-review):
 - Raster previews (image/PNG/JPEG/JXL/SVG/font sample), the raster cache

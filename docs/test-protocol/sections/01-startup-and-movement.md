@@ -66,6 +66,13 @@ makes 01.2's "idle `seq` stable across two `state` queries" and the
 `log`-based TRACE assertions (01.10/01.11) verifiable — under a churning `/tmp`
 parent `seq` advances with no input and the log ring evicts rfm's own lines.
 
+Highlight-grep pitfall for every `-e` capture in this section: inside a
+subdirectory the LEFT column reverse-videos the cwd entry too (a second `[7m`
+row, which can also contain center-column text on the same screen row), and
+after an `h` the PREVIEW column reverse-videos the remembered inner selection.
+Both are legitimate — anchor highlight asserts to the expected column, don't
+count `[7m` rows globally.
+
 ---
 
 ### 01.1 — Launch: initial state and screen layout
@@ -90,7 +97,7 @@ parent `seq` advances with no input and the log ring evicts rfm's own lines.
 **Action:** `echo state | socat - UNIX-CONNECT:$SOCK` twice in a row (record `seq` from each), with `echo "entries center" | socat ...` and `echo "log 5" | socat ...` issued between them. No tmux input at all.
 **Expect (socket):** Both `seq` values are **identical**. All other `state` fields identical to 01.1.
 **Expect (screen):** `capture-pane -p` output byte-identical to the 01.1 capture (no repaint side effects from debug queries).
-**Note:** This is the baseline for every later "seq increased" assertion. Never assert exact seq deltas (+~5 per keypress, not +1).
+**Note:** This is the baseline for every later "seq increased" assertion. Never assert exact seq deltas (+~5 per keypress, not +1). Take the baseline from THIS step's first read, not from 01.1 — even under a quiet parent, seq ticks once shortly after launch when the async preview arrives.
 
 ### 01.3 — `j` moves down
 **Action:** Record `seq`. `tmux send-keys -t $SESSION j` → `await-idle` → `state`, `entries center`, `log 20`.
@@ -145,7 +152,7 @@ parent `seq` advances with no input and the log ring evicts rfm's own lines.
 **Expect (screen):** Header path ends in `/Bilder & Videos/clip.txt`. Left column now lists the fixture's entries with `Bilder & Videos` visible; center column shows only `clip.txt`; footer `1/1 `.
 
 ### 01.11 — `h` returns to the parent, selection restored
-**Action:** `tmux send-keys -t $SESSION h` → `await-idle` → `state`, `log 10`.
+**Action:** `tmux send-keys -t $SESSION h` → `await-idle` → `state`, `log 30` (one `h` emits 10+ TRACE lines — watch/unwatch/cache churn — which evict `move-left` from a `log 10` window).
 **Expect (socket):** `cwd == $FIXREAL`, `selection == "Bilder & Videos"` (restored, not reset to top-of-list-by-default — here they coincide at idx 0, the restore is proven properly in 01.12), `total == 6`; TRACE `move-left` in `log`.
 **Expect (screen):** Same layout as 01.1's capture: center shows the 6 visible names, footer `1/6 `, highlight on `Bilder & Videos`.
 
@@ -189,15 +196,15 @@ parent `seq` advances with no input and the log ring evicts rfm's own lines.
 
 ### 01.19 — Quit with `Q`
 **Action:** Record the pane's last-line shell prompt is NOT present (rfm footer is). `tmux send-keys -t $SESSION Q`. Then poll (up to ~5 s, 0.2 s interval) until `pgrep -f "rfm --debug-socket $SOCK"` returns nothing.
-**Expect (socket):** A `state` query after exit must FAIL (socat connection refused or empty reply) — the socket is dead. (The socket *file* may still exist on disk; that is expected, teardown removes it.)
-**Expect (screen):** `tmux capture-pane -t $SESSION -p` no longer shows the rfm layout (no `N/M ` footer counter, no three-column listing); the pane shows a shell prompt (the tmux session itself stays alive because the shell survives rfm). Terminal is sane: no raw-mode leftovers such as the alternate screen still active (prompt at the usual position, typed characters would echo).
+**Expect (socket):** A `state` query after exit must FAIL — the socket is dead. rfm unlinks the socket file on clean exit, so socat typically reports "No such file or directory"; "Connection refused" (stale file) also counts. Teardown removes any leftover file.
+**Expect (screen):** With the binary launched directly as the tmux session command (the README harness), quitting rfm ends the session: `capture-pane` fails / `has-session` reports the session gone — that IS the pass condition. Only when rfm was started from a shell inside the pane does the pane survive to show a prompt; then assert the rfm layout is gone (no `N/M ` footer counter, no three-column listing) and the terminal is sane (no alternate-screen leftovers).
 **Note:** No `--choosedir` was passed, so nothing about a path should be printed on exit. `exit` is the other quit binding but is exercised as a typed command sequence elsewhere; here `Q` (single key) is the target.
 
 ### 01.20 — Relaunch; `q` on the last tab quits
-**Setup:** `rm -f $SOCK`, then relaunch rfm in the same pane exactly as the section launch (same env exports still active in the pane's shell if the same pane is reused — otherwise re-export), wait for `until [ -S $SOCK ]`. Verify via `state`: `mode == "normal"`, `tabs` length 1.
+**Setup:** `rm -f $SOCK`, then recreate the session with the identical launch command (under the direct-launch harness the old session died with rfm; `tmux new-session -d -s $SESSION ...` again, re-exporting the same env in the launch line), wait for `until [ -S $SOCK ]`. Verify via `state`: `mode == "normal"`, `tabs` length 1.
 **Action:** `tmux send-keys -t $SESSION q`. Poll until `pgrep -f "rfm --debug-socket $SOCK"` is empty.
 **Expect (socket):** Socket dead (as in 01.19).
-**Expect (screen):** Shell prompt back, rfm layout gone.
+**Expect (screen):** Session gone (direct launch) or shell prompt back with the rfm layout gone.
 **Note:** `q` is bound to `close_tab` (`[keys.tabs]`), NOT `quit` — closing the *last* tab returns `CloseCmd::QuitWithPath` (`manager.rs close_tab`). With more than one tab open, `q` must NOT quit; that behavior belongs to the tabs section. If rfm is still running after `q`, check `state.tabs` length — a second tab would mean earlier steps leaked state (this section never creates tabs).
 
 ---

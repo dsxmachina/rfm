@@ -84,8 +84,10 @@ pub struct StateSnapshot {
     /// Session-only jump-marks: letter -> directory. Sorted for determinism.
     pub jump_marks: std::collections::BTreeMap<String, PathBuf>,
     /// Graphics protocol resolved for image previews at startup:
-    /// "kitty" | "iterm2" | "sixel" | "half-block"
+    /// "kitty" | "kitty-unicode" | "iterm2" | "sixel" | "half-block"
     pub image_protocol: String,
+    /// Whether graphics APC output is tmux-passthrough-wrapped
+    pub graphics_passthrough: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -351,10 +353,12 @@ mod tests {
             redo_depth: 0,
             jump_marks: std::collections::BTreeMap::new(),
             image_protocol: "half-block".into(),
+            graphics_passthrough: false,
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         assert!(json.contains("\"seq\":42"));
         assert!(json.contains("\"image_protocol\":\"half-block\""));
+        assert!(json.contains("\"graphics_passthrough\":false"));
         assert!(json.contains("\"mode\":\"normal\""));
         // New tab-aware fields.
         assert!(json.contains("\"view\":\"split\""));
@@ -475,6 +479,7 @@ mod tests {
                         redo_depth: 0,
                         jump_marks: std::collections::BTreeMap::new(),
                         image_protocol: "half-block".into(),
+                        graphics_passthrough: false,
                     });
                 }
                 DebugRequest::AwaitIdle { reply } => {

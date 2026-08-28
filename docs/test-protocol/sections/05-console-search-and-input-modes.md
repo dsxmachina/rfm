@@ -110,6 +110,8 @@ empty, then `-l zzz`; await-idle; capture-pane.
 every non-Enter/non-Esc key to the input); an empty pattern re-shows all rows
 (every name "contains" the empty string). Assert the empty-pattern render
 (all 6 rows, no bold) if you pause at empty before typing `zzz`.
+**Note:** the `(no match)` placeholder row currently renders a stray `0` in the
+size/count column (`| (no match) 0 |`); cosmetic, unasserted — ignore it.
 
 ### 05.4 — Esc cancels search: mode normal, highlight cleared, nothing marked
 **Action:** `tmux send-keys -t $SESSION Escape`; await-idle;
@@ -210,7 +212,10 @@ After Enter: `mode == "normal"`, `cwd == $FIXTURE/alpha dir` (Enter =
 **Expect (screen):** while typing, the overlay's path line shows
 `$FIXTURE/alpha dir/`; after Enter the overlay is gone and the center pane is
 the (empty) `alpha dir` contents; header path ends in `/alpha dir`.
-**Note:** exact live-navigation timing (which keystroke triggers the jump) is
+**Note:** the live cd enqueues a transient `queue_active: "zoxide add <dir>"` in
+`state` (expected side effect, not a stuck queue), and the committed cd clears
+the per-tab `marked` set left by an earlier search commit. Exact live-navigation
+timing (which keystroke triggers the jump) is
 recommendation-dependent (`insert` weighs prefix recommendations vs. an exact
 dir match, `console.rs:184-240`); assert only the END state — `cwd` under
 `alpha dir` once the whole name is typed, and after Enter. If `cwd` has not
@@ -245,9 +250,10 @@ not via input text.
 capital letter). If tmux in this environment cannot deliver the SHIFT-modified
 sequence reliably (see the section-header caveat), or if `zoxide` is not on
 PATH, this phase degrades — see the per-step notes. Send the binding with
-`tmux send-keys -t $SESSION -l CD` (uppercase literal); if `mode` does not
-become `console`, record it as a protocol-feedback note (keybinding delivery),
-not an rfm bug, and skip 05.12.
+`tmux send-keys -t $SESSION -l CD` (uppercase literal; delivered reliably as
+Char('D')+SHIFT in the reference environment); if `mode` does not become
+`console`, record it as a protocol-feedback note (keybinding delivery), not an
+rfm bug, and skip 05.12.
 **Action:** `tmux send-keys -t $SESSION -l CD`; await-idle; `echo state | socat ...`;
 capture-pane.
 **Expect (socket):** `mode == "console"` (zoxide reports the SAME `"console"`
@@ -259,8 +265,11 @@ is on PATH:
   `zoxide is not installed` (in `red`) — shown immediately, before any keystroke
   (`Zoxide::with_availability`, `console.rs:378-395`).
 - **zoxide INSTALLED (this env):** the middle line shows the query input line
-  with **no** missing-zoxide hint. Assert the mode transition + overlay only;
-  the "not installed" hint assertion is N/A and must not be expected.
+  with **no** missing-zoxide hint. With a young `_ZO_DATA_DIR` (seeded only by
+  rfm's own `zoxide add` calls) the recommendation line may show a bare `.` —
+  its content is unspecified until the DB has history. Assert the mode
+  transition + overlay only; the "not installed" hint assertion is N/A and must
+  not be expected.
 **Note:** we deliberately do NOT type a query and commit a jump here — a real
 zoxide `Cd` would move the pane to an arbitrary indexed directory
 (unverifiable/host-dependent). Assert only the mode transition, the overlay,

@@ -53,7 +53,8 @@ tmux kill-session -t $SESSION 2>/dev/null; rm -f $SOCK
 # intercept the typed command and rfm never launches). Isolation env is passed
 # via `env` so it applies to the child regardless of the pane's shell.
 tmux new-session -d -s $SESSION -x 120 -y 30 \
-  "env XDG_CACHE_HOME=$CACHE XDG_STATE_HOME=$STATE _ZO_DATA_DIR=$ZO \
+  "env -u KITTY_WINDOW_ID -u GHOSTTY_RESOURCES_DIR \
+   XDG_CACHE_HOME=$CACHE XDG_STATE_HOME=$STATE _ZO_DATA_DIR=$ZO \
    ./target/debug/rfm --debug-socket $SOCK --config $CFG $FIXTURE"
 until [ -S $SOCK ]; do sleep 0.1; done
 ```
@@ -136,7 +137,8 @@ Other socket queries: `entries [<tab>] left|center`, `log [n]`, and `state`
 fields (verified against the binary): `seq, mode, view, focused,
 tabs[]{cwd, selection, selected_idx, total, marked}, cwd, selection,
 selected_idx, total, marked, clipboard, show_hidden, left_path, preview_path,
-queue_active, queue_len, undo_depth, redo_depth, jump_marks, image_protocol`
+queue_active, queue_len, undo_depth, redo_depth, jump_marks, image_protocol,
+graphics_passthrough`
 (the scalar fields mirror the focused tab).
 
 ### Assertion pitfalls (bugs have been mis-filed over each of these)
@@ -152,9 +154,27 @@ queue_active, queue_len, undo_depth, redo_depth, jump_marks, image_protocol`
   content looks like a placeholder, poll `state` until `seq` stabilizes.
 - Log lines vanish from the *screen* after 10s but stay in the socket `log`
   history (200 lines). Background-command failures land there — check `log`
-  first when something "silently" fails.
-- Inside tmux the graphics protocol resolves to **half-block**: image previews
-  are colored half-block cells. Assert "non-empty raster area", never glyphs.
+  first when something "silently" fails. Any on-screen widget assertion must
+  capture within the SAME shell invocation as the triggering action — the
+  round-trip between separate Bash tool calls exceeds the 10 s TTL.
+- The `entries` reply is a BARE JSON array (`[{name,marked,hidden,selected},…]`),
+  not `{entries: [...]}` — write the first `jq` accordingly.
+- Under the direct-launch harness rfm IS the tmux session's root command:
+  quitting rfm kills the session (`capture-pane`/`list-panes` error with
+  "can't find session" — that is the expected quit evidence, not a failure).
+  rfm also unlinks its socket file on clean exit, so post-quit socat says
+  "No such file or directory" rather than "Connection refused".
+- Inside tmux, with the default `auto` config, the graphics protocol resolves
+  to **half-block** — but only when no kitty/Ghostty passthrough hint reaches
+  the pane. A tmux server started from kitty/Ghostty fossilizes
+  `KITTY_WINDOW_ID`/`GHOSTTY_RESOURCES_DIR` into every pane, which triggers
+  the wrapped probe (and can resolve kitty-unicode), so the launch prefix
+  above unsets both (`env -u`) — keep those flags for every half-block
+  assertion. Image previews are then colored half-block cells. Assert "non-empty
+  raster area", never glyphs. Exception: a pinned
+  `image_protocol = "kitty-unicode"` draws U+10EEEE placeholder cells, which
+  survive `capture-pane -p` byte-for-byte and ARE directly assertable
+  (cells only — the harness's outer terminal renders no pixels).
 - **Empty-panel sentinels.** For an *empty* directory, `state.preview_path` is
   the sentinel string `"path-of-empty-panel"`, not a real path; `left_path` at
   the filesystem root (`/`) is likewise the same sentinel, not a directory
