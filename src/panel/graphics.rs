@@ -77,15 +77,26 @@ pub fn detect_from_env(env: &dyn Fn(&str) -> Option<String>) -> Option<GraphicsP
     }
     // iTerm2: OSC 1337 has no probeable capability (no DA1 attribute, and
     // the Capabilities query is implemented by iTerm2 alone) — env is the
-    // only signal. LC_TERMINAL survives ssh via shell integration; the
-    // session id covers local sessions without it. VSCode/Warp/Tabby are
+    // only signal. TERM_PROGRAM=iTerm.app always wins. The leaked vars
+    // (LC_TERMINAL, ITERM_SESSION_ID) are exported, not scrubbed — a nested
+    // terminal launched from an iTerm2 shell inherits them while setting its
+    // own TERM_PROGRAM — so they count only when TERM_PROGRAM is entirely
+    // unset (ssh strips TERM_PROGRAM, keeping the LC_TERMINAL-over-ssh path;
+    // a contradicting TERM_PROGRAM disables them). VSCode/Warp/Tabby are
     // deliberately absent: VSCode ships images off, the others don't
     // render OSC 1337.
-    if env("TERM_PROGRAM").map_or(false, |v| v.eq_ignore_ascii_case("iTerm.app"))
-        || env("LC_TERMINAL").map_or(false, |v| v.eq_ignore_ascii_case("iTerm2"))
-        || env("ITERM_SESSION_ID").is_some()
-    {
-        return Some(GraphicsProtocol::Iterm2);
+    match env("TERM_PROGRAM") {
+        Some(prog) if prog.eq_ignore_ascii_case("iTerm.app") => {
+            return Some(GraphicsProtocol::Iterm2);
+        }
+        Some(_) => {}
+        None => {
+            if env("LC_TERMINAL").map_or(false, |v| v.eq_ignore_ascii_case("iTerm2"))
+                || env("ITERM_SESSION_ID").is_some()
+            {
+                return Some(GraphicsProtocol::Iterm2);
+            }
+        }
     }
     None
 }
@@ -982,6 +993,38 @@ mod tests {
             ("ITERM_SESSION_ID", "w0t0p0:5E2B9A1C-0000-0000-0000-000000000000"),
         ]);
         assert_eq!(detect_from_env(&env), Some(GraphicsProtocol::Iterm2));
+    }
+
+    #[test]
+    fn env_contradicting_term_program_disables_leaked_iterm_vars() {
+        // LC_TERMINAL/ITERM_SESSION_ID are exported, not scrubbed: a VSCode
+        // terminal launched from an iTerm2 shell inherits them while setting
+        // its own TERM_PROGRAM. VSCode discards OSC 1337 silently, so
+        // trusting the leaked vars would mean permanently blank previews.
+        let env = env_of(&[
+            ("TERM", "xterm-256color"),
+            ("TERM_PROGRAM", "vscode"),
+            ("ITERM_SESSION_ID", "w0t0p0:5E2B9A1C-0000-0000-0000-000000000000"),
+        ]);
+        assert_eq!(detect_from_env(&env), None);
+        let env = env_of(&[
+            ("TERM", "xterm-256color"),
+            ("TERM_PROGRAM", "vscode"),
+            ("LC_TERMINAL", "iTerm2"),
+        ]);
+        assert_eq!(detect_from_env(&env), None);
+    }
+
+    #[test]
+    fn env_kitty_vars_beat_iterm_vars() {
+        // The kitty check runs first: kitty-with-leaked-iTerm2-vars (e.g.
+        // kitty launched from an iTerm2 shell) must resolve kitty.
+        let env = env_of(&[
+            ("TERM", "xterm-256color"),
+            ("KITTY_WINDOW_ID", "1"),
+            ("ITERM_SESSION_ID", "w0t0p0:5E2B9A1C-0000-0000-0000-000000000000"),
+        ]);
+        assert_eq!(detect_from_env(&env), Some(GraphicsProtocol::Kitty));
     }
 
     #[test]
