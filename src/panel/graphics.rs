@@ -1,9 +1,9 @@
 //! Terminal graphics protocol support for image previews.
 //!
-//! This module owns which protocol (kitty graphics / iTerm2 inline
-//! images / sixel / half-block fallback) the preview column may use, the
-//! cell→pixel geometry needed to place real pixels into a cell layout,
-//! and the emitters themselves.
+//! This module owns which protocol (kitty graphics / kitty-unicode
+//! placeholders / iTerm2 inline images / sixel / half-block fallback)
+//! the preview column may use, the cell→pixel geometry needed to place
+//! real pixels into a cell layout, and the emitters themselves.
 //! The detection core is pure — env lookups and probe replies are
 //! injected — so the whole decision matrix is unit-testable without a
 //! terminal; the emitters write to any `impl Write`, so their byte
@@ -557,6 +557,13 @@ pub fn emit_kitty_unicode(
     if let Some(old) = LIVE.lock().take() {
         delete_placement(w, &old)?;
     }
+    // Clamp the cell box to what the placeholder grid can address
+    // (diacritics table size) ONCE, before the blank/transmit/grid calls:
+    // the transmitted `c=`/`r=` fit box and the grid agree by
+    // construction, instead of the terminal fitting the image into
+    // columns no diacritic can name.
+    let cols = cols.min(placeholder::GRID_MAX);
+    let rows = rows.min(placeholder::GRID_MAX);
     let region = (
         key.origin_cell.0..key.origin_cell.0.saturating_add(cols),
         key.origin_cell.1..key.origin_cell.1.saturating_add(rows),
@@ -597,7 +604,9 @@ fn encode_jpeg(rgb: &image::RgbImage) -> io::Result<Vec<u8>> {
 const KITTY_CHUNK: usize = 4096;
 
 /// Direct transmission `a=T,f=24`: the raw RGB bytes, base64, chunked at
-/// 4096 chars with `m=1` continuations and a final `m=0`. With
+/// 4096 chars with `m=1` continuations and a final `m=0` — `q=2` on every
+/// chunk, so even a chunk that loses its association with the in-progress
+/// load is never answered into the event stream. With
 /// `virtual_placement` the first chunk adds `U=1` (transmit + virtual
 /// placement in one APC, spec-blessed); `c=`/`r=` stay — they pin the
 /// cell box the placeholder cells address. Each chunk is one complete
@@ -633,7 +642,7 @@ fn transmit_kitty(
                 m
             )?;
         } else {
-            write!(seq, "\x1b_Gm={m};")?;
+            write!(seq, "\x1b_Gq=2,m={m};")?;
         }
         seq.extend_from_slice(chunk);
         seq.extend_from_slice(b"\x1b\\");
@@ -1902,7 +1911,7 @@ mod tests {
             assert!(payload.len() <= 4096, "chunk {i} payload over 4096");
             if i > 0 {
                 let m = if i == apcs.len() - 1 { "m=0" } else { "m=1" };
-                assert_eq!(keys, m, "continuation chunk {i}");
+                assert_eq!(keys, &format!("q=2,{m}"), "continuation chunk {i}");
             }
         }
         // Reassembled payload is exactly the base64 of the raw RGB bytes.
@@ -2371,7 +2380,7 @@ mod tests {
             assert!(payload.len() <= 4096, "chunk {i} payload over 4096");
             if i > 0 {
                 let m = if i == apcs.len() - 1 { "m=0" } else { "m=1" };
-                assert_eq!(keys, m, "continuation chunk {i}");
+                assert_eq!(keys, &format!("q=2,{m}"), "continuation chunk {i}");
             }
         }
         // The placeholder grid follows the LAST chunk: one row per `r=`,
@@ -2446,6 +2455,29 @@ mod tests {
             Emitted::Gated
         );
         assert!(sink.is_empty(), "gated emit wrote bytes: {sink:?}");
+    }
+
+    #[test]
+    fn emit_kitty_unicode_clamps_cell_box_to_diacritics_table() {
+        let _g = emit_guard();
+        // A pane wider than the 297-entry diacritics table: the transmitted
+        // c= and the placeholder grid must agree by construction — both
+        // clamped to 297 — or the terminal would fit the image into columns
+        // the grid can never address.
+        let rgb = RgbImage::from_pixel(2, 2, Rgb([5, 5, 5]));
+        let mut sink = Vec::new();
+        emit_kitty_unicode(&mut sink, test_key("wide.png", 16, 32), &rgb, 300, 1).unwrap();
+        let first = &apc_sequences(&sink)[0].0;
+        assert!(
+            first.split(',').any(|kv| kv == "c=297"),
+            "c= must be clamped to the table size: {first}"
+        );
+        let s = String::from_utf8_lossy(&sink);
+        assert_eq!(
+            s.matches('\u{10EEEE}').count(),
+            297,
+            "grid emits exactly the clamped columns"
+        );
     }
 
     #[test]

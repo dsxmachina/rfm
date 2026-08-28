@@ -16,12 +16,19 @@ use std::io::{self, Write};
 /// The placeholder character kitty composites virtual placements onto.
 const PLACEHOLDER: char = '\u{10EEEE}';
 
+/// The largest cell box a placeholder grid can address — the diacritics
+/// table size (it also sizes [`DIACRITICS`], so the two cannot drift).
+/// The emitter clamps its whole cell box to this BEFORE transmitting, so
+/// the `c=`/`r=` fit box and the grid agree by construction; the clamp
+/// inside [`placeholder_grid`] is a defensive second layer.
+pub(super) const GRID_MAX: u16 = 297;
+
 /// Row/column diacritics, index = grid position. Transcribed verbatim from
 /// the canonical `gen/rowcolumn-diacritics.txt` in the kitty repo (one
 /// combining char of class 230 per entry, sorted by codepoint); the tests
 /// spot-check known entries and enforce the strict ascent.
 #[rustfmt::skip]
-pub(super) static DIACRITICS: [char; 297] = [
+pub(super) static DIACRITICS: [char; GRID_MAX as usize] = [
     '\u{0305}', '\u{030D}', '\u{030E}', '\u{0310}', '\u{0312}', '\u{033D}', '\u{033E}', '\u{033F}',
     '\u{0346}', '\u{034A}', '\u{034B}', '\u{034C}', '\u{0350}', '\u{0351}', '\u{0352}', '\u{0357}',
     '\u{035B}', '\u{0363}', '\u{0364}', '\u{0365}', '\u{0366}', '\u{0367}', '\u{0368}', '\u{0369}',
