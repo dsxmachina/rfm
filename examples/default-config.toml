@@ -80,11 +80,15 @@ pdf_render = false
 # Graphics protocol used to draw image previews.
 #
 #   - "auto"       : (default) detect the best protocol at startup. Env
-#                    heuristics first (kitty/WezTerm/Ghostty), then a short
-#                    (<250ms) terminal probe for the kitty graphics protocol
-#                    and sixel support. Anything uncertain falls back to
-#                    "half-block".
+#                    heuristics first (kitty/WezTerm/Ghostty → kitty,
+#                    iTerm2 → iterm2), then a short (<250ms) terminal probe
+#                    for the kitty graphics protocol and sixel support.
+#                    Anything uncertain falls back to "half-block".
 #   - "kitty"      : pin the kitty graphics protocol (kitty, WezTerm, Ghostty).
+#   - "iterm2"     : pin the iTerm2 inline-images protocol (iTerm2; also
+#                    WezTerm, mintty, and VSCode — VSCode only renders it
+#                    when terminal.integrated.enableImages is on, which
+#                    ships off, so it is never auto-detected).
 #   - "sixel"      : pin DEC sixel (xterm +sixel, foot, mlterm, ...).
 #   - "half-block" : the universal cell-based renderer ("▄" glyphs, two
 #                    pixels per cell). Works in every truecolor terminal.
@@ -93,7 +97,8 @@ pdf_render = false
 # swallow graphics escape sequences). Explicit values skip probing and are
 # honored even inside tmux, but rfm does not wrap its output in tmux's
 # passthrough sequences: pinning "kitty" inside tmux leaves the preview
-# region blank regardless of 'allow-passthrough', and "sixel" renders only
+# region blank regardless of 'allow-passthrough', pinning "iterm2" leaves
+# it just as blank (tmux discards OSC 1337 too), and "sixel" renders only
 # if tmux itself was built with sixel support (--enable-sixel). The
 # explicit values are the escape hatch for terminals that misreport their
 # capabilities.
