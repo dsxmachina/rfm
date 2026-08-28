@@ -162,8 +162,8 @@ but rfm does not wrap its output in tmux's passthrough sequences: pinned
 `"sixel"` renders only when tmux itself was built with sixel support
 (`--enable-sixel`). `"half-block"` disables graphics protocols entirely.
 When the startup probe runs (auto in an unrecognized terminal, or an explicit
-kitty/sixel pin without pixel geometry), keystrokes typed during its short
-(< 250 ms) window are consumed together with the probe replies.
+kitty/iterm2/sixel pin without pixel geometry), keystrokes typed during its
+short (< 250 ms) window are consumed together with the probe replies.
 
 When `fancy_icons = true`, rfm renders file-type icons from the
 [Nerd Fonts](https://www.nerdfonts.com/) project (like yazi). Your terminal must

@@ -103,8 +103,9 @@ pdf_render = false
 # explicit values are the escape hatch for terminals that misreport their
 # capabilities.
 # Note: when the startup probe runs (auto in an unrecognized terminal, or
-# an explicit kitty/sixel pin without pixel geometry), keystrokes typed
-# during its short (<250ms) window are consumed with the probe replies.
+# an explicit kitty/iterm2/sixel pin without pixel geometry), keystrokes
+# typed during its short (<250ms) window are consumed with the probe
+# replies.
 #
 image_protocol = "auto"
 

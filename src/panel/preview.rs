@@ -105,11 +105,11 @@ fn geometry_for(proto: GraphicsProtocol) -> Option<graphics::CellGeometry> {
     }
 }
 
-/// Draw the image via a graphics protocol (kitty or sixel). Returns the
-/// cell rows used, so the caller's info-line/blanking tail runs unchanged
-/// below the image. Any error falls back to the half-block loop for this
-/// frame. Generic over the writer so the byte stream is unit-testable
-/// against a `Vec<u8>` sink.
+/// Draw the image via a graphics protocol (kitty, iterm2 or sixel).
+/// Returns the cell rows used, so the caller's info-line/blanking tail
+/// runs unchanged below the image. Any error falls back to the half-block
+/// loop for this frame. Generic over the writer so the byte stream is
+/// unit-testable against a `Vec<u8>` sink.
 #[allow(clippy::too_many_arguments)]
 fn draw_graphics(
     proto: GraphicsProtocol,
@@ -224,10 +224,11 @@ impl Draw for FilePreview {
                 // load image
                 if img.is_some() {
                     let src = img.as_ref().unwrap();
-                    // Graphics-protocol tier: real pixels via kitty/sixel
-                    // when the frame allows a placement (single view, no
-                    // overlay). Any emit failure falls back to half-blocks
-                    // for this frame — a preview always renders *something*.
+                    // Graphics-protocol tier: real pixels via
+                    // kitty/iterm2/sixel when the frame allows a
+                    // placement (single view, no overlay). Any emit
+                    // failure falls back to half-blocks for this frame —
+                    // a preview always renders *something*.
                     let mut graphics_cy = None;
                     let proto = graphics::protocol();
                     if proto != GraphicsProtocol::HalfBlock && graphics::frame_allows_image() {

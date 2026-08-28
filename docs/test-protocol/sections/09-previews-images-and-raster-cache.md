@@ -90,7 +90,8 @@ step instead of trusting counted `j` presses.
 - `state.selection == "a-blue.png"`, `state.selected_idx == 0`,
   `state.preview_path == "$FIXTURE/a-blue.png"`, `state.mode == "normal"`.
 - `state.image_protocol == "half-block"` — rfm runs inside tmux, so `auto`
-  always resolves to half-block (no kitty/sixel probe result can apply).
+  always resolves to half-block (no graphics-protocol env hit or probe
+  result can apply).
 - `echo "log 50" | socat - UNIX-CONNECT:$SOCK` contains NO
   `raster cache hit` line yet (first visit is a miss+store, which logs nothing
   on success).
@@ -366,7 +367,7 @@ raster in the right pane.
 rm -rf "$FIXTURE" "$CFG" "$CFG2" "$CACHE" "$CACHE2" "$STATE" "$ZO"; rm -f $SOCK`
 
 **Section coverage gaps** (deliberate — for the meta-review):
-- kitty/sixel graphics protocols (tmux forces half-block; explicit
+- kitty/iterm2/sixel graphics protocols (tmux forces half-block; explicit
   `image_protocol` pins untested here — needs a non-tmux/sixel-capable harness)
 - SVG (`svg960`), font (`font-s1-24`) and PDF-render (`pdf-p1-960`) cache
   kinds; `pdf_render = true` end-to-end (PDF text tier is section-scope of the

@@ -1,8 +1,9 @@
 //! Terminal graphics protocol support for image previews.
 //!
-//! This module owns which protocol (kitty graphics / sixel / half-block
-//! fallback) the preview column may use, the cell→pixel geometry needed
-//! to place real pixels into a cell layout, and the emitters themselves.
+//! This module owns which protocol (kitty graphics / iTerm2 inline
+//! images / sixel / half-block fallback) the preview column may use, the
+//! cell→pixel geometry needed to place real pixels into a cell layout,
+//! and the emitters themselves.
 //! The detection core is pure — env lookups and probe replies are
 //! injected — so the whole decision matrix is unit-testable without a
 //! terminal; the emitters write to any `impl Write`, so their byte
@@ -292,7 +293,7 @@ pub struct EmitKey {
 #[derive(Debug, Clone)]
 struct LiveImage {
     key: EmitKey,
-    /// Kitty image id; `None` for protocols without ids (sixel).
+    /// Kitty image id; `None` for protocols without ids (sixel, iterm2).
     id: Option<u32>,
 }
 
@@ -341,9 +342,9 @@ pub fn frame_allows_image() -> bool {
 /// The reconcile must never write cell content: it runs AFTER the draw pass
 /// has fully repainted the screen, so stamping spaces here would wipe the
 /// freshly drawn cells (and any overlay on top). Kitty placements float
-/// above cells and need the delete-by-id; id-less (sixel) placements *are*
-/// cell content and were already overwritten by this frame's repaint — for
-/// them the reconcile only forgets the live state.
+/// above cells and need the delete-by-id; id-less (sixel, iterm2)
+/// placements *are* cell content and were already overwritten by this
+/// frame's repaint — for them the reconcile only forgets the live state.
 pub fn end_frame(w: &mut impl Write) -> io::Result<()> {
     let claimed = CLAIMED.lock().take();
     let mut live = LIVE.lock();
@@ -457,8 +458,10 @@ pub fn emit_sixel(
 ///   cursor at the origin and send ONE un-chunked base64 JPEG payload.
 ///
 /// Sized in cells (`width=`/`height=`), `preserveAspectRatio=1` (the
-/// raster is pre-fitted; this only guards cell-aspect drift —
-/// [`blank_cells`] repaints any letterbox strip). Inline images are cell
+/// raster is pre-fitted; this only guards cell-aspect drift — any
+/// letterbox it produces lies inside the `width=`×`height=` box, which
+/// the pre-emit target-region blank has already cleared on transmit
+/// frames, and gated frames inherit it). Inline images are cell
 /// content like sixel — no placement ids, the frame repaint erases them —
 /// so the placement is recorded id-less and the reconcile stays
 /// write-free. `doNotMoveCursor=1` is WezTerm-only sugar, ignored
@@ -563,11 +566,11 @@ fn transmit_kitty(
 }
 
 /// Remove a placement from the terminal. Kitty: `a=d,d=I` — capital `I`
-/// also frees the pixel data. Id-less placements (sixel) have no delete
-/// command and need none: their pixels are ordinary cell content, replaced
-/// whenever the owning cells are repainted — every draw pass is a full
-/// repaint, so writing spaces here would only destroy content drawn this
-/// frame (or, after a resize, land on unrelated cells).
+/// also frees the pixel data. Id-less placements (sixel, iterm2) have no
+/// delete command and need none: their pixels are ordinary cell content,
+/// replaced whenever the owning cells are repainted — every draw pass is
+/// a full repaint, so writing spaces here would only destroy content
+/// drawn this frame (or, after a resize, land on unrelated cells).
 fn delete_placement(w: &mut impl Write, live: &LiveImage) -> io::Result<()> {
     if let Some(id) = live.id {
         write!(w, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
@@ -829,7 +832,8 @@ fn send_probe_and_read(want_pixels: bool) -> Vec<u8> {
 /// (argument: also request `CSI 14 t` pixel size) and returns the reply
 /// bytes. Explicit choices never probe unless they need missing geometry;
 /// sixel without geometry degrades to half-block (D2: a sixel raster must
-/// be pre-sized in pixels, while kitty scales into the cell rectangle).
+/// be pre-sized in pixels, while kitty and iterm2 scale into the cell
+/// rectangle).
 fn init_from(
     choice: ImageProtocolChoice,
     env: &dyn Fn(&str) -> Option<String>,
