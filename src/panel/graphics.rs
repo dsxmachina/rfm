@@ -75,6 +75,18 @@ pub fn detect_from_env(env: &dyn Fn(&str) -> Option<String>) -> Option<GraphicsP
             return Some(GraphicsProtocol::Kitty);
         }
     }
+    // iTerm2: OSC 1337 has no probeable capability (no DA1 attribute, and
+    // the Capabilities query is implemented by iTerm2 alone) — env is the
+    // only signal. LC_TERMINAL survives ssh via shell integration; the
+    // session id covers local sessions without it. VSCode/Warp/Tabby are
+    // deliberately absent: VSCode ships images off, the others don't
+    // render OSC 1337.
+    if env("TERM_PROGRAM").map_or(false, |v| v.eq_ignore_ascii_case("iTerm.app"))
+        || env("LC_TERMINAL").map_or(false, |v| v.eq_ignore_ascii_case("iTerm2"))
+        || env("ITERM_SESSION_ID").is_some()
+    {
+        return Some(GraphicsProtocol::Iterm2);
+    }
     None
 }
 
@@ -947,6 +959,49 @@ mod tests {
                 "for TERM_PROGRAM={prog}"
             );
         }
+    }
+
+    #[test]
+    fn env_term_program_iterm_resolves_iterm2() {
+        let env = env_of(&[("TERM", "xterm-256color"), ("TERM_PROGRAM", "iTerm.app")]);
+        assert_eq!(detect_from_env(&env), Some(GraphicsProtocol::Iterm2));
+    }
+
+    #[test]
+    fn env_lc_terminal_iterm_resolves_iterm2() {
+        // LC_TERMINAL survives ssh (forwarded by iTerm2's shell integration)
+        // where TERM_PROGRAM does not.
+        let env = env_of(&[("TERM", "xterm-256color"), ("LC_TERMINAL", "iTerm2")]);
+        assert_eq!(detect_from_env(&env), Some(GraphicsProtocol::Iterm2));
+    }
+
+    #[test]
+    fn env_iterm_session_id_resolves_iterm2() {
+        let env = env_of(&[
+            ("TERM", "xterm-256color"),
+            ("ITERM_SESSION_ID", "w0t0p0:5E2B9A1C-0000-0000-0000-000000000000"),
+        ]);
+        assert_eq!(detect_from_env(&env), Some(GraphicsProtocol::Iterm2));
+    }
+
+    #[test]
+    fn env_tmux_beats_iterm_vars() {
+        // tmux swallows OSC 1337 like the other protocols — tmux-on-iTerm2
+        // must stay on half-blocks even though the iTerm2 vars leak through.
+        let env = env_of(&[
+            ("TMUX", "/tmp/tmux-1000/default,42,0"),
+            ("TERM", "screen-256color"),
+            ("TERM_PROGRAM", "iTerm.app"),
+        ]);
+        assert_eq!(detect_from_env(&env), Some(GraphicsProtocol::HalfBlock));
+    }
+
+    #[test]
+    fn env_term_program_vscode_is_inconclusive() {
+        // VSCode ships terminal.integrated.enableImages off — TERM_PROGRAM
+        // alone does not imply images render, so never auto-detect it.
+        let env = env_of(&[("TERM", "xterm-256color"), ("TERM_PROGRAM", "vscode")]);
+        assert_eq!(detect_from_env(&env), None);
     }
 
     #[test]
