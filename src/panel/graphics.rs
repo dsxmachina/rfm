@@ -655,6 +655,28 @@ fn b64(data: &[u8]) -> String {
     out
 }
 
+/// Wrap one escape sequence in tmux's passthrough envelope
+/// (`ESC Ptmux; <payload> ESC \`): tmux unwraps it and forwards the payload
+/// to the outer terminal instead of swallowing it. Every 0x1b in the
+/// payload must be doubled — including the inner terminator's — or tmux
+/// would end the DCS at the first inner ESC. One envelope per sequence
+/// (chunked APCs are wrapped chunk-by-chunk, far below tmux's DCS cap).
+// Not called outside tests yet: the kitty-unicode emitter routes its APC
+// chunks through this in the protocol arm's follow-up.
+#[allow(dead_code)]
+fn wrap_passthrough(seq: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(seq.len() + 10);
+    out.extend_from_slice(b"\x1bPtmux;");
+    for &b in seq {
+        if b == 0x1b {
+            out.push(0x1b);
+        }
+        out.push(b);
+    }
+    out.extend_from_slice(b"\x1b\\");
+    out
+}
+
 /// Test-only view of the live placement: `(key, id)`.
 #[cfg(test)]
 fn live_snapshot_for_test() -> Option<(EmitKey, Option<u32>)> {
@@ -667,6 +689,14 @@ fn reset_emit_state_for_test() {
     *LIVE.lock() = None;
     *CLAIMED.lock() = None;
     FRAME_ALLOWED.store(false, Ordering::Relaxed);
+    PASSTHROUGH.store(false, Ordering::Relaxed);
+}
+
+/// Force the passthrough flag for a test. Callers hold [`emit_test_guard`],
+/// which resets it to off.
+#[cfg(test)]
+fn set_passthrough_for_test(on: bool) {
+    PASSTHROUGH.store(on, Ordering::Relaxed);
 }
 
 /// The emitter state (LIVE/CLAIMED/FRAME_ALLOWED) is module-global by
@@ -711,9 +741,19 @@ fn unpack_geometry(packed: u32) -> Option<CellGeometry> {
     })
 }
 
+/// Whether graphics APC output is tmux-passthrough-wrapped
+/// ([`wrap_passthrough`]). False until `init` decides otherwise, so unit
+/// tests and pre-init callers emit raw sequences.
+static PASSTHROUGH: AtomicBool = AtomicBool::new(false);
+
 /// The graphics protocol to draw image previews with.
 pub fn protocol() -> GraphicsProtocol {
     *PROTOCOL.get().unwrap_or(&GraphicsProtocol::HalfBlock)
+}
+
+/// Whether graphics APC output is tmux-passthrough-wrapped.
+pub fn passthrough() -> bool {
+    PASSTHROUGH.load(Ordering::Relaxed)
 }
 
 /// The current cell size in pixels, if the terminal ever reported one.
@@ -1545,6 +1585,30 @@ mod tests {
         assert_eq!(b64(b"foob"), "Zm9vYg==");
         assert_eq!(b64(b"fooba"), "Zm9vYmE=");
         assert_eq!(b64(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn passthrough_wraps_and_doubles_escapes() {
+        // Envelope prefix + every 0x1b doubled — INCLUDING the inner
+        // terminator's ESC — + the envelope's own ST.
+        assert_eq!(
+            wrap_passthrough(b"\x1b_Ga=T;AAAA\x1b\\"),
+            b"\x1bPtmux;\x1b\x1b_Ga=T;AAAA\x1b\x1b\\\x1b\\"
+        );
+        // No ESC in the payload: wrapped verbatim.
+        assert_eq!(wrap_passthrough(b"abc"), b"\x1bPtmux;abc\x1b\\");
+        // Degenerate: empty payload still yields a complete envelope.
+        assert_eq!(wrap_passthrough(b""), b"\x1bPtmux;\x1b\\");
+    }
+
+    #[test]
+    fn passthrough_state_defaults_off() {
+        let _g = emit_guard();
+        // Tests never run init: unset reads as off, mirroring protocol().
+        assert!(!passthrough());
+        // The test seam flips it; the guard's reset returns it to off.
+        set_passthrough_for_test(true);
+        assert!(passthrough());
     }
 
     #[test]

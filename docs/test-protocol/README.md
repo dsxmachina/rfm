@@ -136,7 +136,8 @@ Other socket queries: `entries [<tab>] left|center`, `log [n]`, and `state`
 fields (verified against the binary): `seq, mode, view, focused,
 tabs[]{cwd, selection, selected_idx, total, marked}, cwd, selection,
 selected_idx, total, marked, clipboard, show_hidden, left_path, preview_path,
-queue_active, queue_len, undo_depth, redo_depth, jump_marks, image_protocol`
+queue_active, queue_len, undo_depth, redo_depth, jump_marks, image_protocol,
+graphics_passthrough`
 (the scalar fields mirror the focused tab).
 
 ### Assertion pitfalls (bugs have been mis-filed over each of these)
