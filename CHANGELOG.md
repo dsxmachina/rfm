@@ -5,10 +5,42 @@ All notable changes to rfm are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-10-06
+
+A preview-engine overhaul: real pixel image previews via terminal graphics
+protocols (kitty, sixel, iTerm2 — including inside tmux), native in-process
+preview backends for most file types, a persistent thumbnail cache, tiered
+PDF previews — plus a unified single-file configuration.
 
 ### Added
 
+- **Graphics-protocol image previews** — images (and video / PDF / SVG / font
+  thumbnails) are now rendered as real pixels when the terminal supports it:
+  kitty graphics, sixel, iTerm2 inline images, and kitty's Unicode-placeholder
+  variant, which works *inside tmux* (tmux ≥ 3.3 with `allow-passthrough on`
+  under an outer kitty/Ghostty). The protocol is auto-detected at startup via
+  environment heuristics and a short probe, or pinned with `image_protocol`
+  in the config. Everywhere else rfm falls back to the previous half-block
+  rendering, so nothing regresses.
+- **Native preview backends** — most previews no longer shell out to external
+  tools: zip / tar / gzip (including tar.gz) listings, x509 certificates,
+  audio metadata, and image info are produced in-process, with the old
+  external-tool path kept as a fallback for exotic inputs. A gzip that isn't
+  a tarball now previews as text instead of a garbled tar listing.
+- **New preview types** — 7z and zstd/xz/bzip2 tarballs, SQLite databases
+  (table listing with row counts), Office / OpenDocument / epub text
+  extraction, SVG rendering, font samples, and native JPEG XL decoding.
+- **Tiered PDF previews** — optional page-1 image render (`pdf_render`,
+  default off; uses pdftoppm or mutool if installed) → native text tier
+  (page count, document info, page-1 text — no external tools needed) →
+  plain stat block. Never a bare error panel.
+- **Persistent preview cache** — image/video/PDF/SVG/font preview rasters are
+  cached in `$XDG_CACHE_HOME/rfm/thumbnails/` across sessions (auto-pruned:
+  30-day age, 256 MB budget). `preview_cache = false` is a privacy promise:
+  nothing derived from your files is written to disk.
+- **Content sniffing** — extensionless files are classified by content
+  (shebang, magic numbers, UTF-8 heuristic) for styling and opening.
+- Image previews are rotated upright according to their EXIF orientation.
 - **Unified configuration** — one `~/.config/rfm/config.toml` with sparse
   overrides replaces the `config.toml` / `keys.toml` / `open.toml` trio. rfm
   always starts from its complete built-in defaults and applies only the
@@ -39,7 +71,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > in-memory; nothing on disk is rewritten unless you run
 > `rfm --migrate-config` yourself. Old configs now automatically gain the
 > default keybindings of new features (previously silently unbound), with
-> your own bindings always taking precedence.
+> your own bindings always taking precedence. The new config switches
+> default sensibly: `image_protocol = "auto"`, `preview_cache = true`,
+> `pdf_render = false`.
+
+### Changed
+
+- **Log-level policy** — failures of individual operations (a rename that
+  didn't work, a missing external tool) are warnings now; `error` is
+  reserved for fatal, session-breaking conditions, and the `error.log`
+  post-mortem dump on exit is only triggered by those. The collapsed
+  one-line log widget shows info-level feedback again (undo/redo
+  confirmations were invisible).
+- Video thumbnailing is far lighter on memory for high-resolution videos
+  (frames are downscaled *before* the representative-frame selection), and
+  short videos now get a real thumbnail instead of a text fallback.
 
 ### Removed
 
@@ -47,6 +93,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sample trio; the reference is now `rfm --dump-config`
   (`examples/default-config.toml` in the repo). First run writes a short
   commented stub instead of full default files.
+
+### Fixed
+
+- Previewing a FIFO or device node no longer hangs the UI; file-type
+  sniffing never opens non-regular files.
+- Renames detected by the file watcher now refresh the listing panes.
+- The live-search match highlight is drawn inline with the entry instead of
+  as an overlay (no more artifacts next to the panel).
+- Moving left after the selection changed in the directory being left now
+  refreshes the preview column.
+- The text cursor no longer gets parked in the log region while a console
+  is open.
+- Preview hardening: decompression- and allocation-bomb protection across
+  the new preview arms (bounded decoders with explicit memory limits,
+  per-document PDF inflation budgets including xref streams, inflate bounds
+  for svgz and compressed tarballs); external tools (ffmpeg,
+  pdftoppm/mutool) run under a kill-then-reap deadline so a hung binary
+  cannot wedge previews; all attacker-controlled preview strings (archive
+  member names, audio tags, certificate fields) are scrubbed to one line.
 
 ## [0.4.3] - 2026-07-30
 
