@@ -1,6 +1,6 @@
 [package]
 name = "rfm-bin" # someone else already registered rfm as a crate-name :S
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 authors = ["Christian Hammermeister <christian.hammermeister@protonmail.com>"]
 description = "A super fast file-manager written in rust"
@@ -15,15 +15,54 @@ path = "src/main.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
+ab_glyph = "0.2"
 anyhow = "1.0.95"
+# pure-Rust bzip2 backend (libbz2-rs-sys); 0.6 needs rustc 1.82
+bzip2 = "0.6"
 cached = "0.42.0"
 clap = {version = "4.5.26", features = ["derive"]}
 crossterm = { version = "0.26.1", features = ["event-stream"] }
 seahash = "4.1.0"
+flate2 = "1"
 fs_extra = "1.3.0"
 futures = "0.3.31"
-image = "0.24.9"
+# 0.25.8+ need cargo >=1.85 (moxcms/ravif/tiff edition2024); 0.25.5 is the
+# floor for jxl-oxide's `image` integration. default-features off drops
+# `rayon`, which must stay OFF: image 0.25's rayon feature references
+# `ravif?/threading`, and on cargo 1.83 that weak-dep mention alone pulls
+# an edition2024 avif-serialize into resolution (manifest parse failure).
+# Feature list = default-formats minus avif (decode is dav1d, a system C
+# library; the avif feature itself is encode-only anyway).
+image = { version = ">=0.25.5, <0.25.7", default-features = false, features = [
+    "jpeg", "png", "gif", "webp", "bmp", "ico", "tiff", "pnm", "tga",
+    "qoi", "hdr", "exr", "ff", "dds",
+] }
+# content sniffing (magic numbers) for get_mime_type; its cfb dep pulls
+# uuid, whose newest versions need rustc >=1.85 - pinned to 1.12.1 in
+# Cargo.lock.
+infer = "0.22"
+# NOT a new crate: libc 0.2 (0.2.189 in Cargo.lock) is already a mandatory
+# transitive dependency of crossterm/tokio/notify on every unix build.
+# Declared directly for TIOCGWINSZ pixel geometry and the poll()-bounded
+# graphics-protocol probe read (crossterm 0.26 has no pixel-size API).
+libc = "0.2"
+# JPEG XL decode, pure Rust (no system C libraries). 0.12+ needs cargo
+# >=1.85 (jxl-coding is edition2024); cap below it. The `image` feature
+# provides the ImageDecoder integration (requires image >=0.25.5, the
+# floor pinned above); its default rayon feature stays on.
+jxl-oxide = { version = ">=0.11, <0.12", features = ["image"] }
 log = { version ="0.4.22", features = ["std"] }
+# lofty 0.22.3 bumps MSRV to 1.85; cap below it (its ogg_pager dep 0.7.1
+# does too - pinned to 0.7.0 in Cargo.lock).
+lofty = ">=0.22, <0.22.3"
+# pdf text tier; 0.36 declares rust-version 1.74, newer need >=1.88.
+# default features would pull jiff (edition2024) + chrono + rayon —
+# rayon off also keeps load_filtered single-threaded (the guard
+# filter's thread_local budget relies on it).
+lopdf = { version = ">=0.36, <0.37", default-features = false, features = ["time"] }
+# pure-Rust LZMA/XZ; 0.16 bumps MSRV to 1.85; cap below it. "encoder" is
+# only for hermetic test fixtures (XzWriter).
+lzma-rust2 = { version = ">=0.15, <0.16", default-features = false, features = ["std", "xz", "encoder"] }
 mime = "0.3.17"
 mime_guess = "2.0.5"
 notify = "8.0.0"
@@ -31,22 +70,39 @@ once_cell = { version = "1.20.2", features = ["parking_lot"] }
 opener = "0.7.2"
 parking_lot = "0.12.3"
 patricia_tree = "0.6"
+quick-xml = "0.38"
 rand = "0.8.5"
+# resvg 0.46 bumps MSRV to 1.87; cap below it.
+resvg = { version = ">=0.45, <0.46", default-features = false }
+# MSRV policy is "latest stable at release"; 0.37 compile-verified on 1.83.
+# `bundled` avoids a system libsqlite3 dependency.
+rusqlite = { version = ">=0.37, <0.38", features = ["bundled"] }
 rust-embed = "8.5.0"
+# ruzstd 0.8.2 switches to edition2024 (cargo >=1.85); cap below it.
+ruzstd = ">=0.8, <0.8.2"
 serde = {version = "1.0.217", features = ["serde_derive"]}
 serde_json = "1.0"
+serde_path_to_error = "0.1"
+# deprecated in favor of sevenz-rust2, which needs rustc >=1.85.
+sevenz-rust = "0.6.1"
 shell-escape = "0.1.5"
+tar = "0.4.44"
 tempfile = "3.15.0"
 time = {version = "0.3.37", features = ["formatting"]}
 tokio = { version = "1.43.0", features = ["full"] }
 toml = "0.7.8"
 # freedesktop trash (native FS backend, no DBus). 5.2 bumps MSRV to 1.85; cap below it.
 trash = ">=5.1.1, <5.2"
+# same minor as ab_glyph's owned_ttf_parser so only one copy is built.
+ttf-parser = "0.25"
 unicode-display-width = "0.3.0"
 unix_mode = "0.1.4"
 users = "0.11.0"
 walkdir = "2.5.0"
 whoami = "1.5.2"
+x509-parser = "0.18"
+# zip 8.0 bumps MSRV to 1.88; cap below it.
+zip = { version = ">=7.2, <8", default-features = false, features = ["deflate"] }
 
 [profile.dev]
 opt-level = 3

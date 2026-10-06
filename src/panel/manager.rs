@@ -7,14 +7,14 @@ use crossterm::{
     ExecutableCommand,
 };
 use futures::{FutureExt, StreamExt};
-use log::{debug, error, info, trace, warn, Level};
+use log::{debug, info, trace, warn};
 use tokio::sync::watch;
 
 use crate::{
     command_queue::{zoxide_add_dir, QueueStatus, QueuedCommand},
     config::color::{color_dir_path, color_main},
     debug::{ClipboardInfo, DebugRequest, EntryInfo, LogEntry, PaneId, StateSnapshot, TabSnapshot},
-    engine::commands::{CloseCmd, Command, CommandParser},
+    engine::commands::{CloseCmd, Command, CommandParser, DroppedDefault},
     engine::OpenEngine,
     logger::LogBuffer,
     undo::{capture_trashed, FsChange, Transaction, UndoOutcome, UndoStack},
@@ -41,8 +41,9 @@ async fn recv_debug(rx: &mut Option<mpsc::Receiver<DebugRequest>>) -> Option<Deb
 }
 
 use super::mode::{
-    Cleanup, CreateItemMode, DirConsole, ModalInput, ModalRegion, ModeOp, RenameMode, SearchMode,
-    TrashEntry, TrashView, Zoxide,
+    decision_flow::{Choice, DecisionFlow, DecisionItem},
+    Cleanup, CreateItemMode, DirConsole, FlowKind, ModalInput, ModalRegion, ModeOp, RenameMode,
+    SearchMode, TrashEntry, TrashView, Zoxide,
 };
 use super::*;
 
@@ -107,6 +108,125 @@ fn focus_after_close(focused: usize, len_after_removal: usize) -> usize {
 /// Whether another tab may be opened without exceeding [`MAX_TABS`].
 fn can_add_tab(len: usize) -> bool {
     len < MAX_TABS
+}
+
+/// One default-vs-user keybinding conflict of the upgrade notice, kept for
+/// resolution time (the item order mirrors the flow's leading items).
+struct UpgradeConflict {
+    /// The colliding binding pattern (e.g. "q").
+    binding: String,
+    /// Display of the default command that lost (e.g. "close tab").
+    command: String,
+    /// Display of the user command that claimed the binding (e.g. "quit").
+    kept: String,
+}
+
+/// Everything [`PanelManager::resolve_flow`] needs once the upgrade-notice
+/// flow completes: the conflicts behind the leading items, whether the final
+/// migrate item was appended, and where to migrate/persist.
+struct UpgradeNoticeCtx {
+    conflicts: Vec<UpgradeConflict>,
+    has_migrate: bool,
+    config_dir: PathBuf,
+    state_dir: PathBuf,
+}
+
+/// Choice indices of an upgrade-notice conflict item. The builder writes them
+/// into the items and the resolver reads the answers against them — both
+/// sides MUST use these constants, never bare numbers.
+const CHOICE_KEEP: usize = 0;
+const CHOICE_ADOPT: usize = 1;
+/// Choice indices of the trailing migrate item.
+const CHOICE_MIGRATE_NOW: usize = 0;
+const CHOICE_NOT_NOW: usize = 1;
+
+/// The actionable "adopt new" instruction, shared between the conflict item's
+/// detail line (builder) and the reminder logged on an adopt answer
+/// (resolver) so the two can never drift apart.
+fn adopt_hint(kept: &str, binding: &str, command: &str) -> String {
+    format!("rebind your `{kept}` and add `{binding}` back to {command} — see rfm --dump-config")
+}
+
+/// Builds the one-time upgrade-notice flow from this start's config findings:
+/// one keep/adopt item per default binding dropped in favor of a *user*
+/// binding (default-vs-default drops are not user-actionable and skipped),
+/// plus a final migrate item when legacy `keys.toml`/`open.toml` were folded
+/// in. `None` when there is nothing to review.
+///
+/// Also returns the [`UpgradeConflict`]s the leading items were derived from,
+/// in item order: [`PanelManager::resolve_flow`] re-pairs the answers with
+/// this Vec purely by position, so this function is the single site deciding
+/// both which drops become items and in what order.
+fn build_upgrade_notice(
+    dropped: &[DroppedDefault],
+    legacy_folded: bool,
+) -> Option<(DecisionFlow, Vec<UpgradeConflict>)> {
+    // The conflicts come first; the flow items are derived from them 1:1.
+    let conflicts: Vec<UpgradeConflict> = dropped
+        .iter()
+        .filter(|d| d.from_user)
+        .map(|d| UpgradeConflict {
+            binding: d.binding.clone(),
+            command: d.command.clone(),
+            kept: d.kept.clone(),
+        })
+        .collect();
+    let mut items: Vec<DecisionItem> = conflicts
+        .iter()
+        .map(|c| DecisionItem {
+            prompt: format!(
+                "default `{}` → {} conflicts with your `{}`",
+                c.binding, c.command, c.kept
+            ),
+            detail: vec![
+                "keep: nothing to do".to_string(),
+                format!("adopt: {}", adopt_hint(&c.kept, &c.binding, &c.command)),
+            ],
+            choices: vec![
+                Choice {
+                    key: 'y',
+                    label: "keep yours".into(),
+                },
+                Choice {
+                    key: 'a',
+                    label: "adopt new".into(),
+                },
+            ],
+            default: Some(CHOICE_KEEP),
+        })
+        .collect();
+    if legacy_folded {
+        items.push(DecisionItem {
+            prompt: "migrate keys.toml/open.toml into one config.toml?".into(),
+            detail: vec![
+                "folds your legacy files into a minimal config.toml; originals become *.bak"
+                    .to_string(),
+            ],
+            choices: vec![
+                Choice {
+                    key: 'm',
+                    label: "migrate now".into(),
+                },
+                Choice {
+                    key: 'n',
+                    label: "not now".into(),
+                },
+            ],
+            default: Some(CHOICE_NOT_NOW),
+        });
+    }
+    if items.is_empty() {
+        return None;
+    }
+    let flow = DecisionFlow::new(
+        FlowKind::UpgradeNotice,
+        format!(
+            "rfm {} — configuration changes to review",
+            env!("CARGO_PKG_VERSION")
+        ),
+        items,
+    );
+    Some((flow, conflicts))
 }
 
 /// One independent Miller-columns stack: its own cwd, selection and
@@ -229,8 +349,7 @@ impl Tab {
             }
 
             if drive_preview {
-                let center_selected =
-                    self.center.panel().selected_path().map(|p| p.to_path_buf());
+                let center_selected = self.center.panel().selected_path().map(|p| p.to_path_buf());
                 self.right.new_panel_delayed(center_selected.as_deref());
 
                 if let Some(path) = self.rev_history.last() {
@@ -255,7 +374,7 @@ impl Tab {
     ///
     /// Returns `true` if it moved (i.e. the left panel was non-empty), so the
     /// manager can unmark and `mark_dirty`.
-    fn move_left(&mut self) -> bool {
+    fn move_left(&mut self, drive_preview: bool) -> bool {
         // If the left panel is empty, we cannot move left:
         if self.left.panel().selected_path().is_none() {
             return false;
@@ -295,6 +414,16 @@ impl Tab {
                 info!("set-left-panel selection");
                 self.left.panel_mut().select_path(&center_path, None);
             }
+        }
+        // The Miller shift set the preview to the come-from directory, which is
+        // the correct preview only while the restored selection still points at
+        // it. When that directory was deleted underneath us (the parent panel
+        // reloaded and the cursor fell onto a sibling), the selection now
+        // differs — re-drive the preview so it follows the selection instead of
+        // showing the stale come-from dir. `new_panel_delayed` short-circuits
+        // when the path is unchanged, so the common case stays a no-op.
+        if drive_preview {
+            self.refresh_preview();
         }
         true
     }
@@ -369,6 +498,9 @@ pub struct PanelManager {
 
     /// Clipboard
     clipboard: Option<Clipboard>,
+
+    /// Context of a currently shown upgrade notice; taken on resolution.
+    upgrade_ctx: Option<UpgradeNoticeCtx>,
 
     /// Undo/redo stack
     undo: UndoStack,
@@ -460,6 +592,7 @@ impl PanelManager {
             mode: Mode::Normal,
             logger,
             clipboard: None,
+            upgrade_ctx: None,
             layout,
             opener,
             undo: UndoStack::new(),
@@ -627,9 +760,9 @@ impl PanelManager {
         }
     }
 
-    /// Records a freshly created archive (`archive` is the opener's result, a
-    /// path relative to `dir`) as an undoable-but-not-redoable transaction —
-    /// archive content can't be replayed on redo.
+    /// Records a freshly created archive (`archive` is the opener's result,
+    /// the absolute archive path inside `dir`) as an undoable-but-not-redoable
+    /// transaction — archive content can't be replayed on redo.
     fn record_archive(&mut self, label: &str, dir: &Path, archive: std::io::Result<PathBuf>) {
         match archive {
             Ok(rel) => {
@@ -687,13 +820,7 @@ impl PanelManager {
                 )?;
                 y = y.saturating_sub(1);
             }
-        } else if let Some((level, line)) = self
-            .logger
-            .get()
-            .into_iter()
-            .rev()
-            .find(|(level, _)| *level <= Level::Warn)
-        {
+        } else if let Some((level, line)) = self.logger.collapsed_line() {
             queue!(
                 self.stdout,
                 cursor::MoveTo(0, y),
@@ -760,10 +887,7 @@ impl PanelManager {
                         style::PrintStyledContent(label.with(color_main()).reverse().bold()),
                     )?;
                 } else {
-                    queue!(
-                        self.stdout,
-                        style::PrintStyledContent(label.dark_grey()),
-                    )?;
+                    queue!(self.stdout, style::PrintStyledContent(label.dark_grey()),)?;
                 }
             }
         }
@@ -860,24 +984,65 @@ impl PanelManager {
         }
         self.stdout.execute(BeginSynchronizedUpdate)?;
         self.stdout.queue(cursor::Hide)?;
+        // A graphics placement floats above cells, so it is only allowed
+        // when the preview column is actually the topmost thing there:
+        // single view, no console overlay (D4). Otherwise the preview
+        // falls back to half-blocks for this frame.
+        super::graphics::begin_frame(
+            matches!(self.view, ViewMode::Single) && !self.overlay_active(),
+        );
         self.draw_footer()?;
         self.draw_header()?;
         self.draw_panels()?;
-        self.draw_console()?;
+        // Log before the console overlay: the console overlay is the
+        // topmost layer AND it parks the visible text cursor at its input
+        // line via `cursor::Show`. `draw_log` ends with its own `MoveTo`
+        // down in the bottom log region, so drawing it after the console
+        // would strand the blinking cursor on the log line instead of the
+        // input. Keeping the overlay last fixes both z-order and cursor.
         self.draw_log()?;
+        self.draw_console()?;
+        // Reconcile: drop any graphics placement no draw claimed this
+        // frame (selection moved, overlay opened, split toggled, ...).
+        // Kitty is deleted by id; sixel cells were already repainted by
+        // this frame's full repaint — the reconcile never writes cells.
+        super::graphics::end_frame(&mut self.stdout)?;
         self.stdout.execute(EndSynchronizedUpdate)?;
         self.dirty = false;
         Ok(())
     }
 
-    fn draw_panels(&mut self) -> Result<()> {
+    /// Whether a modal mode is drawing over the panel area (the centered
+    /// console overlay — trash view, dir consoles). Footer-line modals do
+    /// not cover the preview column.
+    fn overlay_active(&self) -> bool {
+        matches!(&self.mode, Mode::Modal(m) if m.region() == ModalRegion::ConsoleOverlay)
+    }
+
+    /// The y-range panels may actually draw in: the layout's `y_range` minus
+    /// the rows the log widget owns at the bottom (`capacity` rows expanded,
+    /// one row collapsed). `draw_log` unconditionally blanks that region every
+    /// draw, so a panel drawing into it would lose its bottom row — including
+    /// the cursor when the selection lands there.
+    fn panel_y_range(&self) -> Range<u16> {
         let (start, end) = (self.layout.y_range.start, self.layout.y_range.end);
-        let height = if self.show_log {
-            let cap = self.logger.capacity();
-            start..end.saturating_sub(cap as u16)
+        let reserved = if self.show_log {
+            self.logger.capacity() as u16
         } else {
-            start..end
+            1
         };
+        start..end.saturating_sub(reserved)
+    }
+
+    /// Visible panel height in rows (the log-adjusted range, not the raw
+    /// layout height) — the basis for page-scroll distances.
+    fn panel_height(&self) -> u16 {
+        let range = self.panel_y_range();
+        range.end.saturating_sub(range.start)
+    }
+
+    fn draw_panels(&mut self) -> Result<()> {
+        let height = self.panel_y_range();
 
         // In split view, draw two adjacent tabs' center columns side by side.
         // Fall back to the single-view layout if the terminal is too narrow to
@@ -935,9 +1100,12 @@ impl PanelManager {
             let idx = base + offset;
             let active = idx == self.focused;
             let tab = &mut self.tabs[idx];
-            tab.center
-                .panel_mut()
-                .draw_active(&mut self.stdout, x_range, height.clone(), active)?;
+            tab.center.panel_mut().draw_active(
+                &mut self.stdout,
+                x_range,
+                height.clone(),
+                active,
+            )?;
         }
 
         // Vertical divider between the two halves (muted).
@@ -1017,7 +1185,7 @@ impl PanelManager {
                 // Record the visited directory with zoxide.
                 if let Some(cmd) = zoxide_add_dir(&dir) {
                     if let Err(e) = self.command_tx.send(cmd) {
-                        error!("Failed to queue command: {}", e);
+                        warn!("Failed to queue command: {}", e);
                     }
                 }
                 self.mark_dirty();
@@ -1028,11 +1196,11 @@ impl PanelManager {
                 // Change working directory so that child processes gets spawned
                 // from the currently active directory.
                 if let Err(e) = std::env::set_current_dir(&cwd) {
-                    error!("Failed to set working-directory for process: {e}");
+                    warn!("Failed to set working-directory for process: {e}");
                 }
                 if let Err(e) = self.opener.open(file) {
                     /* failed to open selected */
-                    error!("Opening failed: {e}");
+                    warn!("Opening failed: {e}");
                 }
                 self.mark_dirty();
                 self.unmark_left_right();
@@ -1042,7 +1210,8 @@ impl PanelManager {
 
     fn move_left(&mut self) {
         trace!("move-left");
-        if self.active_mut().move_left() {
+        let drive = self.preview_visible();
+        if self.active_mut().move_left(drive) {
             self.unmark_left_right();
             // All panels needs to be redrawn
             self.mark_dirty();
@@ -1055,7 +1224,7 @@ impl PanelManager {
         if let Some(path) = self.active_mut().jump(path, drive) {
             if let Some(cmd) = zoxide_add_dir(&path) {
                 if let Err(e) = self.command_tx.send(cmd) {
-                    error!("Failed to queue command: {}", e);
+                    warn!("Failed to queue command: {}", e);
                 }
             }
             self.mark_dirty();
@@ -1070,10 +1239,10 @@ impl PanelManager {
             Move::Right => self.move_right(),
             Move::Top => self.move_up(usize::MAX),
             Move::Bottom => self.move_down(usize::MAX),
-            Move::HalfPageForward => self.move_down(self.layout.height() as usize / 2),
-            Move::HalfPageBackward => self.move_up(self.layout.height() as usize / 2),
-            Move::PageForward => self.move_down(self.layout.height() as usize),
-            Move::PageBackward => self.move_up(self.layout.height() as usize),
+            Move::HalfPageForward => self.move_down(self.panel_height() as usize / 2),
+            Move::HalfPageBackward => self.move_up(self.panel_height() as usize / 2),
+            Move::PageForward => self.move_down(self.panel_height() as usize),
+            Move::PageBackward => self.move_up(self.panel_height() as usize),
             Move::JumpTo(path) => self.jump(path.into()),
             Move::JumpPrevious => self.jump(self.active().previous.clone()),
         };
@@ -1150,7 +1319,7 @@ impl PanelManager {
             // guard_trash contains any panic from the trash crate (it asserts
             // instead of erroring on odd states), so a delete can never crash.
             if let Err(e) = crate::undo::guard_trash(|| Ok(trash::delete(file)?)) {
-                error!("Cannot trash {}: {e}", file.display());
+                warn!("Cannot trash {}: {e}", file.display());
                 return None;
             }
             match capture_trashed(file) {
@@ -1159,18 +1328,21 @@ impl PanelManager {
                     original: file.to_path_buf(),
                 }),
                 None => {
-                    warn!("trashed {} but could not locate it for undo", file.display());
+                    warn!(
+                        "trashed {} but could not locate it for undo",
+                        file.display()
+                    );
                     None
                 }
             }
         } else {
             if file.is_file() {
                 if let Err(e) = std::fs::remove_file(file) {
-                    error!("Cannot delete {}: {e}", file.display());
+                    warn!("Cannot delete {}: {e}", file.display());
                 }
             } else if file.is_dir() {
                 if let Err(e) = std::fs::remove_dir_all(file) {
-                    error!("Cannot delete {}: {e}", file.display());
+                    warn!("Cannot delete {}: {e}", file.display());
                 }
             }
             None
@@ -1196,7 +1368,7 @@ impl PanelManager {
         {
             Ok(f) => f,
             Err(e) => {
-                error!("Failed to create temp file for bulkrename: {e}");
+                warn!("Failed to create temp file for bulkrename: {e}");
                 return;
             }
         };
@@ -1218,7 +1390,7 @@ impl PanelManager {
             file.flush()?;
             Ok(())
         })() {
-            error!("Failed to write temp file for bulkrename: {e}");
+            warn!("Failed to write temp file for bulkrename: {e}");
             return;
         }
 
@@ -1234,7 +1406,7 @@ impl PanelManager {
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    error!("Failed to open editor: {e}");
+                    warn!("Failed to open editor: {e}");
                     return;
                 }
             }
@@ -1243,7 +1415,7 @@ impl PanelManager {
             let new_content = match std::fs::read_to_string(&temp_path) {
                 Ok(c) => c,
                 Err(e) => {
-                    error!("Failed to read temp file after editing: {e}");
+                    warn!("Failed to read temp file after editing: {e}");
                     return;
                 }
             };
@@ -1263,7 +1435,7 @@ impl PanelManager {
 
             // Validate: line count must match
             if new_names.len() != original_names.len() {
-                error!(
+                warn!(
                     "Bulkrename: line count mismatch ({} vs {}). Lines must not be added or removed.",
                     new_names.len(),
                     original_names.len()
@@ -1277,7 +1449,7 @@ impl PanelManager {
                     file.flush()?;
                     Ok(())
                 })() {
-                    error!("Failed to rewrite temp file: {e}");
+                    warn!("Failed to rewrite temp file: {e}");
                     return;
                 }
                 continue;
@@ -1325,7 +1497,7 @@ impl PanelManager {
                     file.flush()?;
                     Ok(())
                 })() {
-                    error!("Failed to rewrite temp file with errors: {e}");
+                    warn!("Failed to rewrite temp file with errors: {e}");
                     return;
                 }
                 continue;
@@ -1374,7 +1546,7 @@ impl PanelManager {
             // Execute temp renames first
             for (from, to) in &temp_renames {
                 if let Err(e) = std::fs::rename(from, to) {
-                    error!(
+                    warn!(
                         "Failed to rename {} -> {}: {e}",
                         from.display(),
                         to.display()
@@ -1403,7 +1575,7 @@ impl PanelManager {
                         success_count += 1;
                     }
                     Err(e) => {
-                        error!("Failed to rename to '{}': {e}", new_name);
+                        warn!("Failed to rename to '{}': {e}", new_name);
                     }
                 }
             }
@@ -1536,6 +1708,8 @@ impl PanelManager {
                 .iter()
                 .map(|(c, m)| (c.to_string(), m.dir.clone()))
                 .collect(),
+            image_protocol: super::graphics::protocol().name().to_string(),
+            graphics_passthrough: super::graphics::passthrough(),
         }
     }
 
@@ -1728,13 +1902,16 @@ impl PanelManager {
                     .into_iter()
                     .partition(|i| std::path::Path::new(&i.id).exists());
                 if !gone.is_empty() {
-                    warn!("{} trash entrie(s) vanished before restore; skipped", gone.len());
+                    warn!(
+                        "{} trash entrie(s) vanished before restore; skipped",
+                        gone.len()
+                    );
                 }
                 let n = live.len();
                 if n > 0 {
                     match crate::undo::guard_trash(|| Ok(trash::os_limited::restore_all(live)?)) {
                         Ok(()) => info!("wiederhergestellt: {n} Element(e) aus dem Papierkorb"),
-                        Err(e) => error!("Wiederherstellen fehlgeschlagen: {e}"),
+                        Err(e) => warn!("Wiederherstellen fehlgeschlagen: {e}"),
                     }
                 }
                 // Restore from the trash view is intentionally not recorded on
@@ -1754,6 +1931,21 @@ impl PanelManager {
                 self.mode = Mode::Modal(Box::new(view));
                 self.reload_all();
             }
+            ModeOp::FlowResolved { kind, answers } => {
+                self.mode = Mode::Normal;
+                self.resolve_flow(kind, answers);
+            }
+            ModeOp::FlowAborted { kind } => {
+                self.mode = Mode::Normal;
+                // Deliberately does NOT persist the seen-version state — an
+                // aborted upgrade notice re-asks on the next start. (Today
+                // unreachable for UpgradeNotice: all its items carry defaults,
+                // so Esc resolves instead of aborting.)
+                if kind == FlowKind::UpgradeNotice {
+                    self.upgrade_ctx = None;
+                }
+                info!("{kind:?} dismissed");
+            }
             ModeOp::Exit { cleanup } => {
                 self.apply_cleanup(cleanup);
                 self.mode = Mode::Normal;
@@ -1761,6 +1953,83 @@ impl PanelManager {
         }
         // Every modal key event repaints (draw() perma-redraws now).
         self.mark_dirty();
+    }
+
+    /// Shows the one-time upgrade notice when [`build_upgrade_notice`] finds
+    /// anything to review; otherwise a no-op. The caller has already checked
+    /// the seen-version gate (state.toml).
+    pub fn maybe_show_upgrade_notice(
+        &mut self,
+        dropped: &[DroppedDefault],
+        legacy_folded: bool,
+        config_dir: PathBuf,
+        state_dir: PathBuf,
+    ) {
+        let Some((flow, conflicts)) = build_upgrade_notice(dropped, legacy_folded) else {
+            return;
+        };
+        self.upgrade_ctx = Some(UpgradeNoticeCtx {
+            conflicts,
+            has_migrate: legacy_folded,
+            config_dir,
+            state_dir,
+        });
+        self.mode = Mode::Modal(Box::new(flow));
+        self.mark_dirty();
+    }
+
+    /// Dispatches a completed decision flow's answers per [`FlowKind`].
+    ///
+    /// `answers[i]` is the chosen choice index of the flow's item `i`;
+    /// what an index *means* is the consumer's contract with its builder.
+    fn resolve_flow(&mut self, kind: FlowKind, answers: Vec<usize>) {
+        match kind {
+            FlowKind::UpgradeNotice => {
+                let Some(ctx) = self.upgrade_ctx.take() else {
+                    warn!("upgrade notice resolved without its context — ignoring");
+                    return;
+                };
+                debug_assert_eq!(
+                    answers.len(),
+                    ctx.conflicts.len() + usize::from(ctx.has_migrate),
+                    "upgrade-notice answers out of sync with its context"
+                );
+                let mut answers = answers.into_iter();
+                // Leading items mirror ctx.conflicts (build_upgrade_notice
+                // derives one from the other, in order).
+                for (conflict, answer) in ctx.conflicts.iter().zip(answers.by_ref()) {
+                    if answer == CHOICE_ADOPT {
+                        info!(
+                            "adopt `{}` → {}: {}",
+                            conflict.binding,
+                            conflict.command,
+                            adopt_hint(&conflict.kept, &conflict.binding, &conflict.command)
+                        );
+                    }
+                }
+                // The trailing migrate item, when present.
+                if ctx.has_migrate && answers.next() == Some(CHOICE_MIGRATE_NOW) {
+                    match crate::config::load::migrate(&ctx.config_dir) {
+                        Ok(lines) => {
+                            for line in lines {
+                                info!("{line}");
+                            }
+                            info!("restart rfm to load the unified config");
+                        }
+                        Err(e) => warn!("migration failed: {e:#}"),
+                    }
+                }
+                // Resolved (however answered) → never ask for this version
+                // again. Write failure degrades to a warning: state is
+                // best-effort, the notice may simply ask again next start.
+                let state = crate::config::app_state::AppState {
+                    upgrade_notice_seen_for: Some(env!("CARGO_PKG_VERSION").into()),
+                };
+                if let Err(e) = crate::config::app_state::write(&ctx.state_dir, &state) {
+                    warn!("cannot persist upgrade-notice state: {e:#} — it may show again");
+                }
+            }
+        }
     }
 
     /// Applies [`ModeOp::Rename`]: renames the selected entry to `to`
@@ -1779,16 +2048,13 @@ impl PanelManager {
                 // Prevent overwriting existing files
                 warn!("Cannot rename: '{}' already exists", to_path.display());
             } else if let Err(e) = std::fs::rename(&from, &to_path) {
-                error!("{e}");
+                warn!("{e}");
             } else {
                 let mut tx = Transaction::new(format!(
                     "rename {} → {to}",
                     from.file_name().unwrap_or_default().to_string_lossy(),
                 ));
-                tx.push(FsChange::Move {
-                    from,
-                    to: to_path,
-                });
+                tx.push(FsChange::Move { from, to: to_path });
                 self.undo.record(tx);
             }
         }
@@ -1826,7 +2092,7 @@ impl PanelManager {
         // undo would `remove` the user's pre-existing file/dir (data loss).
         let existed = target.exists();
         if let Err(e) = create_fn(target.clone()) {
-            error!("{e}");
+            warn!("{e}");
         } else if !existed {
             let mut tx = Transaction::new(format!("create {}", name.trim()));
             tx.push(FsChange::Create {
@@ -1845,9 +2111,7 @@ impl PanelManager {
         match cleanup {
             Cleanup::None => {}
             Cleanup::Search => self.active_mut().center.panel_mut().clear_search(),
-            Cleanup::RenamePreview => {
-                self.active_mut().center.panel_mut().clear_rename_preview()
-            }
+            Cleanup::RenamePreview => self.active_mut().center.panel_mut().clear_rename_preview(),
             Cleanup::CreatePreview => self.active_mut().center.panel_mut().clear_new_element(),
             Cleanup::CdTo(path) => self.jump(path),
         }
@@ -1861,7 +2125,7 @@ impl PanelManager {
             UndoOutcome::Blocked(reason) => {
                 warn!("kann nicht rückgängig gemacht werden: {reason}")
             }
-            UndoOutcome::Failed(e) => error!("undo fehlgeschlagen: {e}"),
+            UndoOutcome::Failed(e) => warn!("undo fehlgeschlagen: {e}"),
         }
         self.reload_all();
         self.mark_dirty();
@@ -1873,7 +2137,7 @@ impl PanelManager {
             UndoOutcome::Done(label) => info!("wiederhergestellt: {label}"),
             UndoOutcome::Empty => info!("nichts wiederherzustellen"),
             UndoOutcome::Blocked(reason) => warn!("redo blockiert: {reason}"),
-            UndoOutcome::Failed(e) => error!("redo fehlgeschlagen: {e}"),
+            UndoOutcome::Failed(e) => warn!("redo fehlgeschlagen: {e}"),
         }
         self.reload_all();
         self.mark_dirty();
@@ -2069,14 +2333,14 @@ impl PanelManager {
                                                 Ok(Some(change)) => tx.push(change),
                                                 Ok(None) => {}
                                                 Err(e) => {
-                                                    error!("Failed to move {}: {e}", file.display())
+                                                    warn!("Failed to move {}: {e}", file.display())
                                                 }
                                             }
                                         } else {
                                             match copy_item(file, &current_path) {
                                                 Ok(change) => tx.push(change),
                                                 Err(e) => {
-                                                    error!("Failed to copy {}: {e}", file.display())
+                                                    warn!("Failed to copy {}: {e}", file.display())
                                                 }
                                             }
                                         }
@@ -2091,18 +2355,18 @@ impl PanelManager {
                             let items = self.marked_or_selected();
                             let dir = self.active().center.panel().path().to_path_buf();
                             if let Err(e) = std::env::set_current_dir(&dir) {
-                                error!("Failed to set working-directory for process: {e}");
+                                warn!("Failed to set working-directory for process: {e}");
                             }
-                            let archive = self.opener.zip(items);
+                            let archive = self.opener.zip(items, &dir);
                             self.record_archive("zip", &dir, archive);
                         }
                         Command::Tar => {
                             let items = self.marked_or_selected();
                             let dir = self.active().center.panel().path().to_path_buf();
                             if let Err(e) = std::env::set_current_dir(&dir) {
-                                error!("Failed to set working-directory for process: {e}");
+                                warn!("Failed to set working-directory for process: {e}");
                             }
-                            let archive = self.opener.tar(items);
+                            let archive = self.opener.tar(items, &dir);
                             self.record_archive("tar", &dir, archive);
                         }
                         Command::Extract => {
@@ -2115,9 +2379,9 @@ impl PanelManager {
                             if let Some(archive) = archive {
                                 let dir = self.active().center.panel().path().to_path_buf();
                                 if let Err(e) = std::env::set_current_dir(&dir) {
-                                    error!("Failed to set working-directory for process: {e}");
+                                    warn!("Failed to set working-directory for process: {e}");
                                 }
-                                if let Err(e) = self.opener.extract(archive) {
+                                if let Err(e) = self.opener.extract(archive, &dir) {
                                     warn!("Failed to extract archive: {e}");
                                 }
                             } else {
@@ -2146,7 +2410,7 @@ impl PanelManager {
                                 // Run interactively in foreground
                                 info!("Running interactive command '{}': {}", name, expanded_cmd);
                                 if let Err(e) = std::env::set_current_dir(&working_dir) {
-                                    error!("Failed to set working directory: {e}");
+                                    warn!("Failed to set working directory: {e}");
                                 }
                                 // TODO: Implement terminal suspend/resume for interactive commands
                                 // For now, just run it blocking
@@ -2161,14 +2425,14 @@ impl PanelManager {
                                             info!("Command '{}' completed successfully", name);
                                         } else {
                                             let code = status.code().unwrap_or(-1);
-                                            error!(
+                                            warn!(
                                                 "Command '{}' failed with exit code {}",
                                                 name, code
                                             );
                                         }
                                     }
                                     Err(e) => {
-                                        error!("Failed to run command '{}': {}", name, e);
+                                        warn!("Failed to run command '{}': {}", name, e);
                                     }
                                 }
                             } else {
@@ -2180,7 +2444,7 @@ impl PanelManager {
                                     working_dir,
                                 };
                                 if let Err(e) = self.command_tx.send(queued) {
-                                    error!("Failed to queue command: {}", e);
+                                    warn!("Failed to queue command: {}", e);
                                 }
                             }
                             self.unmark_all_items();
@@ -2240,6 +2504,9 @@ impl PanelManager {
         }
         if let Event::Resize(sx, sy) = event {
             self.layout = MillerColumns::from_size((sx, sy));
+            // A resize may mean a font change: re-derive the cell pixel
+            // geometry (pure ioctl, no stdin involvement).
+            super::graphics::refresh_geometry();
             self.mark_dirty();
         }
         Ok(None)
@@ -2252,6 +2519,34 @@ mod tests {
     use crate::content::PanelCache;
     use std::fs::{self, canonicalize};
     use tokio::sync::mpsc;
+
+    #[test]
+    fn expand_command_substitutes_all_paths() {
+        let paths = [
+            PathBuf::from("/home/user/file1.txt"),
+            PathBuf::from("/home/user/file2.txt"),
+        ];
+        let expanded = expand_command("rm $@", &paths, " ");
+        assert_eq!(expanded, "rm /home/user/file1.txt /home/user/file2.txt");
+    }
+
+    #[test]
+    fn expand_command_escapes_paths_with_spaces() {
+        let paths = [PathBuf::from("/home/user/my file.txt")];
+        let expanded = expand_command("cat $@", &paths, " ");
+        // shell_escape must quote the path — it is interpolated into `sh -c`
+        assert_eq!(expanded, "cat '/home/user/my file.txt'");
+    }
+
+    #[test]
+    fn expand_command_joins_with_the_custom_separator() {
+        let paths = [
+            PathBuf::from("/home/user/file1.txt"),
+            PathBuf::from("/home/user/file2.txt"),
+        ];
+        let expanded = expand_command("echo $@ | xargs -0 rm", &paths, "\0");
+        assert!(expanded.contains("\0"));
+    }
 
     /// Everything a fixture-backed [`Tab`] needs to stay alive: the tab plus
     /// the receiving ends of its content channels (dropping them would make the
@@ -2425,12 +2720,41 @@ mod tests {
         assert_eq!(center_path(&f.tab), sub);
 
         // Go back left.
-        assert!(f.tab.move_left());
+        assert!(f.tab.move_left(true));
         // We are back at root, and `sub` is re-selected from forward-history.
         assert_eq!(center_path(&f.tab), root);
         assert_eq!(center_selected(&f.tab), Some(sub));
         // forward-history was consumed.
         assert!(f.tab.fwd_history.is_empty());
+    }
+
+    #[test]
+    fn move_left_refreshes_preview_when_selection_moved_off_the_come_from_dir() {
+        // Regression for the stale-preview-after-leaving-a-deleted-cwd bug
+        // (test-protocol step 12.8). Descend into `sub`, then move the parent
+        // panel's selection off `sub` — exactly what the watcher reload does
+        // when `sub` is deleted underneath us. On `move_left` the Miller shift
+        // sets the preview to the come-from dir (`sub`), but the restored
+        // selection is now a *different* entry, so the preview must be
+        // re-driven to match it instead of continuing to show stale `sub`.
+        let mut f = fixture();
+        let root = f.root.clone();
+        let sub = root.join("sub");
+        let zempty = root.join("zempty");
+
+        assert!(matches!(f.tab.move_right(true), MoveRight::Descended(_)));
+        assert_eq!(center_path(&f.tab), sub);
+
+        // Parent selection moves off `sub` (reload semantics).
+        f.tab.left.panel_mut().select_path(&zempty, None);
+
+        assert!(f.tab.move_left(true));
+        assert_eq!(center_selected(&f.tab), Some(zempty.clone()));
+        assert_eq!(
+            f.tab.right.panel().path(),
+            zempty.as_path(),
+            "preview must follow the restored selection, not the stale come-from dir"
+        );
     }
 
     #[test]
@@ -2441,12 +2765,12 @@ mod tests {
         let mut f = fixture();
         // Bound the loop generously; the tempdir depth is small.
         let mut moved = 0;
-        while f.tab.move_left() {
+        while f.tab.move_left(true) {
             moved += 1;
             assert!(moved < 100, "move_left did not terminate");
         }
         // We reached a point where move_left reports "did not move".
-        assert!(!f.tab.move_left());
+        assert!(!f.tab.move_left(true));
         // Center is at the filesystem root (has no parent, or parent == self).
         let here = center_path(&f.tab);
         assert!(
@@ -2517,7 +2841,7 @@ mod tests {
         assert!(f.tab.rev_history.is_empty());
 
         // Climb back to root; this pushes the highlighted child to rev_history.
-        assert!(f.tab.move_left());
+        assert!(f.tab.move_left(true));
         assert_eq!(center_path(&f.tab), root);
         assert_eq!(center_selected(&f.tab), Some(sub.clone()));
         assert_eq!(f.tab.rev_history, vec![inner2.clone()]);
@@ -2596,5 +2920,85 @@ mod tests {
         // At the cap, no more tabs may be added.
         assert!(!can_add_tab(MAX_TABS));
         assert!(!can_add_tab(MAX_TABS + 1));
+    }
+
+    mod upgrade_notice {
+        use super::super::build_upgrade_notice;
+        use crate::engine::commands::DroppedDefault;
+
+        #[test]
+        fn no_inputs_no_flow() {
+            assert!(build_upgrade_notice(&[], false).is_none());
+        }
+
+        /// Pins the positional contract `resolve_flow` relies on: the flow's
+        /// leading items mirror the returned conflicts 1:1 (same order), and
+        /// the migrate item — when present — is strictly last.
+        #[test]
+        fn conflicts_precede_migrate_item() {
+            let dropped = [
+                DroppedDefault {
+                    command: "close tab".into(),
+                    binding: "q".into(),
+                    kept: "quit".into(),
+                    from_user: true,
+                },
+                DroppedDefault {
+                    command: "toggle split".into(),
+                    binding: "!".into(),
+                    kept: "up".into(),
+                    from_user: true,
+                },
+            ];
+            let (flow, conflicts) = build_upgrade_notice(&dropped, true).unwrap();
+            assert_eq!(flow.items().len(), 3);
+            assert_eq!(conflicts.len(), 2);
+            for (item, conflict) in flow.items().iter().zip(&conflicts) {
+                assert!(item.prompt.contains(&conflict.binding));
+                assert!(item.prompt.contains(&conflict.command));
+                assert!(item.prompt.contains(&conflict.kept));
+            }
+            assert!(flow.items().last().unwrap().prompt.contains("migrate"));
+        }
+
+        #[test]
+        fn dropped_default_becomes_keep_or_adopt_item_with_keep_default() {
+            let d = DroppedDefault {
+                command: "close tab".into(),
+                binding: "q".into(),
+                kept: "quit".into(),
+                from_user: true,
+            };
+            let (flow, conflicts) = build_upgrade_notice(&[d], false).unwrap();
+            assert_eq!(conflicts.len(), 1);
+            let item = &flow.items()[0];
+            assert!(item.prompt.contains('q') && item.prompt.contains("close tab"));
+            assert_eq!(item.default, Some(0)); // keep yours
+            assert_eq!(item.choices[0].key, 'y'); // keep *y*ours
+            assert_eq!(item.choices[1].key, 'a'); // *a*dopt
+        }
+
+        #[test]
+        fn legacy_fold_appends_migrate_item_defaulting_to_not_now() {
+            let (flow, conflicts) = build_upgrade_notice(&[], true).unwrap();
+            assert!(conflicts.is_empty());
+            let last = flow.items().last().unwrap();
+            assert!(last.prompt.contains("migrate"));
+            assert_eq!(
+                last.choices[last.default.unwrap()].label.to_lowercase(),
+                "not now"
+            );
+        }
+
+        #[test]
+        fn default_vs_default_drops_are_not_user_actionable_and_skipped() {
+            let d = DroppedDefault {
+                command: "close tab".into(),
+                binding: "q".into(),
+                kept: "quit".into(),
+                from_user: false,
+            };
+            assert!(build_upgrade_notice(&[d], false).is_none());
+        }
     }
 }

@@ -1,39 +1,200 @@
 # Configuration
 
-rfm is configured through three files under `$XDG_CONFIG_HOME/rfm/` (usually
-`~/.config/rfm/`):
+rfm is configured through a single file, `config.toml`, under
+`$XDG_CONFIG_HOME/rfm/` (usually `~/.config/rfm/`). You can point rfm at a
+different config directory with `--config <dir>`.
 
-| File | Purpose |
+The file holds **sparse overrides**: rfm always starts from its complete
+built-in defaults and applies only the lines you actually write. An empty (or
+absent) `config.toml` is perfectly valid — you get the full default
+experience, including the default keybindings for every feature.
+
+## The reference: `rfm --dump-config`
+
+The complete, annotated default configuration is embedded in the binary.
+Print it at any time:
+
+```shell
+rfm --dump-config
+```
+
+It documents **every** option together with its default value and is the
+single source of truth — the same file the binary parses for its defaults, so
+documentation and behavior cannot drift.
+
+To change something, copy just that line (or section) into your
+`~/.config/rfm/config.toml` and edit it. For example, to switch off the trash
+and turn on Nerd Font icons, the whole file is:
+
+```toml
+[general]
+use_trash = false
+fancy_icons = true
+```
+
+Everything not mentioned stays at its default. On first run rfm writes a
+short commented stub `config.toml` pointing at `--dump-config`; it never
+writes anything else to your config directory on its own.
+
+Sections at a glance:
+
+| Section | Purpose |
 | --- | --- |
-| `config.toml` | general behaviour, colors, mime-type styles, custom commands |
-| `keys.toml` | keybindings and jump-marks |
-| `open.toml` | which application opens which file type |
+| `[general]` | behaviour switches (trash, icons, preview rate limit) |
+| `[colors]` | the base UI colors |
+| `[styles.*]` | per-mime-type colors and symbols for file listings |
+| `[commands.*]` | user-defined shell commands with their own keybindings |
+| `[keys.*]` | all keybindings, grouped by category |
+| `[open.*]` | which application opens which mime-type |
 
-If the files don't exist, they are created with commented defaults on first
-start. Fully worked examples live in [`examples/`](../examples). You can point
-rfm at a different config directory with `--config <dir>`.
+## Keybindings: `[keys.*]`
 
----
+Bindings map a command name to one or more key sequences. A sequence can be a
+single key, several keys typed in a row, or a whole word:
 
-## `config.toml`
+```toml
+[keys.general]
+search = [ "/", "search", "f" ]   # any of these triggers "search"
+```
 
-### General behaviour
+Modifiers use the prefixes `ctrl-`, `alt-` and `meta-` (e.g. `ctrl-r`).
+
+Categories: `[keys.general]`, `[keys.movement]`, `[keys.jump_marks]`,
+`[keys.tabs]`, `[keys.manipulation]`. `rfm --dump-config` lists every
+available command with a comment.
+
+The semantics:
+
+- **Absence means "use the default".** You only write the bindings you want
+  to change; everything else — including bindings for features added in
+  future versions — keeps working with its default keys.
+- **Your bindings win.** If a default binding (of any command you did not
+  mention) collides with a key sequence you bound yourself — exactly or as a
+  prefix (in either direction) — the default is dropped and a notice is
+  logged at startup. Example:
+  if your config binds `quit = ["q"]`, the default `close_tab = ["q",
+  "ctrl-w"]` loses `q` and keeps `ctrl-w`.
+- **`cmd = []` unbinds.** To remove a default binding without replacing it,
+  set it to the empty list, e.g. `undo = []`.
+- **`jump_to` replaces, not merges.** Overrides are whole values: a `jump_to`
+  list in your config replaces the entire default list, so include every
+  entry you want to keep.
+
+### Static jump-marks
+
+Directory shortcuts under `[keys.movement]`:
+
+```toml
+[keys.movement]
+jump_to = [ ["gh", "~"],
+            ["gc", "~/.config"],
+            ["gr", "/"] ]
+```
+
+Each entry is `["KEYS", "DIRECTORY"]`. `~` expands to `$HOME`; environment
+variables are **not** supported.
+
+### Vim-style jump-marks
+
+Session jump-marks are configured under `[keys.jump_marks]` (defaults are
+`m` / `'`):
+
+```toml
+[keys.jump_marks]
+set  = [ "m" ]   # m<letter> remembers the current location
+jump = [ "'" ]   # '<letter> returns to it
+```
+
+## General behaviour: `[general]`
 
 ```toml
 [general]
 use_trash = true       # delete to the freedesktop trash (undoable) instead of
                        # deleting permanently. See usage.md#trash and usage.md#undo--redo.
+preview_cache = true   # persist image/video preview thumbnails in
+                       # $XDG_CACHE_HOME/rfm/thumbnails so they survive restarts
+pdf_render = false     # render page 1 of a PDF as an image (needs pdftoppm or
+                       # mutool); off by default — PDFs use the pure-Rust text tier
+image_protocol = "auto" # graphics protocol for image previews: "auto" |
+                       # "kitty" | "kitty-unicode" | "iterm2" | "sixel" | "half-block"
 fancy_icons = false    # use Nerd Font icons (needs a Nerd Font in your terminal)
+rate_limit_interval_ms = 500   # preview decode rate limit while scrolling
 ```
+
+With `preview_cache = true` (the default), the rendered image and video
+preview rasters are stored in `$XDG_CACHE_HOME/rfm/thumbnails/` (usually
+`~/.cache/rfm/thumbnails/`) and reused across restarts. Entries are keyed on
+the file's absolute path and mtime, so edited files re-render automatically;
+a startup prune drops entries untouched for 30 days and caps the cache at
+256 MB. `rm -rf ~/.cache/rfm` is always safe, even while rfm is running.
+
+With `preview_cache = false`, nothing about your files is written to disk:
+image previews are held in memory only, and video previews show a mediainfo
+text block instead of a thumbnail (generating an ffmpeg thumbnail would be a
+write).
+
+With `pdf_render = false` (the default), PDFs preview through a pure-Rust text
+tier — page count, `/Info` Title/Author/Producer and the extracted text of
+page 1 — with no external dependency. Set `pdf_render = true` to render page 1
+as an image instead, using `pdftoppm` (poppler-utils) or `mutool` (mupdf-tools);
+if neither is installed rfm silently stays on the text tier. Rendering writes
+into the same thumbnail cache as image/video previews, so `preview_cache = false`
+skips the image tier entirely (an external render is a disk write) and PDFs fall
+back to the text tier.
+
+`image_protocol` selects how image previews are drawn. With `"auto"` (the
+default), rfm detects the best supported protocol at startup: environment
+heuristics first (kitty/WezTerm/Ghostty → kitty, iTerm2 → iterm2), then a
+short (< 250 ms) terminal probe for the kitty graphics protocol and sixel
+support. Anything uncertain falls back to `"half-block"`, the universal
+cell-based renderer that works in every truecolor terminal. Inside
+tmux/screen, `"auto"` resolves to `"half-block"` — multiplexers swallow
+graphics escapes — with one exception: inside tmux, a leftover
+`KITTY_WINDOW_ID` or `GHOSTTY_RESOURCES_DIR` variable hints at a capable
+outer terminal, and rfm then probes through tmux's passthrough; if the
+outer terminal answers the kitty query, `"auto"` resolves `"kitty-unicode"`.
+The explicit values `"kitty"`, `"kitty-unicode"`, `"iterm2"` and `"sixel"`
+pin a protocol and skip capability probing; they are the escape hatch for
+terminals that misreport their capabilities. `"iterm2"` is the iTerm2
+inline-images protocol (OSC 1337), also rendered by WezTerm, mintty, and
+VSCode — VSCode only when `terminal.integrated.enableImages` is on, which
+ships off, so it is never auto-detected. `"kitty-unicode"` is kitty graphics
+transmitted as a virtual placement and drawn as U+10EEEE placeholder cells —
+ordinary text that survives tmux. It is the one protocol whose image-data
+APCs rfm wraps in tmux's passthrough envelope (the placeholder cells are
+plain text and pass through untouched): inside tmux the image
+data reaches the screen only with `allow-passthrough on` set (tmux ≥ 3.3;
+earlier versions pass through unconditionally — configuring it is your job,
+rfm never runs the tmux CLI) and an outer terminal that composes virtual
+placements (kitty ≥ 0.28 or Ghostty; not WezTerm/Konsole). It also works
+outside tmux in those terminals. Two more tmux caveats: the placeholder
+cells carry the image id in their 24-bit foreground color, so tmux must
+have RGB/truecolor enabled toward the outer terminal (e.g.
+`terminal-features`/`Tc` — with kitty/Ghostty defaults this is normally
+already true), otherwise the quantized color corrupts the id and previews
+stay silently blank even after a successful probe. And `allow-passthrough
+on` forwards image data only from a *visible* pane — a transmit from a
+backgrounded window is dropped and rfm's unchanged-key gate does not retry
+it — so prefer `allow-passthrough all` (tmux ≥ 3.4) if you keep rfm
+running in background windows. The other pins are honored inside tmux but
+stay unwrapped: pinned `"kitty"` leaves the preview region blank regardless
+of `allow-passthrough` (tmux consumes raw APC sequences either way), pinned
+`"iterm2"` is just as blank (tmux discards OSC 1337 too), and pinned
+`"sixel"` renders only when tmux itself was built with sixel support
+(`--enable-sixel`). `"half-block"` disables graphics protocols entirely.
+When the startup probe runs (auto in an unrecognized terminal, auto inside
+tmux with a kitty/Ghostty hint, or an explicit kitty/kitty-unicode/iterm2/
+sixel pin without pixel geometry), keystrokes typed during its short
+(< 250 ms) window are consumed together with the probe replies.
 
 When `fancy_icons = true`, rfm renders file-type icons from the
 [Nerd Fonts](https://www.nerdfonts.com/) project (like yazi). Your terminal must
 be configured with a Nerd Font (e.g. *JetBrainsMono Nerd Font*). When disabled,
 rfm uses plain Unicode symbols that render in any terminal.
 
-### Colors
+## Colors: `[colors]`
 
-For normal text rfm uses your terminal's fore/background colors. Four accent
+For normal text rfm uses your terminal's fore/background colors. The accent
 colors are configurable, each to any of the 16 standard terminal colors:
 
 ```toml
@@ -42,13 +203,14 @@ main      = "dark-green"   # borders, directory names, the cursor
 marked    = "dark-yellow"  # marked items
 highlight = "red"          # search matches, new-item creation
 dir_path  = "dark-blue"    # the top-row directory path
+rename    = "blue"         # the inline rename preview
 ```
 
 Available colors: `black`, `dark-red`, `dark-green`, `dark-yellow`, `dark-blue`,
 `dark-magenta`, `dark-cyan`, `grey`, `dark-grey`, `red`, `green`, `yellow`,
 `blue`, `magenta`, `cyan`, `white`.
 
-### Mime-type styles
+## Mime-type styles: `[styles.*]`
 
 Files are colored and given a symbol based on their mime-type by a unified
 `StyleEngine` (defaults are close to [yazi](https://github.com/sxyazi/yazi)).
@@ -71,7 +233,7 @@ Matching tries the exact mime-type first (`text/markdown`), then the type prefix
 (`image`). Both `color` and `symbol` are optional. The mime-type of the current
 selection is shown in rfm's bottom status line, which is handy when writing rules.
 
-### Custom commands
+## Custom commands: `[commands.*]`
 
 Bind arbitrary shell commands to keys. `$@` expands to the marked (or selected)
 paths, shell-escaped:
@@ -90,70 +252,20 @@ separator   = " "            # optional (default " "): how multiple paths are jo
   pagers and other programs that need the terminal).
 
 Commands run via `sh -c` in the currently focused directory. Note that custom
-commands are **not** tracked by undo/redo.
+commands are **not** tracked by undo/redo. Custom-command keys take part in
+the same user-wins conflict rule as `[keys.*]` bindings.
 
----
+## Openers: `[open.*]`
 
-## `keys.toml`
-
-Bindings map a command name to one or more key sequences. A sequence can be a
-single key, several keys typed in a row, or a whole word:
-
-```toml
-[general]
-search = [ "/", "search", "f" ]   # any of these triggers "search"
-```
-
-Modifiers use the prefixes `ctrl-`, `alt-` and `meta-` (e.g. `ctrl-r`).
-
-Categories: `[general]`, `[movement]`, `[jump_marks]`, `[tabs]`,
-`[manipulation]`. See [`examples/keys.toml`](../examples/keys.toml) for every
-available command with a comment. A few notable ones:
-
-- **Tabs & split view** (`[tabs]`): `toggle_split`, `focus_next`, `new_tab`,
-  `close_tab`, `focus_tab_1`…`focus_tab_4`.
-- **Undo/redo** (`[manipulation]`): `undo`, `redo`.
-- **Trash** (`[general]`): `view_trash`.
-
-These are opt-in — pre-existing configs won't have the tab, undo/redo or
-jump-mark bindings until you add them (or copy the shipped example).
-
-### Jump-marks
-
-**Static** jump-marks are directory shortcuts under `[movement]`:
+Configures which application opens which file, keyed by mime-type. The only
+built-in entry opens `text/*` files in `vim`; for every mime-type without an
+entry, rfm falls back to your system's default application.
 
 ```toml
-[movement]
-jump_to = [ ["gh", "~"],
-            ["gc", "~/.config"],
-            ["gr", "/"] ]
-```
-
-Each entry is `["KEYS", "DIRECTORY"]`. `~` expands to `$HOME`; environment
-variables are **not** supported.
-
-**Vim-style** session jump-marks are configured under `[jump_marks]` (the whole
-section is optional; defaults are `m` / `'`):
-
-```toml
-[jump_marks]
-set  = [ "m" ]   # m<letter> remembers the current location
-jump = [ "'" ]   # '<letter> returns to it
-```
-
----
-
-## `open.toml`
-
-Configures which application opens which file, keyed by mime-type. Everything is
-commented out by default, in which case rfm falls back to your system's default
-application.
-
-```toml
-[text]
+[open.text]
 default = { name = "vim", args = [], terminal = true }
 
-[application]
+[open.application]
 # Different apps per extension:
 extensions = [
   ["pdf", { name = "zathura",     args = [], terminal = false } ],
@@ -165,3 +277,73 @@ extensions = [
   child process (for terminal apps like `vim`).
 - `terminal = false`: a separate window is spawned and rfm keeps running (for GUI
   apps).
+
+## Error handling
+
+rfm always starts, whatever the config's state:
+
+- **Unknown keys warn.** A typo like `pgae_forward` is reported at startup
+  with a "did you mean `page_forward`?" suggestion instead of being silently
+  ignored.
+- **Errors degrade per section, not per file.** A broken value drops only the
+  offending section from your overrides (reported with its exact TOML path,
+  e.g. `keys.movement.jump_to[3]`); the rest of your config survives.
+- Startup warnings outlive the on-screen log widget in the retained history
+  (see `error.log` on exit, or the debug socket's `log` command).
+
+## Legacy configurations
+
+Older rfm versions used three files: `config.toml`, `keys.toml` and
+`open.toml`. These keep working unchanged, forever:
+
+- The old `config.toml` is already a valid sparse override of the new format
+  (its sections kept their names and shapes).
+- A lingering `keys.toml` / `open.toml` is folded in-memory under `[keys]` /
+  `[open]` at startup — nothing on disk is ever touched. A startup hint
+  reminds you that `rfm --migrate-config` exists. If your `config.toml`
+  already has a `[keys]` (or `[open]`) section, the legacy file is ignored
+  with a warning — the new format wins.
+- Because old configs are sparse overrides too, they automatically gain the
+  default keybindings of newly added features (dropped only where they'd
+  collide with your own bindings — with a logged notice).
+
+To unify everything on disk, run the explicit, opt-in migration:
+
+```shell
+rfm --migrate-config
+```
+
+It computes your effective configuration (including folded legacy files),
+diffs it against the built-in defaults, writes only the differences as a
+minimal `config.toml`, and renames `keys.toml` / `open.toml` (and a
+pre-existing `config.toml`) to `*.bak`. Comments are lost — the reference is
+`--dump-config`. It refuses to run if a `*.bak` it would create already
+exists, so re-running it can never destroy a previous run's backups. It also
+doubles as a "shrink my stale full-copy config" command: values that merely
+restate the defaults are dropped.
+
+## After an upgrade
+
+When a new rfm version changes your effective configuration, the first start
+shows a one-time interactive notice — an overlay listing everything worth
+reviewing:
+
+- **One item per dropped default**: a new default keybinding collided with
+  one of your own, so yours won. Answer `y` (keep yours — nothing happens)
+  or `a` (adopt the new default — rfm logs the exact rebinding instructions;
+  it never edits your config for you).
+- **A final migrate item** when legacy `keys.toml` / `open.toml` are still
+  being folded in: `m` runs the `--migrate-config` unification right away,
+  `n` skips it.
+
+Navigate with `j`/`k`; `A` applies the current answer to every item with the
+same choices; `Enter` accepts an item's preselected default (keep yours /
+not now). `Esc` accepts the defaults for everything still unanswered and
+closes.
+
+The notice appears **once per rfm version**: however you answer (including
+Esc), it won't ask again until the next upgrade. Answering "not now" on the
+migration simply re-offers it with the next version — or run
+`rfm --migrate-config` yourself anytime. Conflicts you chose to keep are
+re-listed on the next version's notice as long as the binding still
+collides — keeping them again is a single `Esc`.

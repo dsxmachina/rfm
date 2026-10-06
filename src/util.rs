@@ -13,6 +13,51 @@ use users::{get_group_by_gid, get_user_by_uid};
 use crate::engine::opener::get_mime_type;
 use crate::undo::FsChange;
 
+/// True when an executable named `name` exists in one of the
+/// directories of `path_var` (a PATH-style list).
+pub fn find_in_path(name: &str, path_var: &std::ffi::OsStr) -> bool {
+    std::env::split_paths(path_var).any(|dir| {
+        let candidate = dir.join(name);
+        candidate.is_file()
+            && candidate
+                .metadata()
+                .map(|m| m.permissions().mode() & 0o111 != 0)
+                .unwrap_or(false)
+    })
+}
+
+/// True when an executable named `name` is on the current PATH.
+pub fn binary_on_path(name: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|p| find_in_path(name, &p))
+        .unwrap_or(false)
+}
+
+#[test]
+fn find_in_path_only_matches_existing_binaries() {
+    let tmp = tempfile::tempdir().unwrap();
+    let with_bin = tmp.path().join("with-bin");
+    let empty = tmp.path().join("empty");
+    std::fs::create_dir(&with_bin).unwrap();
+    std::fs::create_dir(&empty).unwrap();
+    std::fs::write(with_bin.join("somebin"), "").unwrap();
+    std::fs::set_permissions(
+        with_bin.join("somebin"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    std::fs::write(with_bin.join("not-executable"), "").unwrap();
+
+    let path_var = std::env::join_paths([empty.clone(), with_bin]).unwrap();
+    assert!(find_in_path("somebin", &path_var));
+    assert!(!find_in_path("zoxide-definitely-missing", &path_var));
+    // A plain file without the executable bit must not count.
+    assert!(!find_in_path("not-executable", &path_var));
+    // A directory named like the binary must not count.
+    let path_var = std::env::join_paths([tmp.path().to_path_buf()]).unwrap();
+    assert!(!find_in_path("empty", &path_var));
+}
+
 pub fn file_size_str(file_size: u64) -> String {
     match file_size {
         0..=1023 => format!("{file_size} B"),
@@ -32,7 +77,7 @@ pub fn file_size_str(file_size: u64) -> String {
 #[test]
 fn exact_width_unicode() {
     let test_str = "Ｈｅｌｌｏ, ｗｏｒｌｄ!";
-    println!("test-str={test_str}, width={}", unicode_width(&test_str));
+    println!("test-str={test_str}, width={}", unicode_width(test_str));
     assert!(unicode_width("asdf") == 4);
     assert_eq!(unicode_width(&test_str.exact_width(4)), 4);
     let longer = test_str.exact_width(9);
@@ -326,6 +371,24 @@ fn test_rename_safe() {
     assert!(file3.exists());
 }
 
+#[test]
+fn xdg_cache_home_prefers_env_then_home() {
+    use std::ffi::OsString;
+    assert_eq!(
+        xdg_cache_home_from(
+            Some(OsString::from("/xdg/cache")),
+            Some(OsString::from("/home/u"))
+        )
+        .unwrap(),
+        PathBuf::from("/xdg/cache")
+    );
+    assert_eq!(
+        xdg_cache_home_from(None, Some(OsString::from("/home/u"))).unwrap(),
+        PathBuf::from("/home/u/.cache")
+    );
+    assert!(xdg_cache_home_from(None, None).is_err());
+}
+
 /// Query the XDG Config Home (usually ~/.config) according to
 /// https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
 pub fn xdg_config_home() -> anyhow::Result<PathBuf> {
@@ -335,6 +398,41 @@ pub fn xdg_config_home() -> anyhow::Result<PathBuf> {
             Ok(home) => Ok(PathBuf::from(home).join(".config")),
             Err(_) => Err(anyhow!(
                 "Neither the XDG_CONFIG_HOME nor the HOME environment variable was set."
+            ))?,
+        },
+    }
+}
+
+/// Query the XDG Cache Home (usually ~/.cache) according to
+/// https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
+pub fn xdg_cache_home() -> anyhow::Result<PathBuf> {
+    xdg_cache_home_from(std::env::var_os("XDG_CACHE_HOME"), std::env::var_os("HOME"))
+}
+
+/// $XDG_CACHE_HOME, else $HOME/.cache — pure variant of [`xdg_cache_home`]
+/// taking the environment as parameters so tests stay free of `set_var`.
+fn xdg_cache_home_from(
+    xdg_cache: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> anyhow::Result<PathBuf> {
+    match (xdg_cache, home) {
+        (Some(cache), _) => Ok(PathBuf::from(cache)),
+        (None, Some(home)) => Ok(PathBuf::from(home).join(".cache")),
+        (None, None) => Err(anyhow!(
+            "Neither the XDG_CACHE_HOME nor the HOME environment variable was set."
+        )),
+    }
+}
+
+/// Query the XDG State Home (usually ~/.local/state) according to
+/// https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
+pub fn xdg_state_home() -> anyhow::Result<PathBuf> {
+    match std::env::var("XDG_STATE_HOME") {
+        Ok(xdg_state) => Ok(PathBuf::from(xdg_state)),
+        Err(_) => match std::env::var("HOME") {
+            Ok(home) => Ok(PathBuf::from(home).join(".local").join("state")),
+            Err(_) => Err(anyhow!(
+                "Neither the XDG_STATE_HOME nor the HOME environment variable was set."
             ))?,
         },
     }

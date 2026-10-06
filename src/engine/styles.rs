@@ -890,13 +890,6 @@ impl StyleEngine {
         styles.insert("application/x-git", git_style);
     }
 
-    /// Initialize the global style engine with default styles.
-    pub fn init(fancy_icons: bool) {
-        if STYLES.set(StyleEngine::new(fancy_icons)).is_err() {
-            error!("Style engine was already initialized.");
-        }
-    }
-
     /// Initialize the global style engine with user-provided style overrides.
     pub fn init_with_config(config: &StyleConfig, fancy_icons: bool) {
         let mut engine = StyleEngine::new(fancy_icons);

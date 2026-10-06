@@ -480,7 +480,10 @@ mod tests {
             .find(|i| i.original_parent == work.path() && i.name == "dangling.txt")
             .expect("dangling item is in the trash");
         let files_path = home.path().join("Trash").join("files").join(&victim.name);
-        assert!(files_path.exists(), "trashed file should exist before removal");
+        assert!(
+            files_path.exists(),
+            "trashed file should exist before removal"
+        );
         fs::remove_file(&files_path).unwrap();
         // The `.trashinfo` remains — that is what makes the entry dangling.
         let info_path = home
@@ -488,7 +491,10 @@ mod tests {
             .join("Trash")
             .join("info")
             .join(format!("{}.trashinfo", victim.name.to_string_lossy()));
-        assert!(info_path.exists(), ".trashinfo must survive to make it dangling");
+        assert!(
+            info_path.exists(),
+            ".trashinfo must survive to make it dangling"
+        );
 
         // Must not panic, and must skip the dangling entry (only the intact one).
         let entries = list_trash_entries();
@@ -565,7 +571,10 @@ mod tests {
         let panicked: Result<()> = guard_trash(|| panic!("simulated trash assert"));
         std::panic::set_hook(prev);
         assert!(panicked.is_err());
-        assert!(!is_guarding_trash(), "flag must be reset after a contained panic");
+        assert!(
+            !is_guarding_trash(),
+            "flag must be reset after a contained panic"
+        );
     }
 
     #[test]

@@ -1,7 +1,8 @@
 # Usage
 
 This page is a tour of rfm's features and their default keybindings. Every key
-here is configurable in `keys.toml` — see [configuration.md](configuration.md).
+here is configurable under `[keys.*]` in `config.toml` — see
+[configuration.md](configuration.md).
 
 Keys that look like words (`cd`, `rename`, `delete`, `mkdir`) are typed directly
 into the application, just like single keys — there is no separate "console mode".
@@ -77,7 +78,8 @@ automatically. See [features.md](features.md#zoxide) for setup.
 
 Two kinds of jump-marks exist:
 
-- **Static jump-marks** — fixed shortcuts to directories, defined in `keys.toml`.
+- **Static jump-marks** — fixed shortcuts to directories, defined under
+  `[keys.movement]` in `config.toml`.
   Defaults include `gh` → `~`, `gc` → `~/.config`, `gr` → `/`, `ge` → `/etc`,
   `gu` → `/usr`.
 - **Vim-style jump-marks** — session-only bookmarks. Press `m<letter>` (e.g.
@@ -101,7 +103,7 @@ All of these are typed like words and are reversible via [undo](#undo--redo)
 | `pp` | paste (`po` to overwrite existing files) |
 | `delete` | delete marked items (to trash, if enabled) |
 | `zip` / `tar` | create an archive from marked items |
-| `extract` / `unzip` | extract an archive in place |
+| `extract` | extract an archive in place |
 
 **Bulk-rename**: mark several files and run `rename` — rfm opens the list in your
 editor, and applying the edited names is recorded as a single undoable
@@ -128,9 +130,10 @@ tracked.
 The stack lives only for the current session — it is not persisted across
 restarts.
 
-> `u` / `ctrl-r` are opt-in keybindings. Pre-existing configs won't have them
-> until you add `undo` / `redo` to your `keys.toml`; the shipped
-> [`examples/keys.toml`](../examples/keys.toml) already includes them.
+> `u` / `ctrl-r` are the default bindings and apply to pre-existing configs
+> too — unless one of your own bindings uses the key, in which case yours
+> wins and the default is dropped (with a startup notice). Unbind explicitly
+> with `undo = []` / `redo = []` under `[keys.manipulation]`.
 
 ## Trash
 

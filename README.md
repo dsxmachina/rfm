@@ -69,20 +69,24 @@ Everything is configurable — this is just the default set. See the
 
 ## Configuration
 
-rfm reads three files from `~/.config/rfm/` (created with commented defaults on
-first run):
+rfm reads a single `~/.config/rfm/config.toml` holding **sparse overrides**:
+the binary carries complete defaults, and your file contains only what you
+want to change — an empty file is perfectly valid. Print the complete
+annotated reference (every option with its default value) with:
 
-- `config.toml` — behaviour, colors, mime-type styles, custom commands
-- `keys.toml` — keybindings and jump-marks
-- `open.toml` — which application opens which file type
+```shell
+rfm --dump-config
+```
 
-See **[docs/configuration.md](docs/configuration.md)** for the full reference and
-[`examples/`](examples) for complete, commented sample configs.
+Older three-file configs (`config.toml` + `keys.toml` + `open.toml`) keep
+working unchanged; `rfm --migrate-config` unifies them when you're ready.
+
+See **[docs/configuration.md](docs/configuration.md)** for the full reference.
 
 ## Documentation
 
 - **[Usage guide](docs/usage.md)** — every feature and its keybindings
-- **[Configuration](docs/configuration.md)** — all three config files in depth
+- **[Configuration](docs/configuration.md)** — every config option in depth
 - **[Extra features & integrations](docs/features.md)** — richer previews, zoxide, shell `cd`-on-exit
 - **[Changelog](CHANGELOG.md)** — what's new in each release
 

@@ -2,13 +2,33 @@ mod executor;
 mod types;
 
 use std::path::Path;
+use std::sync::OnceLock;
 
 pub use executor::CommandExecutor;
-pub use types::{
-    CommandConfigEntry, CommandsConfig, QueueStatus, QueuedCommand, UserCommandConfig,
-};
+pub use types::{CommandsConfig, QueueStatus, QueuedCommand};
+
+/// Whether `zoxide` is on PATH — checked once per run, so on systems
+/// without zoxide the hook is skipped instead of queueing a command
+/// that fails (visibly, in the log) on every directory change.
+pub fn zoxide_available() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        let available = crate::util::binary_on_path("zoxide");
+        if !available {
+            log::debug!("zoxide not found in PATH - visited directories will not be recorded");
+        }
+        available
+    })
+}
 
 pub fn zoxide_add_dir(path: &Path) -> Option<QueuedCommand> {
+    if !zoxide_available() {
+        return None;
+    }
+    build_zoxide_add(path)
+}
+
+fn build_zoxide_add(path: &Path) -> Option<QueuedCommand> {
     if !path.is_dir() {
         return None;
     }
@@ -53,7 +73,7 @@ mod tests {
             std::fs::create_dir(&dir).unwrap();
             let canonical = dir.canonicalize().unwrap();
 
-            let cmd = zoxide_add_dir(&dir).expect("dir exists").cmd;
+            let cmd = build_zoxide_add(&dir).expect("dir exists").cmd;
 
             assert_eq!(
                 words_seen_by_sh(&cmd),
@@ -68,7 +88,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let file = tmp.path().join("file.txt");
         std::fs::write(&file, "x").unwrap();
-        assert!(zoxide_add_dir(&file).is_none());
-        assert!(zoxide_add_dir(&tmp.path().join("missing")).is_none());
+        assert!(build_zoxide_add(&file).is_none());
+        assert!(build_zoxide_add(&tmp.path().join("missing")).is_none());
     }
 }

@@ -83,6 +83,11 @@ pub struct StateSnapshot {
     pub redo_depth: usize,
     /// Session-only jump-marks: letter -> directory. Sorted for determinism.
     pub jump_marks: std::collections::BTreeMap<String, PathBuf>,
+    /// Graphics protocol resolved for image previews at startup:
+    /// "kitty" | "kitty-unicode" | "iterm2" | "sixel" | "half-block"
+    pub image_protocol: String,
+    /// Whether graphics APC output is tmux-passthrough-wrapped
+    pub graphics_passthrough: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -144,7 +149,10 @@ pub enum DebugCommand {
     AwaitIdle,
     /// `entries [<tab>] left|center`. `tab` is a 0-based index; `None` targets
     /// the focused tab.
-    Entries { tab: Option<usize>, pane: PaneId },
+    Entries {
+        tab: Option<usize>,
+        pane: PaneId,
+    },
     Log(Option<usize>),
 }
 
@@ -344,15 +352,22 @@ mod tests {
             undo_depth: 0,
             redo_depth: 0,
             jump_marks: std::collections::BTreeMap::new(),
+            image_protocol: "half-block".into(),
+            graphics_passthrough: false,
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         assert!(json.contains("\"seq\":42"));
+        assert!(json.contains("\"image_protocol\":\"half-block\""));
+        assert!(json.contains("\"graphics_passthrough\":false"));
         assert!(json.contains("\"mode\":\"normal\""));
         // New tab-aware fields.
         assert!(json.contains("\"view\":\"split\""));
         assert!(json.contains("\"focused\":1"));
         assert!(json.contains("\"tabs\":["));
-        assert!(json.contains("/tmp/one"), "tabs array missing tab 0: {json}");
+        assert!(
+            json.contains("/tmp/one"),
+            "tabs array missing tab 0: {json}"
+        );
         // Backward-compat scalar fields still present, mirroring focused tab.
         assert!(json.contains("\"cwd\":\"/tmp/fixture\""));
         assert!(json.contains("\"selection\":\"b.txt\""));
@@ -463,6 +478,8 @@ mod tests {
                         undo_depth: 0,
                         redo_depth: 0,
                         jump_marks: std::collections::BTreeMap::new(),
+                        image_protocol: "half-block".into(),
+                        graphics_passthrough: false,
                     });
                 }
                 DebugRequest::AwaitIdle { reply } => {

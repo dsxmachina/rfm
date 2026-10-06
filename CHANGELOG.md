@@ -5,6 +5,167 @@ All notable changes to rfm are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-10-06
+
+A preview-engine overhaul: real pixel image previews via terminal graphics
+protocols (kitty, sixel, iTerm2 — including inside tmux), native in-process
+preview backends for most file types, a persistent thumbnail cache, tiered
+PDF previews — plus a unified single-file configuration.
+
+### Added
+
+- **Graphics-protocol image previews** — images (and video / PDF / SVG / font
+  thumbnails) are now rendered as real pixels when the terminal supports it:
+  kitty graphics, sixel, iTerm2 inline images, and kitty's Unicode-placeholder
+  variant, which works *inside tmux* (tmux ≥ 3.3 with `allow-passthrough on`
+  under an outer kitty/Ghostty). The protocol is auto-detected at startup via
+  environment heuristics and a short probe, or pinned with `image_protocol`
+  in the config. Everywhere else rfm falls back to the previous half-block
+  rendering, so nothing regresses.
+- **Native preview backends** — most previews no longer shell out to external
+  tools: zip / tar / gzip (including tar.gz) listings, x509 certificates,
+  audio metadata, and image info are produced in-process, with the old
+  external-tool path kept as a fallback for exotic inputs. A gzip that isn't
+  a tarball now previews as text instead of a garbled tar listing.
+- **New preview types** — 7z and zstd/xz/bzip2 tarballs, SQLite databases
+  (table listing with row counts), Office / OpenDocument / epub text
+  extraction, SVG rendering, font samples, and native JPEG XL decoding.
+- **Tiered PDF previews** — optional page-1 image render (`pdf_render`,
+  default off; uses pdftoppm or mutool if installed) → native text tier
+  (page count, document info, page-1 text — no external tools needed) →
+  plain stat block. Never a bare error panel.
+- **Persistent preview cache** — image/video/PDF/SVG/font preview rasters are
+  cached in `$XDG_CACHE_HOME/rfm/thumbnails/` across sessions (auto-pruned:
+  30-day age, 256 MB budget). `preview_cache = false` is a privacy promise:
+  nothing derived from your files is written to disk.
+- **Content sniffing** — extensionless files are classified by content
+  (shebang, magic numbers, UTF-8 heuristic) for styling and opening.
+- Image previews are rotated upright according to their EXIF orientation.
+- **Unified configuration** — one `~/.config/rfm/config.toml` with sparse
+  overrides replaces the `config.toml` / `keys.toml` / `open.toml` trio. rfm
+  always starts from its complete built-in defaults and applies only the
+  lines you write; an empty file is valid. The old `keys.toml` sections move
+  under `[keys.*]`, `open.toml` under `[open.*]`.
+- **Defaults-on keybindings with user-wins conflicts** — every feature's
+  default keys (tabs, undo/redo, jump-marks, trash view, …) are now active
+  for everyone, no longer opt-in. A default that collides with one of your
+  own bindings (exactly or as a prefix, in either direction) is dropped with
+  a logged notice; `cmd = []` explicitly unbinds a command.
+- **`rfm --dump-config`** — prints the complete annotated default
+  configuration (the reference to copy override lines from).
+- **`rfm --migrate-config`** — explicit, opt-in migration: writes your
+  effective configuration as a minimal diff-from-defaults `config.toml` and
+  renames the legacy files to `*.bak` (refusing to overwrite a previous
+  run's backups).
+- Config robustness: unknown keys warn with a "did you mean …?" suggestion;
+  parse errors drop only the offending section (with its exact TOML path)
+  instead of discarding the whole file.
+- **One-time upgrade notice** — the first start after an upgrade shows an
+  interactive overlay reviewing what changed for *you*: keep/adopt per
+  dropped default keybinding, plus a migrate offer when legacy files are
+  still folded in. Asked once per version; built on a generic decision-flow
+  overlay that will power future guided flows.
+
+> **Upgrading:** nothing to do. Old three-file configs keep working
+> unchanged — `keys.toml` / `open.toml` are folded in at load time, purely
+> in-memory; nothing on disk is rewritten unless you run
+> `rfm --migrate-config` yourself. Old configs now automatically gain the
+> default keybindings of new features (previously silently unbound), with
+> your own bindings always taking precedence. The new config switches
+> default sensibly: `image_protocol = "auto"`, `preview_cache = true`,
+> `pdf_render = false`.
+
+### Changed
+
+- **Log-level policy** — failures of individual operations (a rename that
+  didn't work, a missing external tool) are warnings now; `error` is
+  reserved for fatal, session-breaking conditions, and the `error.log`
+  post-mortem dump on exit is only triggered by those. The collapsed
+  one-line log widget shows info-level feedback again (undo/redo
+  confirmations were invisible).
+- Video thumbnailing is far lighter on memory for high-resolution videos
+  (frames are downscaled *before* the representative-frame selection), and
+  short videos now get a real thumbnail instead of a text fallback.
+
+### Removed
+
+- The `examples/config.toml` / `examples/keys.toml` / `examples/open.toml`
+  sample trio; the reference is now `rfm --dump-config`
+  (`examples/default-config.toml` in the repo). First run writes a short
+  commented stub instead of full default files.
+
+### Fixed
+
+- Previewing a FIFO or device node no longer hangs the UI; file-type
+  sniffing never opens non-regular files.
+- Renames detected by the file watcher now refresh the listing panes.
+- The live-search match highlight is drawn inline with the entry instead of
+  as an overlay (no more artifacts next to the panel).
+- Moving left after the selection changed in the directory being left now
+  refreshes the preview column.
+- The text cursor no longer gets parked in the log region while a console
+  is open.
+- Preview hardening: decompression- and allocation-bomb protection across
+  the new preview arms (bounded decoders with explicit memory limits,
+  per-document PDF inflation budgets including xref streams, inflate bounds
+  for svgz and compressed tarballs); external tools (ffmpeg,
+  pdftoppm/mutool) run under a kill-then-reap deadline so a hung binary
+  cannot wedge previews; all attacker-controlled preview strings (archive
+  member names, audio tags, certificate fields) are scrubbed to one line.
+
+## [0.4.3] - 2026-07-30
+
+A robustness patch: rfm now degrades gracefully when the external programs it
+leans on (zoxide, zip/tar, ffmpeg, a configured opener) are missing or fail,
+instead of spamming errors, breaking the terminal or silently pretending
+success.
+
+### Fixed
+
+- Without zoxide installed, every directory change used to queue a background
+  `zoxide add` that failed visibly in the log (exit 127). Directory visits are
+  now only recorded when zoxide is actually on `PATH` (checked once per run).
+  The zoxide console (`CD`) shows a clean "zoxide is not installed" hint
+  instead of spawning a doomed process on every keystroke.
+- A configured opener that isn't installed no longer breaks the terminal: raw
+  mode is restored on every error path (previously the TUI stopped reacting to
+  single keypresses until restart). Applications opened in a separate window
+  (`terminal = false`) no longer linger as zombie processes.
+- `zip` / `tar` / `extract` now check that the archiver is installed ("zip is
+  not installed - ...") and that it actually succeeded. A failed run reports
+  the exit code and stderr, removes the partial archive, and no longer records
+  an undo entry for an archive that was never created.
+- Archive previews no longer leak a defunct `tar` process per preview.
+- Videos shorter than the 10 s thumbnail seek now fall back to a mediainfo
+  text preview instead of showing an empty panel.
+
+### Changed
+
+- Video thumbnails are stored under `<tmp>/rfm-thumbnails/` and pruned after
+  7 days, instead of accumulating in the temp dir forever. (Interim scheme —
+  the persistent `XDG_CACHE_HOME` cache is designed in
+  [docs/plans/2026-07-30-thumbnail-cache-design.md](docs/plans/2026-07-30-thumbnail-cache-design.md).)
+
+## [0.4.2] - 2026-07-21
+
+### Fixed
+
+- Explicit keybindings now win over the auto-generated jump-mark chords.
+  Typing a binding that starts with the set-mark prefix (e.g. `mkdir` with the
+  default `m`) no longer sets a jump-mark halfway through (`mk` used to set
+  mark `k` and swallow the rest). Shadowed mark chords are also hidden from
+  the key hint list.
+
+## [0.4.1] - 2026-07-20
+
+### Fixed
+
+- The row above the footer (the collapsed log widget's line) is now reserved in
+  the panel height. Previously the log blanked it every frame while the panels
+  still counted it as theirs, leaving a permanently empty line the cursor could
+  scroll into and disappear. Page-scroll distances (`ctrl-d`/`u`/`f`/`b`) now
+  also use the actual visible panel height.
+
 ## [0.4.0] - 2026-07-20
 
 A big feature release: multi-tab browsing with a split view, a full undo/redo
@@ -13,7 +174,7 @@ custom commands.
 
 > **Upgrading:** the new keybindings (tabs, undo/redo, jump-marks, trash view)
 > are **opt-in** — existing `keys.toml` files won't have them until you add them.
-> See the updated [`examples/keys.toml`](examples/keys.toml) for the full set, and
+> See the updated `examples/keys.toml` (since replaced by `rfm --dump-config`) for the full set, and
 > the new [docs/](docs/) directory for details.
 
 ### Added

@@ -17,9 +17,8 @@ use engine::{
 use log::{error, info, warn};
 use logger::LogBuffer;
 use panel::{manager::PanelManager, ContentHandles};
-use rust_embed::Embed;
 use std::{
-    fs::{File, OpenOptions},
+    fs::OpenOptions,
     io::{stdout, IsTerminal, Write},
     path::PathBuf,
     time::{Duration, Instant},
@@ -27,7 +26,7 @@ use std::{
 use tokio::sync::mpsc;
 use util::xdg_config_home;
 
-use crate::config::color::{colors_from_config, colors_from_default};
+use crate::config::color::colors_from_config;
 
 mod command_queue;
 mod config;
@@ -38,9 +37,6 @@ mod logger;
 mod panel;
 mod undo;
 mod util;
-
-/// Default rate limit interval for preview updates (in milliseconds)
-const DEFAULT_RATE_LIMIT_INTERVAL_MS: u64 = 500;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -59,8 +55,26 @@ struct Args {
     /// line of JSON. Example: echo state | socat - UNIX-CONNECT:<path>
     #[arg(long)]
     debug_socket: Option<PathBuf>,
+    /// Print the complete annotated default configuration and exit
+    #[arg(long)]
+    dump_config: bool,
+    /// Unify the configuration into one minimal config.toml (folding legacy
+    /// keys.toml/open.toml in, renaming them to *.bak) and exit
+    #[arg(long)]
+    migrate_config: bool,
     /// Path to open (defaults to ".")
     path: Option<PathBuf>,
+}
+
+/// The config directory: `--config` wins, else `$XDG_CONFIG_HOME/rfm`.
+/// Resolution only — creating the directory is the caller's business.
+fn resolve_config_dir(cli_override: Option<PathBuf>) -> anyhow::Result<PathBuf> {
+    match cli_override {
+        Some(dir) => Ok(dir),
+        None => Ok(xdg_config_home()
+            .context("failed to get $XDG_CONFIG_HOME")?
+            .join("rfm")),
+    }
 }
 
 const ERROR_MSG: &str = "\
@@ -75,12 +89,23 @@ const ERROR_MSG: &str = "\
 +------------------------------------------------------------------+
 ";
 
-#[derive(Embed)]
-#[folder = "examples/"]
-struct Examples;
-
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
+
+    if args.dump_config {
+        print!("{}", config::default_config_str());
+        return Ok(());
+    }
+
+    if args.migrate_config {
+        let config_dir = resolve_config_dir(args.config)?;
+        for line in config::load::migrate(&config_dir)? {
+            println!("{line}");
+        }
+        return Ok(());
+    }
+
     // Check if we run from a terminal
     let mut stdout = stdout();
     if !stdout.is_terminal() {
@@ -89,8 +114,6 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("Please note: The output of rfm can be neither piped nor redirected.");
         std::process::exit(1);
     }
-
-    let args = Args::parse();
 
     std::panic::set_hook(Box::new(|panic_info| {
         if undo::is_guarding_trash() {
@@ -138,127 +161,77 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // --- Read config directory
-    let config_dir = if let Some(config_dir) = args.config {
-        config_dir
-    } else {
-        xdg_config_home()
-            .context("failed to get $XDG_CONFIG_HOME")?
-            .join("rfm")
-    };
+    let config_dir = resolve_config_dir(args.config)?;
 
-    // Create config files and config directory, if they are not present
+    // Create the config directory, if it is not present
     if !config_dir.exists() {
         info!("Creating config directory: {}", config_dir.display());
         std::fs::create_dir(&config_dir).context("failed to create config directory")?;
     }
 
-    // --- Set or generate color configuration
-    let general_config_file = config_dir.join("config.toml");
-    if !general_config_file.exists() {
-        info!("Creating default config file for config.toml");
-        let default = Examples::get("config.toml").expect("embedded config.toml");
-        let mut file = File::create(&general_config_file).context(format!(
-            "failed to create {}",
-            general_config_file.display()
-        ))?;
-        file.write_all(&default.data)?;
+    // --- Load the configuration: sparse config.toml over the embedded
+    // defaults, with legacy keys.toml/open.toml folded in (load() writes the
+    // config.toml stub on first run).
+    let loaded = config::load::load(&config_dir);
+    for w in &loaded.warnings {
+        warn!("{w}");
+    }
+    colors_from_config(loaded.config.colors)?;
+
+    let use_trash = loaded.config.general.use_trash;
+    let preview_cache = loaded.config.general.preview_cache;
+    // Whether the external pdf image tier (pdftoppm/mutool) may run
+    // (config key `pdf_render`; default OFF — opt-in).
+    let pdf_render = loaded.config.general.pdf_render;
+    // Graphics protocol for image previews (config key `image_protocol`;
+    // default `auto` — detect at startup, fall back to half-blocks).
+    let image_protocol = loaded.config.general.image_protocol;
+    let rate_limit_interval_ms = loaded.config.general.rate_limit_interval_ms;
+    let fancy_icons = loaded.config.general.fancy_icons;
+    info!("Using rate-limit of {rate_limit_interval_ms}ms");
+    if fancy_icons {
+        info!("Using Nerd Font icons");
+    }
+    if !loaded.config.commands.is_empty() {
+        info!("Loaded {} user commands", loaded.config.commands.len());
     }
 
-    // Weather or not we activate the trash (default on; freedesktop trash is
-    // cheap per-device and deletes are undoable)
-    let mut use_trash = true;
-    let mut rate_limit_interval_ms = DEFAULT_RATE_LIMIT_INTERVAL_MS;
-    let mut style_config = None;
-    let mut fancy_icons = false;
-    let mut user_commands = command_queue::CommandsConfig::default();
-
-    if let Ok(content) = std::fs::read_to_string(&general_config_file) {
-        match toml::from_str::<config::Config>(&content) {
-            Ok(config) => {
-                info!("Using general config: {}", general_config_file.display());
-                colors_from_config(config.colors)?;
-                use_trash = config.general.use_trash;
-                rate_limit_interval_ms = config.general.rate_limit_interval_ms;
-                fancy_icons = config.general.fancy_icons;
-                info!("Using rate-limit of {rate_limit_interval_ms}ms");
-                if fancy_icons {
-                    info!("Using Nerd Font icons");
-                }
-                style_config = Some(config.styles);
-                user_commands = config.commands;
-                if !user_commands.is_empty() {
-                    info!("Loaded {} user commands", user_commands.len());
-                }
-            }
-            Err(e) => {
-                warn!("Configuration error: {e}. Using default color config");
-                colors_from_default();
-            }
+    let (parser, dropped) = CommandParser::build(
+        &loaded.default_keys,
+        &loaded.parser_input,
+        &loaded.config.commands,
+    );
+    for d in &dropped {
+        if d.from_user {
+            warn!(
+                "default `{}` → {} skipped: bound to {} in your config",
+                d.binding, d.command, d.kept
+            );
+        } else {
+            warn!(
+                "default `{}` → {} skipped: `{}` already uses it",
+                d.binding, d.command, d.kept
+            );
         }
-    } else {
-        info!("Using default color config");
-        colors_from_default();
     }
 
-    // --- Keyboard configuration
-    let key_config_file = config_dir.join("keys.toml");
-    if !key_config_file.exists() {
-        info!("Creating default config file for keys.toml");
-        let default = Examples::get("keys.toml").expect("embedded keys.toml");
-        let mut file = File::create(&key_config_file)
-            .context(format!("failed to create {}", key_config_file.display()))?;
-        file.write_all(&default.data)?;
-    }
+    // Persistent preview raster cache: resolve/create the dir once (before
+    // the first preview can run), then evict stale entries in the
+    // background (fire-and-forget).
+    panel::raster_cache::init(preview_cache);
+    panel::set_pdf_render(pdf_render);
+    tokio::task::spawn_blocking(panel::raster_cache::prune);
 
-    let mut parser = if let Ok(content) = std::fs::read_to_string(&key_config_file) {
-        match toml::from_str(&content) {
-            Ok(key_config) => {
-                info!("Using keyboard config: {}", key_config_file.display());
-                CommandParser::from_config(key_config)
-            }
-            Err(e) => {
-                warn!("Configuration error: {e}. Using default keyboard bindings");
-                CommandParser::default_bindings()
-            }
-        }
-    } else {
-        warn!(
-            "Cannot find keyboard config '{}'. Using default keyboard bindings",
-            key_config_file.display()
-        );
-        CommandParser::default_bindings()
-    };
-
-    // Add user-defined commands from config
-    parser.add_user_commands(&user_commands);
-
-    // --- Opener configuration
-    let open_config_file = config_dir.join("open.toml");
-    if !open_config_file.exists() {
-        info!("Creating default config file for open.toml");
-        let default = Examples::get("open.toml").expect("embedded open.toml");
-        let mut file = File::create(&open_config_file)
-            .context(format!("failed to create {}", open_config_file.display()))?;
-        file.write_all(&default.data)?;
-    }
-
-    let opener = if let Ok(content) = std::fs::read_to_string(&open_config_file) {
-        match toml::from_str(&content) {
-            Ok(open_config) => {
-                info!("Using open-engine config: {}", open_config_file.display());
-                OpenEngine::with_config(open_config)
-            }
-            Err(e) => {
-                warn!("Configuration error: {e}. Using default open engine");
-                OpenEngine::default()
-            }
-        }
-    } else {
-        info!("Using default open engine");
-        OpenEngine::default()
-    };
+    let opener = OpenEngine::with_config(loaded.config.open);
 
     enable_raw_mode()?;
+
+    // Resolve the graphics protocol for image previews. Must run here: raw
+    // mode is active (probe replies arrive unbuffered/un-echoed) and nothing
+    // reads stdin yet (the crossterm EventStream is constructed inside
+    // PanelManager::new below), so the probe can consume the reply bytes
+    // without leaking phantom keys.
+    panel::graphics::init(image_protocol);
 
     stdout
         .queue(DisableMouseCapture)?
@@ -271,11 +244,7 @@ async fn main() -> anyhow::Result<()> {
         .queue(Clear(ClearType::All))?
         .queue(cursor::MoveTo(0, 0))?;
 
-    if let Some(styles) = &style_config {
-        StyleEngine::init_with_config(styles, fancy_icons);
-    } else {
-        StyleEngine::init(fancy_icons);
-    }
+    StyleEngine::init_with_config(&loaded.config.styles, fancy_icons);
 
     let directory_cache = PanelCache::with_size(16384);
     let preview_cache = PanelCache::with_size(4096);
@@ -331,7 +300,7 @@ async fn main() -> anyhow::Result<()> {
         preview_tx,
     };
 
-    let panel_manager = PanelManager::new(
+    let mut panel_manager = PanelManager::new(
         starting_path.clone(),
         handles,
         use_trash,
@@ -344,6 +313,28 @@ async fn main() -> anyhow::Result<()> {
         command_status_rx,
         debug_rx,
     )?;
+
+    // One-time upgrade notice: default-vs-user keybinding conflicts and the
+    // legacy-config migration offer, shown at most once per rfm version
+    // (state.toml gates it). Complements — not replaces — the warn! lines
+    // above.
+    let state_dir = util::xdg_state_home().map(|p| p.join("rfm")).ok();
+    let version = env!("CARGO_PKG_VERSION");
+    if let Some(dir) = &state_dir {
+        if config::app_state::read(dir)
+            .upgrade_notice_seen_for
+            .as_deref()
+            != Some(version)
+        {
+            panel_manager.maybe_show_upgrade_notice(
+                &dropped,
+                loaded.legacy_folded,
+                config_dir.clone(),
+                dir.clone(),
+            );
+        }
+    }
+
     let panel_handle = tokio::spawn(panel_manager.run());
 
     // If the panel manager returns, we essentially want to shutdown the entire program.
@@ -416,14 +407,12 @@ fn print_all_errors(logger: &LogBuffer) -> anyhow::Result<()> {
         // Write error.log from the retained history (not just the short-lived
         // display buffer), so the report survives the periodic log eviction
         let now = std::time::Instant::now();
-        let log_output: String = logger
-            .history(logger::HISTORY_CAPACITY)
-            .into_iter()
-            .map(|(level, at, msg)| {
-                let age = now.duration_since(at).as_secs();
-                format!("{level} ({age}s ago): {msg}\n")
-            })
-            .collect();
+        let mut log_output = String::new();
+        for (level, at, msg) in logger.history(logger::HISTORY_CAPACITY) {
+            use std::fmt::Write as _;
+            let age = now.duration_since(at).as_secs();
+            let _ = writeln!(log_output, "{level} ({age}s ago): {msg}");
+        }
         let mut log = std::fs::File::create("./error.log").context("failed to create error log")?;
         log.write_all(log_output.as_bytes())
             .context("failed to write to error log")?;
@@ -434,40 +423,4 @@ fn print_all_errors(logger: &LogBuffer) -> anyhow::Result<()> {
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{config::Config, engine::commands::KeyConfig, engine::opener::OpenerConfig};
-
-    #[test]
-    fn embedded_key_config() {
-        let config = Examples::get("keys.toml");
-        assert!(config.is_some(), "missing embedded keys.toml config");
-        let config = config.unwrap();
-        let content = std::str::from_utf8(&config.data).expect("config must be valid utf-8");
-        let parsed: Result<KeyConfig, _> = toml::from_str(content);
-        assert!(parsed.is_ok(), "invalid keys.toml example");
-    }
-
-    #[test]
-    fn embedded_open_config() {
-        let config = Examples::get("open.toml");
-        assert!(config.is_some(), "missing embedded keys.toml config");
-        let config = config.unwrap();
-        let content = std::str::from_utf8(&config.data).expect("config must be valid utf-8");
-        let parsed: Result<OpenerConfig, _> = toml::from_str(content);
-        assert!(parsed.is_ok(), "invalid keys.toml example");
-    }
-
-    #[test]
-    fn embedded_general_config() {
-        let config = Examples::get("config.toml");
-        assert!(config.is_some(), "missing embedded keys.toml config");
-        let config = config.unwrap();
-        let content = std::str::from_utf8(&config.data).expect("config must be valid utf-8");
-        let parsed: Result<Config, _> = toml::from_str(content);
-        assert!(parsed.is_ok(), "invalid keys.toml example");
-    }
 }
